@@ -67,14 +67,25 @@ impl Cancellation {
         let mut bytes = [0; 256];
         loop {
             let mut buffer = ReadBuf::new(&mut bytes);
-            future::poll_fn(|cx| {
+            let read = future::poll_fn(|cx| {
                 Pin::new(&mut *reader.lock().expect("cancel read lock is not poisoned"))
                     .poll_read(cx, &mut buffer)
             })
-            .await
-            .map_err(|_| ())?;
-            if buffer.filled().is_empty() {
-                return Ok(());
+            .await;
+            match read {
+                Ok(()) if buffer.filled().is_empty() => return Ok(()),
+                Ok(()) => {}
+                // PostgreSQL on Windows closes the cancel socket with a reset rather than
+                // a FIN; after the request was written, a reset means the server closed it.
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted
+                    ) =>
+                {
+                    return Ok(());
+                }
+                Err(_) => return Err(()),
             }
         }
     }
