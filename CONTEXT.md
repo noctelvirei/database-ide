@@ -13,8 +13,16 @@ The database product a connection talks to: SQL Server, PostgreSQL or MySQL.
 _Avoid_: Provider, dialect, backend
 
 **Connection colour**:
-The colour a connection marks its query tabs with, so a production server is recognisable at a glance.
+The colour a connection marks its query tabs with, so a production server is recognisable at a glance. Set on a connection folder and inherited, or set on the connection itself.
 _Avoid_: Environment tag, theme
+
+**Connection folder**:
+A named, nestable group of saved connections, such as Prod or Dev, that can carry a connection colour.
+_Avoid_: Group, server group, category
+
+**Sign-in method**:
+How a connection proves who the user is: a database login with a password, or the Windows account the app runs as.
+_Avoid_: Auth type, authentication mode
 
 ## Queries
 
