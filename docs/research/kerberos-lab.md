@@ -4,7 +4,7 @@ Research for [#18](https://github.com/noctelvirei/database-ide/issues/18), 2026-
 
 ## Answer
 
-Probably yes, with one Windows Server 2025 evaluation VM that is the domain controller for `lab.test` and also runs SQL Server 2025 Developer and PostgreSQL 18. The test harness starts the engine's Kerberos tests with `CreateProcessWithLogonW(LOGON_NETCREDENTIALS_ONLY)` as `tester@lab.test`. The PC needs three changes, all reversible: Hyper-V enabled, an internal virtual switch, and one DNS policy (NRPT) rule that sends `lab.test` lookups to the DC.
+Probably yes, with one Windows Server 2025 evaluation VM that is the domain controller for `lab.test` and also runs SQL Server 2025 Developer and PostgreSQL 18. The test harness starts the engine's Kerberos tests with `CreateProcessWithLogonW(LOGON_NETCREDENTIALS_ONLY)` as `tester@lab.test`. The PC needs three changes, all reversible: Hyper-V enabled, an internal virtual switch, and one DNS policy (NRPT) rule that sends `lab.test` lookups to the DC. A fourth is optional: the owner in the Hyper-V Administrators group, so tests can start the VM without an elevated shell.
 
 "Probably" because one link is not documented in so many words: that the Kerberos package, inside a `/netonly` logon session on a PC that is not on a domain, finds the KDC through DNS and gets a ticket. The first build step is a cheap gate that settles it before SQL Server or PostgreSQL go in (see [Build steps](#build-steps)).
 
@@ -89,10 +89,11 @@ DC, SQL Server and PostgreSQL on one VM goes against Microsoft's advice for prod
 | Enable Hyper-V | Run the VM | Yes | Yes | `Disable-WindowsOptionalFeature` |
 | Internal switch `dbide-lab`, host adapter with a static IP in the lab subnet | Host and VM talk privately | Yes | No (estimate) | `Remove-VMSwitch` |
 | One NRPT rule: `.lab.test` → DC's IP | Find the KDC (SRV records) and the servers by name | Yes | No (estimate) | `Remove-DnsClientNrptRule` |
+| Optional: add the owner's account to the local Hyper-V Administrators group | The test harness can start and stop the VM and use PowerShell Direct without an elevated shell | Yes | Sign out and in | Remove from the group |
 
-Not needed: domain join, `ksetup` realm mappings (HKLM plus restart), hosts entries (cannot serve SRV records), `TryIPSPN`, or any change to this PC's Kerberos or NTLM policy. The NTLM block lives inside the VM.
+Not needed: domain join, `ksetup` realm mappings (HKLM plus restart), hosts entries (cannot serve SRV records), `TryIPSPN`, WinRM `TrustedHosts`, or any change to this PC's Kerberos or NTLM policy. The NTLM block lives inside the VM.
 
-Internet for the VM: the evaluation must activate online within 10 days, and an internal switch has no internet. Give the VM a second network adapter on Hyper-V's built-in Default Switch, which the Hyper-V feature creates. A `NetNat` on the internal switch would work too but is another host change.
+Internet for the VM: the evaluation must activate online within 10 days, and an internal switch has no internet. Give the VM a second network adapter on Hyper-V's built-in Default Switch, a NAT switch that Windows 11 provides once Hyper-V is on (not checked against a Microsoft page here). A `NetNat` on the internal switch would work too but is another host change.
 
 ### Cost (estimates, not measured)
 
@@ -101,20 +102,20 @@ Internet for the VM: the evaluation must activate online within 10 days, and an 
 - **CPU:** 2 virtual processors.
 - **Setup time:** writing and debugging the build scripts, 1–2 days of agent work. An unattended rebuild after that, about 1 hour, mostly Windows setup and SQL Server setup.
 - **Per test run:** the VM is off between runs. A cold start until the DC answers Kerberos takes a few minutes. A VM saved with `Save-VM` resumes faster, but its clock must be resynchronised (Hyper-V time synchronisation integration service) to stay inside the 5-minute tolerance.
-- **Licence:** the 180 days are wall-clock days, so a stopped VM probably keeps counting (not verified). Plan on a scripted rebuild before day 180 rather than `slmgr /rearm`: rearm counts are reported only by secondary sources, which disagree (5 or 6).
+- **Licence:** the 180 days are wall-clock days, so a stopped VM probably keeps counting (not verified). Plan on a scripted rebuild before day 180 rather than `slmgr /rearm`: rearm counts come only from secondary sources and a Microsoft Q&A thread, which disagree (1, 5 or 6).
 
 ### Build steps
 
-Scripts in the repo (for example `lab/`), PowerShell with the Hyper-V module, all values in one settings file, the lab password outside git.
+Scripts in the repo (for example `lab/`), PowerShell with the Hyper-V module, all values in one settings file, the lab password outside git. Everything inside the VM runs through PowerShell Direct (`Invoke-Command -VMName dc1`, `Copy-Item -ToSession`), which works "regardless of network configuration or remote management settings" and so needs no WinRM `TrustedHosts` entry on the host. It does need a Hyper-V administrator on the host and VM credentials. ([PowerShell Direct](https://learn.microsoft.com/en-us/windows-server/virtualization/hyper-v/powershell-direct))
 
 1. **Host, once (owner, as admin):** enable Hyper-V, restart; create the internal switch and host adapter IP.
 2. **VM:** `New-VHD` / `New-VM` (generation 2, 4 GB, 2 vCPU, two adapters: internal and Default Switch), boot the ISO with an `autounattend.xml` for Server Core, a fixed computer name `dc1` and the lab admin password.
-3. **Domain:** `Install-ADDSForest -DomainName lab.test`, then create `tester`, `svc-sql` and `svc-pg`, and activate the evaluation over the Default Switch adapter.
+3. **Domain:** `Install-ADDSForest -DomainName lab.test`, then create `tester`, `svc-sql` and `svc-pg`, and activate the evaluation over the Default Switch adapter. Stop that adapter registering its NAT address in `lab.test` DNS (`Set-DnsClient -RegisterThisConnectionsAddress $false`), or `dc1.lab.test` can resolve to an address the host cannot reach.
 4. **Host DNS (owner, as admin):** add the NRPT rule for `.lab.test`.
 5. **Gate:** `runas /netonly /user:tester@lab.test cmd`, then in that window `klist get host/dc1.lab.test`. If no ticket comes back, stop here; the lab cannot work and the manual checklist stays the only Kerberos test. This answers the open question before anything else is installed.
 6. **SQL Server 2025 Developer:** unattended setup with a configuration file, TCP 1433, service account `LAB\svc-sql`; `setspn -S MSSQLSvc/dc1.lab.test:1433 LAB\svc-sql` and `MSSQLSvc/dc1.lab.test`; Windows login for `LAB\tester` with `VIEW SERVER PERFORMANCE STATE`.
 7. **PostgreSQL 18:** the same pinned binaries as #16, registered as a service under `LAB\svc-pg`; `setspn -S POSTGRES/dc1.lab.test LAB\svc-pg`; `pg_hba.conf` line `host all all <lab subnet> sspi map=lab` with an ident map for `tester@LAB`; `log_connections = 'authentication'`.
-8. **Deny NTLM:** set "Restrict NTLM: Incoming NTLM traffic" to "Deny all accounts" on the VM.
+8. **Deny NTLM:** set "Restrict NTLM: Incoming NTLM traffic" to "Deny all accounts" on the VM. Local connections on the server itself use NTLM (SPN page, "Authentication defaults"), so after this step Windows sign-in from inside the VM fails; maintenance uses a SQL login (mixed mode, as #16 chose) and the PostgreSQL superuser over a local `scram-sha-256` line.
 9. **Harness:** a test target that starts the VM, waits for port 88 and 1433 and 5432, runs the Kerberos tests through `CreateProcessWithLogonW`, and stops the VM.
 
 ### Recommendation
@@ -130,4 +131,5 @@ Build it, but in two stages. Stage one is steps 1–5, about half a day: if the 
 - Whether `pg_ident.conf` sees `tester@LAB` or `tester@LAB.TEST` with the default `compat_realm = 1`; the docs say the NetBIOS name is used, which suggests `LAB`.
 - Disk, memory and time figures: estimates, nothing was built.
 - Whether a stopped evaluation VM's 180 days keep counting, and the rearm count.
+- That the Default Switch exists on Windows 11 Pro once Hyper-V is enabled and gives VMs internet through NAT.
 - Whether `runas /netonly` works with the UPN form. The runas page documents `user@domain` for `/user:` in general.
