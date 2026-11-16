@@ -9,6 +9,7 @@ repository = "https://github.com/noctelvirei/database-ide"
 
 [workspace.dependencies]
 clap = { version = "4.6.7", features = ["derive"] }
+sqlparser = { version = "=0.64.0", features = ["visitor"] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"
