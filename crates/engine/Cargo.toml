@@ -6,6 +6,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+csv.workspace = true
+rust_xlsxwriter.workspace = true
 futures.workspace = true
 keyring.workspace = true
 toml.workspace = true
