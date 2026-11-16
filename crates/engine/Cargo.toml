@@ -7,6 +7,8 @@ repository.workspace = true
 
 [dependencies]
 futures.workspace = true
+keyring.workspace = true
+toml.workspace = true
 quick-xml.workspace = true
 serde.workspace = true
 serde_json.workspace = true

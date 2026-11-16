@@ -1,0 +1,45 @@
+<?xml version="1.0"?>
+<model xmlns="http://schemas.serviceml.org/smlif/2007/02" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:rs="http://schemas.microsoft.com/sqlserver/RegisteredServers/2007/08" xmlns:sfc="http://schemas.microsoft.com/sqlserver/sfc/serialization/2007/08" xmlns:sml="http://schemas.serviceml.org/sml/2007/02">
+  <identity><name>urn:uuid:00000000-0000-0000-0000-000000000001</name><baseURI>http://documentcollection/</baseURI></identity>
+  <xs:bufferSchema><definitions><document>
+    <docinfo><aliases><alias>/system/schema/RegisteredServers</alias></aliases><sfc:version DomainVersion="1"/></docinfo>
+    <data><xs:schema targetNamespace="http://schemas.microsoft.com/sqlserver/RegisteredServers/2007/08" elementFormDefault="qualified">
+      <xs:element name="ServerGroup"><xs:complexType><xs:sequence><xs:any processContents="skip" minOccurs="0" maxOccurs="unbounded"/></xs:sequence></xs:complexType></xs:element>
+      <rs:bufferData><instances>
+        <document>
+          <docinfo><aliases><alias>/RegisteredServersStore</alias></aliases><sfc:version DomainVersion="1"/></docinfo>
+          <data><rs:RegisteredServersStore><rs:ServerGroups><sfc:Collection><sfc:Reference sml:ref="true"><sml:Uri>/RegisteredServersStore/ServerGroup/DatabaseEngineServerGroup</sml:Uri></sfc:Reference></sfc:Collection></rs:ServerGroups></rs:RegisteredServersStore></data>
+        </document>
+        <document>
+          <docinfo><aliases><alias>/RegisteredServersStore/ServerGroup/DatabaseEngineServerGroup/ServerGroup/Prod/RegisteredServer/Orders</alias></aliases><sfc:version DomainVersion="1"/></docinfo>
+          <data><rs:RegisteredServer>
+            <rs:Parent><sfc:Reference sml:ref="true"><sml:Uri>/RegisteredServersStore/ServerGroup/DatabaseEngineServerGroup/ServerGroup/Prod</sml:Uri></sfc:Reference></rs:Parent>
+            <rs:Name type="string">Orders &amp; Reports</rs:Name><rs:ServerName type="string">sql01.example.test</rs:ServerName>
+            <rs:UseCustomConnectionColor type="boolean">true</rs:UseCustomConnectionColor><rs:CustomConnectionColorArgb type="int">-65536</rs:CustomConnectionColorArgb>
+            <rs:ServerType type="ServerType">DatabaseEngine</rs:ServerType>
+            <rs:ConnectionStringWithEncryptedPassword type="string">data source=tcp:sql01.example.test,1444;initial catalog=orders;user id=reader;password=fixture-encrypted-password;pooling=False</rs:ConnectionStringWithEncryptedPassword>
+            <rs:CredentialPersistenceType type="CredentialPersistenceType">PersistLoginNameAndPassword</rs:CredentialPersistenceType>
+          </rs:RegisteredServer></data>
+        </document>
+        <document>
+          <docinfo><aliases><alias>/RegisteredServersStore/ServerGroup/DatabaseEngineServerGroup/ServerGroup/Prod</alias></aliases><sfc:version DomainVersion="1"/></docinfo>
+          <data><rs:ServerGroup>
+            <rs:Parent><sfc:Reference sml:ref="true"><sml:Uri>/RegisteredServersStore/ServerGroup/DatabaseEngineServerGroup</sml:Uri></sfc:Reference></rs:Parent>
+            <rs:Name type="string">Prod</rs:Name><rs:ServerType type="ServerType">DatabaseEngine</rs:ServerType>
+          </rs:ServerGroup></data>
+        </document>
+        <document>
+          <docinfo><aliases><alias>/RegisteredServersStore/ServerGroup/DatabaseEngineServerGroup</alias></aliases><sfc:version DomainVersion="1"/></docinfo>
+          <data><rs:ServerGroup>
+            <rs:Parent><sfc:Reference sml:ref="true"><sml:Uri>/RegisteredServersStore</sml:Uri></sfc:Reference></rs:Parent>
+            <rs:Name type="string">DatabaseEngineServerGroup</rs:Name><rs:ServerType type="ServerType">DatabaseEngine</rs:ServerType>
+          </rs:ServerGroup></data>
+        </document>
+        <document>
+          <docinfo><aliases><alias>/RegisteredServersStore/ServerGroup/AnalysisServicesServerGroup</alias></aliases><sfc:version DomainVersion="1"/></docinfo>
+          <data><rs:ServerGroup><rs:Name type="string">AnalysisServicesServerGroup</rs:Name><rs:ServerType type="ServerType">AnalysisServices</rs:ServerType></rs:ServerGroup></data>
+        </document>
+      </instances></rs:bufferData>
+    </xs:schema></data>
+  </document></definitions></xs:bufferSchema>
+</model>
