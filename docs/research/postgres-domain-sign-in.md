@@ -38,6 +38,7 @@ Add domain sign-in to the tokio-postgres fork that #5 already requires: cherry-p
 - `src/include/port/win32_port.h` says "Always build with SSPI support" and defines `ENABLE_SSPI 1` on every Windows build. `ENABLE_GSS` needs MIT Kerberos at build time ([meson `-Dgssapi`](https://www.postgresql.org/docs/18/install-meson.html)).
 - In `fe-auth.c`, a libpq with SSPI and without GSSAPI answers both code 7 and code 9 through SSPI: `pg_SSPI_startup(conn, 0, ...)` for GSS, which acquires the `kerberos` package, and `pg_SSPI_startup(conn, 1, ...)` for SSPI, which acquires `negotiate`. Both pass a null identity, so they use the signed-in Windows account, and both target `krbsrvname/host`. `gsslib` matters only on builds with both libraries ([libpq connection parameters](https://www.postgresql.org/docs/18/libpq-connect.html)).
 - libpq's only TLS library is OpenSSL: "The only LIBRARY supported is `openssl`" ([meson `-Dssl`](https://www.postgresql.org/docs/18/install-meson.html)). With `sslrootcert=system`, `fe-secure-openssl.c` calls `SSL_CTX_set_default_verify_paths`, which loads OpenSSL's own default file and directory, steered by `SSL_CERT_FILE` and `SSL_CERT_DIR` ([libpq connection parameters](https://www.postgresql.org/docs/18/libpq-connect.html)).
+- In the OpenSSL 4.0.3 source shipped in openssl-src 400.0.2, `X509_STORE_set_default_paths_ex` (`crypto/x509/x509_d2.c`) adds the default file, the default directory and a store lookup with a NULL URI, whose comment says it activates "any default URIs (presently none)". The Windows certificate store loader exists (`providers/implementations/storemgmt/winstore_store.c`) but answers only URIs starting `org.openssl.winstore:`, which libpq never passes. So a libpq built on it does not read the Windows certificate store.
 
 ### libpq through Rust
 
@@ -58,7 +59,7 @@ Add domain sign-in to the tokio-postgres fork that #5 already requires: cherry-p
 - tokio-postgres 0.7.18 `connect_raw.rs` returns "unsupported authentication method" for `AuthenticationKerberosV5`, `AuthenticationScmCredential`, `AuthenticationGss` and `AuthenticationSspi`. Sign-in happens inside `connect_raw`, and `Config::connect_raw` still runs the handshake itself, so a caller cannot do the GSS exchange from outside the crate.
 - postgres-protocol 0.6.12 already parses codes 7, 8 and 9 (`AuthenticationGss`, `AuthenticationGssContinue(body)`, `AuthenticationSspi`), and `frontend::sasl_response` writes the `'p'` message with a raw binary body, which is the GSSResponse framing.
 - [Issue #994](https://github.com/rust-postgres/rust-postgres/issues/994) "Support gssapi authentication", opened 2023-02-11, is open with no replies.
-- [PR #1379](https://github.com/rust-postgres/rust-postgres/pull/1379) "Add GSSAPI/SSPI (Kerberos) authentication behind a `gss` feature", opened 2026-09-01: +1,194/−10 lines in 9 files, one commit, mergeable, no reviews or comments. In the same period the maintainer merged other PRs (most recent 2026-10-03).
+- [PR #1379](https://github.com/rust-postgres/rust-postgres/pull/1379) "Add GSSAPI/SSPI (Kerberos) authentication behind a `gss` feature", opened 2026-09-01: +1,194/−10 lines in 9 files, one commit, mergeable, no reviews or comments. In the same period paolobarbolini merged five other PRs (#1363 to #1390, the latest on 2026-10-03).
   - Size: the exchange loop and config in `gss/mod.rs` are 217 lines; the Windows SSPI client in `gss/windows.rs` is 304 lines over `windows-sys` 0.59; the Unix client over `libgssapi` is 290 lines; error classification is 216 lines; `connect_raw.rs` gains 37 lines.
   - Windows uses `AcquireCredentialsHandleW("Kerberos", ...)` for both code 7 and code 9; the file explains that it avoids `Negotiate` so that an NTLM fallback fails early. With no principal configured it passes no identity, so it uses the signed-in account.
   - Its test table lists Windows only with an explicit principal and password against an MIT KDC. Ambient Windows credentials and SSPI servers were not tested.
@@ -77,7 +78,7 @@ Add domain sign-in to the tokio-postgres fork that #5 already requires: cherry-p
 | | Fork with #1358 + #1379 | libpq via pq-sys (bundled) | tokio-postgres plus libpq for domain sign-in |
 |---|---|---|---|
 | `gss` servers (code 7) | Yes, SSPI `Kerberos` | Yes, SSPI `kerberos` | Yes, through libpq |
-| `sspi` servers (code 9) | Not as submitted: uses `Kerberos`; needs `Negotiate` to match libpq and allow NTLM | Yes, SSPI `negotiate` | Yes, through libpq |
+| `sspi` servers (code 9) | Kerberos only, no NTLM fallback; `Negotiate` would match libpq | Yes, SSPI `negotiate` | Yes, through libpq |
 | GSS session encryption | No | No (bundled Windows build has no `ENABLE_GSS`) | No |
 | TLS | native-tls (SChannel) as #5 chose | OpenSSL only; Windows store not read | Two TLS stacks |
 | Build on this PC | Pure Rust plus `windows-sys` | C via `cc`; TLS needs Perl and OpenSSL source | Both |
@@ -104,6 +105,7 @@ Add domain sign-in to the tokio-postgres fork that #5 already requires: cherry-p
 
 - No sign-in was run against a live server. This PC has no PostgreSQL install and is not joined to a domain.
 - Whether a Windows PostgreSQL server using `sspi` accepts the raw Kerberos token PR #1379 sends as submitted.
+- That a local PostgreSQL 18 `sspi` server on this PC completes sign-in for a local account over NTLM with a `Negotiate` client, and that a `Kerberos`-only client cannot. This follows from the SSPI manual page, not from a run.
 - Whether the patched fork's tests pass; only `cargo check` was run.
 - The size and build of pq-sys with `bundled` (OpenSSL), and whether openssl-src builds with Git for Windows' Perl.
 - How the upstream maintainer would receive #1379.
