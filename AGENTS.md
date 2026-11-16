@@ -12,7 +12,7 @@ Once the spec is done, the implementation plan moves to Linear as tickets. Codex
 
 ### Issue tracker
 
-Issues, the wayfinder map and its tickets live in GitHub Issues on the private repo noctelvirei/database-ide, through the `gh` CLI. See `docs/agents/issue-tracker.md`.
+Issues, the wayfinder map and its tickets live in GitHub Issues on the public repo noctelvirei/database-ide (open source since 2026-11-16, MIT OR Apache-2.0; keep this PC's paths and other private projects out of issues, comments and files), through the `gh` CLI. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
