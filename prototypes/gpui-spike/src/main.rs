@@ -8,11 +8,13 @@
 //! - `SPIKE_DUMP`: file F12 writes the app state to, as JSON, for the keyboard script.
 //! - `SPIKE_AUTOSCROLL`: file to write frame-time statistics to after scrolling the grid
 //!   from the first row to the last; `SPIKE_AUTOSCROLL_STEP` sets the rows per frame.
+//! - `SPIKE_KEYSCRIPT`: file to append the keyboard script's per-step state to; runs it.
 //! - `SPIKE_DATA_DIR`: folder for the data file (default: a folder in the temp directory).
 #![windows_subsystem = "windows"]
 
 mod completion;
 mod grid;
+mod keyscript;
 mod plan;
 
 use std::rc::Rc;
@@ -62,10 +64,10 @@ struct AutoScroll {
     intervals_ms: Vec<f64>,
 }
 
-struct Workbench {
+pub(crate) struct Workbench {
     editor: Entity<EditorState>,
     table: Entity<TableState<FileRows>>,
-    plan: Entity<PlanView>,
+    pub(crate) plan: Entity<PlanView>,
     details_focus: FocusHandle,
     first_frame_written: bool,
 }
@@ -111,13 +113,18 @@ impl Workbench {
     /// Writes the state the keyboard script checks to `SPIKE_DUMP`, as JSON.
     fn dump_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Ok(path) = std::env::var("SPIKE_DUMP") else { return };
+        let _ = std::fs::write(path, self.state_json(window, cx));
+    }
+
+    /// The state the keyboard script checks, as one line of JSON.
+    pub(crate) fn state_json(&mut self, window: &mut Window, cx: &mut Context<Self>) -> String {
         let pane = self.focused_pane(window, cx);
         let editor = self.editor.read(cx);
         let search = editor.search_session();
         let completion = editor.completion_menu_state();
         let table = self.table.read(cx);
         let plan = self.plan.read(cx);
-        let json = format!(
+        format!(
             "{{\"focused_pane\":\"{:?}\",\"editor_text\":{:?},\"cursor\":{},\"completion_open\":{},\"completion_items\":{:?},\"search_open\":{},\"replace_mode\":{},\"search_query\":{:?},\"grid_selected_cell\":{:?},\"grid_pages_read\":{},\"grid_cached_pages\":{},\"plan_selected\":{:?}}}\n",
             pane,
             editor.value().to_string(),
@@ -131,8 +138,7 @@ impl Workbench {
             table.delegate().pages_read,
             table.delegate().cached_pages(),
             plan.selected.map(|i| plan.nodes[i].name),
-        );
-        let _ = std::fs::write(path, json);
+        )
     }
 
     fn start_autoscroll(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -204,7 +210,7 @@ fn pane_frame(focused: bool, cx: &App) -> gpui::Div {
     let theme = cx.theme();
     div()
         .border_2()
-        .border_color(if focused { theme.primary } else { theme.border })
+        .border_color(if focused { plan::FOCUS_BLUE } else { theme.border })
         .overflow_hidden()
 }
 
@@ -217,6 +223,10 @@ impl Render for Workbench {
                 let _ = std::fs::write(path, ms.to_string());
             }
             self.start_autoscroll(window, cx);
+            if let Ok(out) = std::env::var("SPIKE_KEYSCRIPT") {
+                cx.spawn_in(window, async move |this, cx| keyscript::start(out, this, cx).await)
+                    .detach();
+            }
         }
         let focused = self.focused_pane(window, cx);
         let theme = cx.theme().clone();
@@ -251,6 +261,15 @@ impl Render for Workbench {
             .on_action(cx.listener(|this, _: &GridFirst, _, cx| this.grid_jump(false, cx)))
             .on_action(cx.listener(|this, _: &GridLast, _, cx| this.grid_jump(true, cx)))
             .on_action(cx.listener(|this, _: &DumpState, w, cx| this.dump_state(w, cx)))
+            .capture_key_down(|event, _, _| {
+                // Measurement only: log every key the window receives.
+                if let Ok(dump) = std::env::var("SPIKE_DUMP") {
+                    use std::io::Write as _;
+                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(format!("{dump}.keys.txt")) {
+                        let _ = writeln!(f, "{}", format!("{:?}", event.keystroke));
+                    }
+                }
+            })
             .child(
                 div()
                     .px_2()
@@ -304,6 +323,14 @@ fn main() -> anyhow::Result<()> {
     }
     grid::ensure_data_file(&dir)?;
     let rows = FileRows::open(&dir)?;
+    // The window has no console, so panics go to a file next to the state dump.
+    if let Ok(dump) = std::env::var("SPIKE_DUMP") {
+        std::panic::set_hook(Box::new(move |info| {
+            let bt = std::backtrace::Backtrace::force_capture();
+            let _ = std::fs::write(format!("{dump}.panic.txt"), format!("{info}
+{bt}"));
+        }));
+    }
 
     gpui_platform::application().run(move |cx: &mut App| {
         gpui_component::init(cx);
@@ -344,6 +371,16 @@ fn main() -> anyhow::Result<()> {
                 ] {
                     cx.on_focus_in(&handle, window, |_, _, cx| cx.notify()).detach();
                 }
+                // The grid's arrow keys do nothing until a cell is selected, so select the
+                // first cell when the grid first gets focus.
+                cx.on_focus_in(&table.focus_handle(cx), window, |this: &mut Workbench, _, cx| {
+                    this.table.update(cx, |t, cx| {
+                        if t.selected_cell().is_none() {
+                            t.set_selected_cell(0, 0, cx);
+                        }
+                    });
+                })
+                .detach();
                 cx.observe(&plan, |_, _, cx| cx.notify()).detach();
                 Workbench { editor: editor.clone(), table, plan, details_focus, first_frame_written: false }
             });

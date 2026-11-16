@@ -16,10 +16,12 @@ actions!(plan, [SelectPrev, SelectNext, SelectParent, SelectChild]);
 
 const CONTEXT: &str = "PlanTree";
 const BOX_W: f32 = 104.;
-const BOX_H: f32 = 64.;
-const COL_W: f32 = 150.;
-const ROW_H: f32 = 84.;
+const BOX_H: f32 = 60.;
+const COL_W: f32 = 128.;
+const ROW_H: f32 = 76.;
 const MARGIN: f32 = 16.;
+/// Border colour of the focused pane and the selected operator.
+pub const FOCUS_BLUE: Hsla = Hsla { h: 0.6, s: 0.85, l: 0.5, a: 1. };
 
 pub fn init(cx: &mut App) {
     cx.bind_keys([
@@ -116,6 +118,11 @@ impl PlanView {
             focus: cx.focus_handle(),
             hit_boxes: Rc::default(),
         }
+    }
+
+    /// Centre of node `ix` in window coordinates, as last painted.
+    pub fn node_center(&self, ix: usize) -> Option<gpui::Point<Pixels>> {
+        self.hit_boxes.borrow().get(ix).map(|b| b.center())
     }
 
     fn select(&mut self, ix: usize, cx: &mut Context<Self>) {
@@ -217,7 +224,7 @@ impl Render for PlanView {
         let is_focused = self.focus.contains_focused(window, cx);
         let theme = cx.theme();
         let (fg, muted, border, accent, bg) =
-            (theme.foreground, theme.muted_foreground, theme.border, theme.primary, theme.background);
+            (theme.foreground, theme.muted_foreground, theme.border, FOCUS_BLUE, theme.background);
         let focused_border = if is_focused { accent } else { border };
         let layout: Vec<(usize, usize, Option<usize>)> =
             self.nodes.iter().map(|n| (n.col, n.row, n.parent)).collect();
@@ -320,10 +327,10 @@ impl Render for PlanView {
                             paint_icon(labels[i].0, icon, window);
                             let (name, cost) = (labels[i].1, labels[i].2);
                             let short: String = name.chars().take(17).collect();
-                            paint_text(&short, point(b.origin.x + px(4.), b.origin.y + px(32.)), px(11.), fg, window, cx);
+                            paint_text(&short, point(b.origin.x + px(4.), b.origin.y + px(30.)), px(11.), fg, window, cx);
                             paint_text(
                                 &format!("Cost: {cost} %"),
-                                point(b.origin.x + px(4.), b.origin.y + px(47.)),
+                                point(b.origin.x + px(4.), b.origin.y + px(44.)),
                                 px(11.),
                                 if cost >= 15 { hsla(0., 0.7, 0.55, 1.) } else { muted },
                                 window,

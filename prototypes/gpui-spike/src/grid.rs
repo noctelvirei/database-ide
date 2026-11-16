@@ -110,7 +110,7 @@ impl FileRows {
             .iter()
             .enumerate()
             .map(|(i, name)| {
-                Column::new(format!("c{i}"), *name).width(px(if i == 9 { 220. } else { 130. }))
+                Column::new(format!("c{i}"), *name).width(px(match i { 9 => 220., 2 => 170., _ => 130. }))
             })
             .collect();
         Ok(Self {
