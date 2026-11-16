@@ -38,6 +38,26 @@ _Avoid_: Bulk export, dump
 A statement the IDE asks the user to confirm before running: an `UPDATE` or `DELETE` with no `WHERE`, a `DROP` or a `TRUNCATE`.
 _Avoid_: Destructive query, unsafe SQL
 
+**Edit mode**:
+The state of a results grid in which its cells can be changed; grids are read-only until the user turns it on.
+_Avoid_: Edit window, editable grid
+
+**Editable result**:
+A result that comes from one base table and includes that table's primary key or a unique key, so each row maps to exactly one table row.
+_Avoid_: Updatable result set
+
+**Pending changes**:
+The edited cells, added rows and deleted rows in a grid that have not been saved to the server yet.
+_Avoid_: Dirty rows, unsaved edits
+
+**Save**:
+Sending a grid's pending changes to the server as one script in one transaction, after the user has seen the script.
+_Avoid_: Commit, apply
+
+**Edit conflict**:
+A pending change whose row no longer holds the values it had when it was read, so saving it would overwrite someone else's change.
+_Avoid_: Concurrency error, collision
+
 ## Plans
 
 **Estimated plan**:
