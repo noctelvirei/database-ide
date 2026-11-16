@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<model xmlns="http://schemas.serviceml.org/smlif/2007/02" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:rs="http://schemas.microsoft.com/sqlserver/RegisteredServers/2007/08" xmlns:sfc="http://schemas.microsoft.com/sqlserver/sfc/serialization/2007/08" xmlns:sml="http://schemas.serviceml.org/sml/2007/02">
+  <identity><name>urn:uuid:00000000-0000-0000-0000-000000000002</name><baseURI>http://documentcollection/</baseURI></identity>
+  <xs:bufferSchema><definitions><document>
+    <docinfo><aliases><alias>/system/schema/RegisteredServers</alias></aliases><sfc:version DomainVersion="1"/></docinfo>
+    <data><xs:schema targetNamespace="http://schemas.microsoft.com/sqlserver/RegisteredServers/2007/08" elementFormDefault="qualified">
+      <rs:bufferData><instances>
+        <document>
+          <docinfo><aliases><alias>/RegisteredServersStore/ServerGroup/DatabaseEngineServerGroup/ServerGroup/Dev</alias></aliases><sfc:version DomainVersion="1"/></docinfo>
+          <data><rs:ServerGroup>
+            <rs:Parent><sfc:Reference sml:ref="true"><sml:Uri>/RegisteredServersStore/ServerGroup/DatabaseEngineServerGroup</sml:Uri></sfc:Reference></rs:Parent>
+            <rs:Name type="string">Dev</rs:Name><rs:ServerType type="ServerType">DatabaseEngine</rs:ServerType>
+          </rs:ServerGroup></data>
+        </document>
+        <document>
+          <docinfo><aliases><alias>/RegisteredServersStore/ServerGroup/DatabaseEngineServerGroup/ServerGroup/Dev/RegisteredServer/Inventory</alias></aliases><sfc:version DomainVersion="1"/></docinfo>
+          <data><rs:RegisteredServer>
+            <rs:Parent><sfc:Reference sml:ref="true"><sml:Uri>/RegisteredServersStore/ServerGroup/DatabaseEngineServerGroup/ServerGroup/Dev</sml:Uri></sfc:Reference></rs:Parent>
+            <rs:Name type="string">Inventory</rs:Name><rs:ServerName type="string">sql02.example.test\DEV</rs:ServerName>
+            <rs:ServerType type="ServerType">DatabaseEngine</rs:ServerType>
+            <rs:ConnectionStringWithEncryptedPassword type="string"><![CDATA[data source=sql02.example.test\DEV;initial catalog=inventory;integrated security=SSPI;password=fixture-ignored-password]]></rs:ConnectionStringWithEncryptedPassword>
+            <rs:CredentialPersistenceType type="CredentialPersistenceType">PersistLoginName</rs:CredentialPersistenceType>
+          </rs:RegisteredServer></data>
+        </document>
+      </instances></rs:bufferData>
+    </xs:schema></data>
+  </document></definitions></xs:bufferSchema>
+</model>
