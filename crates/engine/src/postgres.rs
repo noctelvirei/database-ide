@@ -204,14 +204,7 @@ impl Postgres {
         let requests = self.requests.clone();
         let source = stream::once(async move {
             if requests.send(request).await.is_err() {
-                return stream::once(async {
-                    Event::Error {
-                        text: "PostgreSQL connection is closed".into(),
-                        line: None,
-                        code: None,
-                    }
-                })
-                .boxed();
+                return stream::once(async { closed() }).boxed();
             }
             stream::unfold(receiver, |mut receiver| async move {
                 receiver.recv().await.map(|event| (event, receiver))
@@ -260,6 +253,21 @@ async fn worker(
                 }
             }
         }
+    }
+    // A request queued while the worker stopped would otherwise end with Done alone,
+    // which reads as success; answer each with the closed-connection error instead.
+    requests.close();
+    while let Ok(request) = requests.try_recv() {
+        execution::send(&request, closed()).await;
+    }
+}
+
+/// The error a run reports when the session's connection is gone.
+fn closed() -> Event {
+    Event::Error {
+        text: "PostgreSQL connection is closed".into(),
+        line: None,
+        code: None,
     }
 }
 

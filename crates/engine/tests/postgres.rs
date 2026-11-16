@@ -599,3 +599,33 @@ async fn pg_cancellation_racing_completion_does_not_cancel_the_next_query() {
     let third = cancel_near_completion(&mut session).await;
     assert_eq!(third[1], Event::Rows(vec![vec![Value::Integer(19)]]));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_batch_on_a_terminated_session_reports_an_error() {
+    let database = database().await;
+    let mut session = open(&database).await;
+    let events: Vec<_> = session.run("SELECT pg_backend_pid()").collect().await;
+    let Event::Rows(rows) = &events[1] else {
+        panic!("{events:?}")
+    };
+    let Value::Integer(pid) = rows[0][0] else {
+        panic!("{rows:?}")
+    };
+    let mut killer = open(&database).await;
+    setup(&mut killer, &format!("SELECT pg_terminate_backend({pid})")).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let first: Vec<_> = session.run("SELECT 1").collect().await;
+    let second: Vec<_> = session.run("SELECT 1").collect().await;
+    assert!(
+        first
+            .iter()
+            .any(|event| matches!(event, Event::Error { .. })),
+        "{first:?}"
+    );
+    assert!(
+        second
+            .iter()
+            .any(|event| matches!(event, Event::Error { .. })),
+        "{second:?}"
+    );
+}
