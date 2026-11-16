@@ -189,7 +189,10 @@ impl Shell {
             (Variant::B, Pane::Messages) => {
                 (self.drawer_open, self.bottom) = (true, Bottom::Messages)
             }
-            (Variant::B, Pane::Plan) => self.plan_panel_open = true,
+            (Variant::B, Pane::Plan) => {
+                // The side panel shows the plan only when the plan is the selection.
+                (self.plan_panel_open, self.selection) = (true, Selection::PlanNode)
+            }
             (_, Pane::Results) => self.bottom = Bottom::Results,
             (Variant::A, Pane::Messages) => self.bottom = Bottom::Messages,
             (_, Pane::Plan) => self.bottom = Bottom::Plan,
@@ -286,7 +289,7 @@ impl Shell {
 fn plan_scale(variant: Variant) -> f32 {
     match variant {
         Variant::A => 1.,
-        Variant::B => 0.62,
+        Variant::B => 0.5,
         Variant::C => 0.85,
     }
 }

@@ -49,5 +49,5 @@ F5, Run and the database dropdowns only draw; nothing runs.
 ## Built from
 
 - gpui-component's `Editor`, `DataTable`, `tree` (object explorer) and `command::Command` (B's palette)
-- The spike's `grid.rs`, `completion.rs` and `plan.rs`; `plan.rs` gains a scale factor so the plan fits B's side panel (0.62) and C's lower pane (0.85)
+- The spike's `grid.rs`, `completion.rs` and `plan.rs`; `plan.rs` gains a scale factor so the plan fits B's side panel (0.5) and C's lower pane (0.85)
 - Tab strips, the drawer, the stripe and the inspector are plain `div`s
