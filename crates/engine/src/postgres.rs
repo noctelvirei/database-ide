@@ -16,6 +16,7 @@ use crate::session::{Event, PlanMode, Run, Session};
 
 mod cancel;
 mod execution;
+mod metadata;
 mod plans;
 mod values;
 
@@ -158,7 +159,8 @@ pub async fn connect(details: &Connection, password: Option<&str>) -> Result<Pos
         .await
         .map_err(|_| Error::ConnectTimeout)??
     };
-    let cancellation = cancel::Cancellation::new(&client, address, details.host.clone(), tls);
+    let cancellation =
+        cancel::Cancellation::new(&client, address, details.host.clone(), tls.clone());
     let (notices_tx, mut notices) = mpsc::channel(1);
     let background = ConnectionTask(tokio::spawn(async move {
         while let Some(message) = future::poll_fn(|cx| connection.poll_message(cx)).await {
@@ -192,7 +194,14 @@ pub async fn connect(details: &Connection, password: Option<&str>) -> Result<Pos
     idle_query(&client, &mut notices, &setup).await?;
     let database = details.database.as_deref().unwrap_or(user).to_owned();
     let (requests, receiver) = mpsc::channel(1);
-    tokio::spawn(worker(client, notices, receiver, cancellation, background));
+    tokio::spawn(worker(
+        client,
+        notices,
+        receiver,
+        cancellation,
+        background,
+        metadata::Metadata::new(config, tls),
+    ));
     Ok(Postgres { database, requests })
 }
 
@@ -247,6 +256,7 @@ async fn worker(
     mut requests: mpsc::Receiver<Request>,
     cancellation: cancel::Cancellation,
     _background: ConnectionTask,
+    mut metadata: metadata::Metadata,
 ) {
     loop {
         tokio::select! {
@@ -263,7 +273,7 @@ async fn worker(
                 let failed = if let Some(mode) = request.mode {
                     plans::run(&client, &mut notices, &cancellation, &request, mode).await.is_err()
                 } else {
-                    execution::run(&client, &mut notices, &cancellation, &request, &request.batch, false).await.is_err()
+                    execution::run(&client, &mut notices, &cancellation, &request, &request.batch, Some(&mut metadata)).await.is_err()
                 };
                 if failed { break; }
                 request.handled.store(true, Ordering::Release);

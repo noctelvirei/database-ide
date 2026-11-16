@@ -125,7 +125,7 @@ async fn run_inner(
             "\n".repeat(statement.line.saturating_sub(1) as usize),
             statement.sql
         );
-        let success = execution::run(client, notices, cancellation, request, &sql, true)
+        let success = execution::run(client, notices, cancellation, request, &sql, None)
             .await
             .map_err(|()| Error::CancelFailed)?;
         // Roll back on errors and cancellation too, independently of the event consumer.

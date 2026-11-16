@@ -208,8 +208,8 @@ async fn pg_notice_keeps_its_position_between_results() {
             line: None
         }
     );
-    assert_eq!(events[4], Event::RowCount(0));
-    assert_eq!(events[6], Event::Rows(vec![vec![Value::Integer(2)]]));
+    assert!(matches!(events[4], Event::ResultSetStarted { .. }));
+    assert_eq!(events[5], Event::Rows(vec![vec![Value::Integer(2)]]));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -658,4 +658,166 @@ async fn pg_danger_estimate_of_a_delete_inside_a_cte_is_unknown() {
         .await
         .unwrap();
     assert_eq!(estimates, vec![None]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_table_columns_report_base_table_column_and_nullability_before_rows() {
+    let database = database().await;
+    let mut session = open(&database).await;
+    setup(&mut session, "CREATE SCHEMA \"Shop\"; CREATE TABLE \"Shop\".\"Order\" (id int NOT NULL, note text); INSERT INTO \"Shop\".\"Order\" VALUES (1, NULL)").await;
+    let events: Vec<_> = session
+        .run("SELECT id AS alias, note FROM \"Shop\".\"Order\"")
+        .collect()
+        .await;
+    assert_eq!(
+        events[0],
+        Event::ResultSetStarted {
+            columns: vec![
+                Column {
+                    name: "alias".into(),
+                    type_name: "int4".into(),
+                    category: TypeCategory::Integer,
+                    nullable: Some(false),
+                    base_table: Some("\"Shop\".\"Order\"".into()),
+                    base_column: Some("id".into())
+                },
+                Column {
+                    name: "note".into(),
+                    type_name: "text".into(),
+                    category: TypeCategory::Text,
+                    nullable: Some(true),
+                    base_table: Some("\"Shop\".\"Order\"".into()),
+                    base_column: Some("note".into())
+                },
+            ]
+        }
+    );
+    assert_eq!(
+        events[1],
+        Event::Rows(vec![vec![Value::Integer(1), Value::Null]])
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_expression_column_reports_no_base_table_column_or_nullability() {
+    let database = database().await;
+    let mut session = open(&database).await;
+    setup(
+        &mut session,
+        "CREATE TABLE t (id int NOT NULL); INSERT INTO t VALUES (1)",
+    )
+    .await;
+    let events: Vec<_> = session.run("SELECT id + 1 AS total FROM t").collect().await;
+    assert_eq!(
+        events[0],
+        Event::ResultSetStarted {
+            columns: vec![Column {
+                name: "total".into(),
+                type_name: "int4".into(),
+                category: TypeCategory::Integer,
+                nullable: None,
+                base_table: None,
+                base_column: None
+            },]
+        }
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_join_columns_report_their_own_base_tables() {
+    let database = database().await;
+    let mut session = open(&database).await;
+    setup(
+        &mut session,
+        "CREATE TABLE a (id int NOT NULL); CREATE TABLE b (id int)",
+    )
+    .await;
+    let events: Vec<_> = session
+        .run("SELECT a.id, b.id FROM a JOIN b ON a.id = b.id")
+        .collect()
+        .await;
+    assert_eq!(
+        events[0],
+        Event::ResultSetStarted {
+            columns: vec![
+                Column {
+                    name: "id".into(),
+                    type_name: "int4".into(),
+                    category: TypeCategory::Integer,
+                    nullable: Some(false),
+                    base_table: Some("public.a".into()),
+                    base_column: Some("id".into())
+                },
+                Column {
+                    name: "id".into(),
+                    type_name: "int4".into(),
+                    category: TypeCategory::Integer,
+                    nullable: Some(true),
+                    base_table: Some("public.b".into()),
+                    base_column: Some("id".into())
+                },
+            ]
+        }
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_temporary_table_columns_report_their_base_table() {
+    let database = database().await;
+    let mut session = open(&database).await;
+    setup(
+        &mut session,
+        "CREATE TEMP TABLE local_rows (id int NOT NULL)",
+    )
+    .await;
+    let events: Vec<_> = session.run("SELECT id FROM local_rows").collect().await;
+    let Event::ResultSetStarted { columns } = &events[0] else {
+        panic!("{events:?}")
+    };
+    let (schema, table) = columns[0]
+        .base_table
+        .as_deref()
+        .unwrap()
+        .split_once('.')
+        .unwrap();
+    // PostgreSQL assigns the temporary namespace's numeric suffix at connection time.
+    assert!(schema.starts_with("pg_temp_"));
+    assert_eq!(table, "local_rows");
+    assert_eq!(columns[0].base_column.as_deref(), Some("id"));
+    assert_eq!(columns[0].nullable, Some(false));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_create_table_emits_no_row_count() {
+    let database = database().await;
+    let mut session = open(&database).await;
+    let events: Vec<_> = session.run("CREATE TABLE t (id int)").collect().await;
+    assert!(matches!(events[0], Event::Done { .. }));
+    assert_eq!(events.len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_update_of_three_rows_emits_row_count_three() {
+    let database = database().await;
+    let mut session = open(&database).await;
+    setup(
+        &mut session,
+        "CREATE TABLE t (id int); INSERT INTO t VALUES (1), (2), (3)",
+    )
+    .await;
+    let events: Vec<_> = session.run("UPDATE t SET id = id + 1").collect().await;
+    assert_eq!(events[0], Event::RowCount(3));
+    assert!(matches!(events[1], Event::Done { .. }));
+    assert_eq!(events.len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_select_of_zero_rows_emits_row_count_zero() {
+    let database = database().await;
+    let mut session = open(&database).await;
+    let events: Vec<_> = session.run("SELECT 1 WHERE false").collect().await;
+    assert!(matches!(events[0], Event::ResultSetStarted { .. }));
+    assert_eq!(events[1], Event::RowCount(0));
+    assert!(matches!(events[2], Event::Done { .. }));
+    assert_eq!(events.len(), 3);
 }
