@@ -169,6 +169,15 @@ pub enum Event {
     },
 }
 
+/// Whether a plan asks the optimizer only or executes for runtime counters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanMode {
+    /// Ask the optimizer without executing the statement.
+    Estimated,
+    /// Execute for runtime counters; engines roll back statements that can change data.
+    Actual,
+}
+
 /// One open connection with a current database; implementations own protocol recovery.
 pub trait Session: fmt::Debug + Send {
     /// The connection's current database name, updated after database-changing batches.
@@ -188,6 +197,10 @@ pub trait Session: fmt::Debug + Send {
     /// }
     /// ```
     fn run<'a>(&'a mut self, batch: &'a str) -> Run<'a>;
+
+    /// Returns one raw plan per statement in batch order. Parse and server failures are
+    /// Error events. Actual plans execute SQL and can have nontransactional side effects.
+    fn plan<'a>(&'a mut self, batch: &'a str, mode: PlanMode) -> Run<'a>;
 }
 
 /// An idempotent cancellation request, safe to clone and call from another task.

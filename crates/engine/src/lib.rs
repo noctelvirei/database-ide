@@ -5,5 +5,6 @@ pub mod connections;
 pub mod danger;
 pub mod export;
 pub mod plan;
+pub mod postgres;
 pub mod session;
 pub mod spill;

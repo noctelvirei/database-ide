@@ -19,6 +19,10 @@ thiserror.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
+tokio-postgres.workspace = true
+postgres-native-tls.workspace = true
+native-tls.workspace = true
+rand.workspace = true
 
 [dev-dependencies]
 dbide-test-servers = { path = "../test-servers" }

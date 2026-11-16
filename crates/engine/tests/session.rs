@@ -16,6 +16,10 @@ struct ScriptedSession {
 }
 
 impl Session for ScriptedSession {
+    fn plan<'a>(&'a mut self, batch: &'a str, _mode: dbide_engine::session::PlanMode) -> Run<'a> {
+        self.run(batch)
+    }
+
     fn current_database(&self) -> &str {
         "sample"
     }
