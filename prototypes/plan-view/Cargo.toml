@@ -1,0 +1,19 @@
+# PROTOTYPE: throwaway plan view variants. Not product code.
+[package]
+name = "plan-view"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+# Same pins as the gpui spike (issue #8).
+gpui-component = { version = "=0.10.0", features = ["tree-sitter-sql"] }
+gpui = { package = "gpui-pre", version = "=0.3.12" }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.12" }
+lsp-types = "0.97"
+anyhow = "1"
+roxmltree = "0.20"
+serde_json = "1"
+
+# Standalone: keeps this prototype out of any Cargo workspace above it.
+[workspace]
