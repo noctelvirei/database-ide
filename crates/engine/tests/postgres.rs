@@ -661,7 +661,7 @@ async fn pg_danger_estimate_of_a_delete_inside_a_cte_is_unknown() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn pg_table_columns_report_base_table_column_and_nullability_before_rows() {
+async fn pg_table_columns_report_base_table_and_column_before_rows() {
     let database = database().await;
     let mut session = open(&database).await;
     setup(&mut session, "CREATE SCHEMA \"Shop\"; CREATE TABLE \"Shop\".\"Order\" (id int NOT NULL, note text); INSERT INTO \"Shop\".\"Order\" VALUES (1, NULL)").await;
@@ -677,7 +677,7 @@ async fn pg_table_columns_report_base_table_column_and_nullability_before_rows()
                     name: "alias".into(),
                     type_name: "int4".into(),
                     category: TypeCategory::Integer,
-                    nullable: Some(false),
+                    nullable: None,
                     base_table: Some("\"Shop\".\"Order\"".into()),
                     base_column: Some("id".into())
                 },
@@ -685,7 +685,7 @@ async fn pg_table_columns_report_base_table_column_and_nullability_before_rows()
                     name: "note".into(),
                     type_name: "text".into(),
                     category: TypeCategory::Text,
-                    nullable: Some(true),
+                    nullable: None,
                     base_table: Some("\"Shop\".\"Order\"".into()),
                     base_column: Some("note".into())
                 },
@@ -744,7 +744,7 @@ async fn pg_join_columns_report_their_own_base_tables() {
                     name: "id".into(),
                     type_name: "int4".into(),
                     category: TypeCategory::Integer,
-                    nullable: Some(false),
+                    nullable: None,
                     base_table: Some("public.a".into()),
                     base_column: Some("id".into())
                 },
@@ -752,7 +752,7 @@ async fn pg_join_columns_report_their_own_base_tables() {
                     name: "id".into(),
                     type_name: "int4".into(),
                     category: TypeCategory::Integer,
-                    nullable: Some(true),
+                    nullable: None,
                     base_table: Some("public.b".into()),
                     base_column: Some("id".into())
                 },
@@ -784,7 +784,7 @@ async fn pg_temporary_table_columns_report_their_base_table() {
     assert!(schema.starts_with("pg_temp_"));
     assert_eq!(table, "local_rows");
     assert_eq!(columns[0].base_column.as_deref(), Some("id"));
-    assert_eq!(columns[0].nullable, Some(false));
+    assert_eq!(columns[0].nullable, None);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -820,4 +820,41 @@ async fn pg_select_of_zero_rows_emits_row_count_zero() {
     assert_eq!(events[1], Event::RowCount(0));
     assert!(matches!(events[2], Event::Done { .. }));
     assert_eq!(events.len(), 3);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_renamed_column_reports_its_new_name() {
+    let database = database().await;
+    let mut session = open(&database).await;
+    setup(&mut session, "CREATE TABLE t (id int)").await;
+    let _: Vec<_> = session.run("SELECT id FROM t").collect().await;
+    setup(&mut session, "ALTER TABLE t RENAME COLUMN id TO renamed").await;
+    let events: Vec<_> = session.run("SELECT renamed FROM t").collect().await;
+    let Event::ResultSetStarted { columns } = &events[0] else {
+        panic!("{events:?}")
+    };
+    assert_eq!(columns[0].base_column.as_deref(), Some("renamed"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_not_null_column_through_a_left_join_has_unknown_nullability() {
+    let database = database().await;
+    let mut session = open(&database).await;
+    setup(
+        &mut session,
+        "CREATE TABLE a (id int); CREATE TABLE b (id int NOT NULL); INSERT INTO a VALUES (1)",
+    )
+    .await;
+    let events: Vec<_> = session
+        .run("SELECT b.id FROM a LEFT JOIN b ON a.id = b.id")
+        .collect()
+        .await;
+    let Event::ResultSetStarted { columns } = &events[0] else {
+        panic!("{events:?}")
+    };
+    assert_eq!(columns[0].nullable, None);
+    assert!(
+        events.contains(&Event::Rows(vec![vec![Value::Null]])),
+        "{events:?}"
+    );
 }
