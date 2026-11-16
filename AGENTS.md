@@ -21,7 +21,7 @@ Each ticket runs the factory loop (start, plan, build, verify, review, record, m
 
 | Parameter | Value |
 |---|---|
-| Tracker | Linear, team "Database IDE" (implementation tickets). GitHub Issues hold the planning map only. |
+| Tracker | Linear, team "Database-ide" (key `DAT`), project "Engine v1" (implementation tickets). GitHub Issues hold the planning map only. |
 | Merge | Claude, the orchestrator, merges once the checks, the E2E harness and review pass. |
 | Writer and reviewer | Codex writes each engine ticket; Claude reviews the branch against `main`. |
 | Checks | The commands in [CODE_STANDARDS.md](CODE_STANDARDS.md#verification). |
