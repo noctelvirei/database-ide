@@ -9,7 +9,11 @@ repository = "https://github.com/noctelvirei/database-ide"
 
 [workspace.dependencies]
 clap = { version = "4.6.7", features = ["derive"] }
+futures = "0.3.34"
 sqlparser = { version = "=0.64.0", features = ["visitor"] }
+thiserror = "2.0.18"
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio-util = { version = "0.7.20", features = ["rt"] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

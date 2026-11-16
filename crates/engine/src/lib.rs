@@ -2,3 +2,4 @@
 //! plans as data, exports, danger checks, grid-edit scripts, object metadata and Script as.
 
 pub mod danger;
+pub mod session;
