@@ -141,18 +141,28 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "dbide-engine",
+ "dbide-test-servers",
 ]
 
 [[package]]
 name = "dbide-engine"
 version = "0.1.0"
 dependencies = [
+ "dbide-test-servers",
  "futures",
  "sqlparser",
  "tempfile",
  "thiserror",
  "tokio",
  "tokio-util",
+]
+
+[[package]]
+name = "dbide-test-servers"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]
