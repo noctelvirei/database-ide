@@ -7,7 +7,7 @@ use futures::StreamExt;
 use tokio::sync::mpsc;
 use tokio_postgres::{Client, SimpleQueryMessage};
 
-use super::{Notice, Request, cancel::Cancellation, values};
+use super::{Notice, Request, cancel::Cancellation, metadata::Metadata, values};
 use crate::session::{Event, PlanFormat, Severity};
 
 /// Delivers one event with backpressure, stopping delivery once its Run is cancelled.
@@ -51,8 +51,9 @@ pub(super) async fn run(
     cancellation: &Cancellation,
     request: &Request,
     sql: &str,
-    plan: bool,
+    mut metadata: Option<&mut Metadata>,
 ) -> Result<bool, ()> {
+    let plan = metadata.is_none();
     let stream = match client.simple_query_raw(sql).await {
         Ok(stream) => stream,
         Err(failure) => {
@@ -79,7 +80,13 @@ pub(super) async fn run(
             message = stream.next() => {
                 match message {
                     Some(Ok(SimpleQueryMessage::RowDescription(columns))) if !plan => {
-                        send(request, Event::ResultSetStarted { columns: columns.iter().map(values::column).collect() }).await;
+                        let metadata = metadata.as_mut().expect("ordinary runs have metadata");
+                        let columns = tokio::select! {
+                            biased;
+                            _ = request.cancel.cancelled() => columns.iter().map(values::column).collect(),
+                            columns = metadata.columns(&columns) => columns,
+                        };
+                        send(request, Event::ResultSetStarted { columns }).await;
                     }
                     Some(Ok(SimpleQueryMessage::Row(row))) => {
                         if cancelled { continue; }
@@ -97,10 +104,15 @@ pub(super) async fn run(
                             }
                         }
                     }
-                    Some(Ok(SimpleQueryMessage::CommandComplete(count))) if !plan => {
+                    Some(Ok(SimpleQueryMessage::CommandComplete(_))) if !plan => {
                         if !rows.is_empty() { send(request, Event::Rows(std::mem::take(&mut rows))).await; }
-                        // The fork exposes a count, but discards the original command tag.
-                        send(request, Event::RowCount(count)).await;
+                    }
+                    Some(Ok(SimpleQueryMessage::CommandTag(tag))) if !plan => {
+                        let mut fields = tag.split_whitespace();
+                        if matches!(fields.next(), Some("INSERT" | "UPDATE" | "DELETE" | "MERGE" | "SELECT" | "MOVE" | "FETCH" | "COPY"))
+                            && let Some(count) = fields.next_back().and_then(|count| count.parse().ok()) {
+                            send(request, Event::RowCount(count)).await;
+                        }
                     }
                     Some(Err(failure)) => {
                         if !rows.is_empty() { send(request, Event::Rows(std::mem::take(&mut rows))).await; }

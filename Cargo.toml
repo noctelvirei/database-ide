@@ -29,7 +29,7 @@ rand = "0.9"
 
 # Our fork: column type OIDs in simple-query results, GSSAPI/SSPI sign-in (ADR 0001).
 [patch.crates-io]
-tokio-postgres = { git = "https://github.com/noctelvirei/rust-postgres", rev = "fadce4426eab629e4f28634d4ef5b5b164fabfc7" }
+tokio-postgres = { git = "https://github.com/noctelvirei/rust-postgres", rev = "a0d7f2416bfebe14a4f7603f00ac410e07a64c2c" }
 
 [workspace.lints.rust]
 unsafe_code = "deny"
