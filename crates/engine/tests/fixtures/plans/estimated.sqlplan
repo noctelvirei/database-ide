@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan">
+  <BatchSequence><Batch><Statements>
+    <StmtSimple StatementText="SELECT N'caf&#xe9; &amp; tea'" StatementType="SELECT" StatementEstRows="2" StatementSubTreeCost="0.5">
+      <QueryPlan><RelOp PhysicalOp="Constant Scan" LogicalOp="Constant Scan" EstimateRows="2" EstimatedTotalSubtreeCost="0.5" Parallel="false"><ConstantScan /></RelOp></QueryPlan>
+    </StmtSimple>
+  </Statements></Batch></BatchSequence>
+</ShowPlanXML>

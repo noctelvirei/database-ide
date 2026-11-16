@@ -1,0 +1,7 @@
+[
+  {"Query Text":"SELECT * FROM items", "Future Metadata":{"version":2}, "Plan":{
+    "Node Type":"Seq Scan", "Relation Name":"items", "Schema":"public",
+    "Plan Rows":12, "Startup Cost":0, "Total Cost":1.12,
+    "Parallel Aware":false, "Future":{"items":[1,{"kind":"new"}]}
+  }}
+]

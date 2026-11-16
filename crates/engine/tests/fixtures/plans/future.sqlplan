@@ -1,0 +1,11 @@
+<s:ShowPlanXML xmlns:s="http://schemas.microsoft.com/sqlserver/2004/07/showplan" FutureVersion="next">
+  <s:BatchSequence><s:Batch><s:Statements>
+    <s:StmtSimple StatementType="SELECT" StatementSubTreeCost="2">
+      <s:QueryPlan><s:RelOp PhysicalOp="Future Scan" LogicalOp="Scan" EstimateRows="4" EstimatedTotalSubtreeCost="2" FutureAttribute="kept &amp; decoded">
+        <s:FutureElement Mode="turbo">first &amp; <![CDATA[<raw>]]><s:Nested>value</s:Nested></s:FutureElement>
+        <s:FutureElement Mode="other" />
+        <s:Warnings><s:PlanAffectingConvert Expression="CONVERT_IMPLICIT(int,[x],0)" /></s:Warnings>
+      </s:RelOp></s:QueryPlan>
+    </s:StmtSimple>
+  </s:Statements></s:Batch></s:BatchSequence>
+</s:ShowPlanXML>
