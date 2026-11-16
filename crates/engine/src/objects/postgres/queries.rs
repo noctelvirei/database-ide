@@ -101,7 +101,11 @@ SELECT string_agg(
         || CASE a.attgenerated WHEN 's' THEN ' STORED' ELSE ' VIRTUAL' END
     WHEN d.adbin IS NOT NULL THEN ' DEFAULT ' || pg_catalog.pg_get_expr(d.adbin, d.adrelid)
     ELSE '' END
-    || CASE WHEN a.attnotnull THEN ' NOT NULL' ELSE '' END,
+    || CASE WHEN a.attnotnull THEN COALESCE((
+        SELECT ' CONSTRAINT ' || pg_catalog.quote_ident(con.conname)
+        FROM pg_catalog.pg_constraint con WHERE con.conrelid = a.attrelid
+            AND con.contype = 'n' AND con.conkey = ARRAY[a.attnum]
+        ), '') || ' NOT NULL' ELSE '' END,
     E',\n    ' ORDER BY a.attnum)
 FROM pg_catalog.pg_attribute a
 JOIN pg_catalog.pg_type t ON t.oid = a.atttypid
@@ -123,6 +127,20 @@ FROM pg_catalog.pg_index i JOIN pg_catalog.pg_class ci ON ci.oid = i.indexrelid
 WHERE i.indrelid = c.oid AND NOT EXISTS (
     SELECT 1 FROM pg_catalog.pg_constraint con WHERE con.conindid = i.indexrelid
         AND con.contype IN ('p', 'u', 'x'))
+"#;
+
+pub(super) const TABLE_POLICIES: &str = r#"
+SELECT string_agg('CREATE POLICY ' || pg_catalog.quote_ident(p.polname) || ' ON ' || qualified
+    || CASE WHEN p.polpermissive THEN ' AS PERMISSIVE' ELSE ' AS RESTRICTIVE' END
+    || ' FOR ' || CASE p.polcmd WHEN '*' THEN 'ALL' WHEN 'r' THEN 'SELECT'
+        WHEN 'a' THEN 'INSERT' WHEN 'w' THEN 'UPDATE' WHEN 'd' THEN 'DELETE' END
+    || ' TO ' || (SELECT string_agg(CASE WHEN role_oid = 0 THEN 'PUBLIC'
+        ELSE pg_catalog.quote_ident(pg_catalog.pg_get_userbyid(role_oid)) END, ', ' ORDER BY position)
+        FROM unnest(p.polroles) WITH ORDINALITY roles(role_oid, position))
+    || COALESCE(' USING (' || pg_catalog.pg_get_expr(p.polqual, p.polrelid) || ')', '')
+    || COALESCE(' WITH CHECK (' || pg_catalog.pg_get_expr(p.polwithcheck, p.polrelid) || ')', '')
+    || E';\n', '' ORDER BY p.polname)
+FROM pg_catalog.pg_policy p WHERE p.polrelid = c.oid
 "#;
 
 pub(super) const TABLE_COMMENTS: &str = r#"

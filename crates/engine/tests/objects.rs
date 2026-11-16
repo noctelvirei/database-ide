@@ -377,6 +377,141 @@ async fn pg_create_table_recreates_columns_constraints_indexes_and_comments() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn pg_create_table_preserves_row_security_and_policy_definitions() {
+    let source = database().await;
+    let target = database().await;
+    let mut session = open(&source).await;
+    let mut destination = open(&target).await;
+    run(
+        &mut session,
+        r#"CREATE ROLE "Fruit Reader";
+        CREATE TABLE public.pears (id integer);
+        ALTER TABLE public.pears ENABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.pears FORCE ROW LEVEL SECURITY;
+        CREATE POLICY "Pear access" ON public.pears AS RESTRICTIVE FOR UPDATE
+            TO "Fruit Reader" USING (id > 0) WITH CHECK (id < 10)"#,
+    )
+    .await;
+    let table = object(&mut session, "pears").await;
+    let script = objects::script(&mut session, &table, Script::Create)
+        .await
+        .unwrap();
+    artifact(&source, "pears-rls.sql", &script);
+    run(&mut destination, &script).await;
+    let security = "SELECT relrowsecurity, relforcerowsecurity FROM pg_class
+        WHERE oid = 'public.pears'::regclass";
+    assert_eq!(
+        run(&mut session, security).await,
+        vec![vec![Value::Bool(true), Value::Bool(true)]]
+    );
+    assert_eq!(
+        run(&mut destination, security).await,
+        vec![vec![Value::Bool(true), Value::Bool(true)]]
+    );
+    let policies = "SELECT policyname, cmd, permissive, roles::text, qual, with_check
+        FROM pg_policies WHERE schemaname = 'public' AND tablename = 'pears'
+        ORDER BY policyname";
+    assert_eq!(
+        run(&mut session, policies).await,
+        vec![vec![
+            Value::Text("Pear access".into()),
+            Value::Text("UPDATE".into()),
+            Value::Text("RESTRICTIVE".into()),
+            Value::Text(r#"{"Fruit Reader"}"#.into()),
+            Value::Text("(id > 0)".into()),
+            Value::Text("(id < 10)".into())
+        ]]
+    );
+    assert_eq!(
+        run(&mut destination, policies).await,
+        vec![vec![
+            Value::Text("Pear access".into()),
+            Value::Text("UPDATE".into()),
+            Value::Text("RESTRICTIVE".into()),
+            Value::Text(r#"{"Fruit Reader"}"#.into()),
+            Value::Text("(id > 0)".into()),
+            Value::Text("(id < 10)".into())
+        ]]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_create_table_preserves_named_not_null_constraints_and_comments() {
+    let source = database().await;
+    let target = database().await;
+    let mut session = open(&source).await;
+    let mut destination = open(&target).await;
+    run(
+        &mut session,
+        "CREATE TABLE public.pears (id integer CONSTRAINT nn_id NOT NULL);
+        COMMENT ON CONSTRAINT nn_id ON public.pears IS 'Required pear id'",
+    )
+    .await;
+    let table = object(&mut session, "pears").await;
+    let script = objects::script(&mut session, &table, Script::Create)
+        .await
+        .unwrap();
+    artifact(&source, "pears-not-null.sql", &script);
+    assert!(script.contains("CONSTRAINT nn_id NOT NULL"));
+    run(&mut destination, &script).await;
+    assert_eq!(
+        run(
+            &mut destination,
+            "SELECT conname, pg_get_constraintdef(oid),
+        obj_description(oid, 'pg_constraint') FROM pg_constraint
+        WHERE conrelid = 'public.pears'::regclass AND contype = 'n'"
+        )
+        .await,
+        vec![vec![
+            Value::Text("nn_id".into()),
+            Value::Text("NOT NULL id".into()),
+            Value::Text("Required pear id".into())
+        ]]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_create_table_preserves_backslash_defaults_across_string_settings() {
+    let source = database().await;
+    let target = database().await;
+    let mut session = open(&source).await;
+    let mut destination = open(&target).await;
+    run(&mut session, "SET standard_conforming_strings = off").await;
+    run(
+        &mut session,
+        r#"CREATE TABLE public.pears (name text DEFAULT E'pear\\tree')"#,
+    )
+    .await;
+    run(&mut destination, "SET standard_conforming_strings = on").await;
+    let table = object(&mut session, "pears").await;
+    let script = objects::script(&mut session, &table, Script::Create)
+        .await
+        .unwrap();
+    artifact(&source, "pears-backslash.sql", &script);
+    assert!(script.contains("SET standard_conforming_strings = off;\n"));
+    // A simple-query batch is parsed before SET executes; apply its header first, as psql does.
+    let (header, definition) = script.split_at(script.find("CREATE TABLE").unwrap());
+    run(&mut destination, header).await;
+    run(&mut destination, definition).await;
+    assert_eq!(
+        run(
+            &mut session,
+            "INSERT INTO public.pears DEFAULT VALUES RETURNING name"
+        )
+        .await,
+        vec![vec![Value::Text(r"pear\tree".into())]]
+    );
+    assert_eq!(
+        run(
+            &mut destination,
+            "INSERT INTO public.pears DEFAULT VALUES RETURNING name"
+        )
+        .await,
+        vec![vec![Value::Text(r"pear\tree".into())]]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn pg_create_view_and_routines_round_trip_and_offer_replace() {
     let source = database().await;
     let target = database().await;

@@ -223,11 +223,12 @@ pub fn supports(kind: Kind, form: Script) -> bool {
 
 /// Returns SQL for a new editor tab without executing it or changing session settings.
 /// CREATE excludes data, ownership, grants and external dependencies. Tables include
-/// columns, constraints, independent indexes, owned serial sequences and comments.
+/// columns, constraints, row security policies, independent indexes, owned sequences and comments.
 /// Inherited tables and partition children are rejected rather than changing their meaning.
 /// Temporary objects support SELECT and the table ALTER skeleton, but not executable DDL.
 /// Table ALTER is a fully commented skeleton; SELECT names every column and limits to 1000.
 /// Executing generated DDL sets the destination search_path to the source's resolved schemas.
+/// Apply the SET header before sending the DDL so string literals use the source's settings.
 pub async fn script(
     session: &mut dyn Session,
     object: &Object,
@@ -322,7 +323,8 @@ pub async fn script(
             r#"SELECT (payload::jsonb || pg_catalog.jsonb_build_object('search_path',
             (SELECT string_agg(CASE WHEN left(name, 8) = 'pg_temp_' THEN 'pg_temp'
                 ELSE pg_catalog.quote_ident(name) END, ', ' ORDER BY position)
-             FROM unnest(current_schemas(true)) WITH ORDINALITY schemas(name, position))))::text
+             FROM unnest(current_schemas(true)) WITH ORDINALITY schemas(name, position)),
+            'standard_conforming_strings', current_setting('standard_conforming_strings')))::text
             FROM ({sql}) definition(payload)"#
         )
     };
@@ -338,7 +340,12 @@ pub async fn script(
         sql = sql.replacen("CREATE OR REPLACE ", "CREATE ", 1);
     }
     if let Some(search_path) = row.search_path {
-        sql = format!("SET search_path = {search_path};\n{sql}");
+        let strings = row
+            .standard_conforming_strings
+            .ok_or_else(|| Error::Catalog("Missing standard_conforming_strings setting".into()))?;
+        sql = format!(
+            "SET search_path = {search_path};\nSET standard_conforming_strings = {strings};\n{sql}"
+        );
     }
     Ok(sql)
 }
@@ -347,6 +354,7 @@ pub async fn script(
 struct ScriptRow {
     sql: Option<String>,
     search_path: Option<String>,
+    standard_conforming_strings: Option<String>,
     #[serde(default)]
     inherited: bool,
 }
@@ -403,6 +411,11 @@ fn table_sql(key: u32) -> String {
         || E' (\n    ' || concat_ws(E',\n    ', ({columns}), ({constraints})) || E'\n)'
         || CASE WHEN c.relkind = 'p' THEN ' PARTITION BY ' || pg_catalog.pg_get_partkeydef(c.oid) ELSE '' END
         || E';\n' || COALESCE(({indexes}) || E'\n', '')
+        || CASE WHEN c.relrowsecurity THEN 'ALTER TABLE ' || qualified
+            || E' ENABLE ROW LEVEL SECURITY;\n' ELSE '' END
+        || CASE WHEN c.relforcerowsecurity THEN 'ALTER TABLE ' || qualified
+            || E' FORCE ROW LEVEL SECURITY;\n' ELSE '' END
+        || COALESCE(({policies}), '')
         || COALESCE((SELECT string_agg('ALTER SEQUENCE ' || pg_catalog.quote_ident(sn.nspname)
             || '.' || pg_catalog.quote_ident(sc.relname) || ' OWNED BY ' || qualified || '.'
             || pg_catalog.quote_ident(a.attname) || E';\n', '' ORDER BY sc.relname)
@@ -419,6 +432,7 @@ fn table_sql(key: u32) -> String {
         columns = queries::TABLE_COLUMNS,
         constraints = queries::TABLE_CONSTRAINTS,
         indexes = queries::TABLE_INDEXES,
+        policies = queries::TABLE_POLICIES,
         comments = queries::TABLE_COMMENTS,
         from = relation_from()
     )
