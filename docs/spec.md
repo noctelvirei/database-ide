@@ -80,7 +80,7 @@ Per engine: databases, schemas, tables, views, procedures, functions, indexes; a
 
 ## UI (built later)
 
-gpui + gpui-component pinned exactly, with our public fork for the find panel's Replace keys ([toolkit decision](https://github.com/noctelvirei/database-ide/issues/8)). Layout C "Workbench" ([layout decision](https://github.com/noctelvirei/database-ide/issues/13)). Plan view: [plan view prototype](https://github.com/noctelvirei/database-ide/issues/14). Autocomplete: keywords plus table and column names.
+gpui + gpui-component pinned exactly, with our public fork for the find panel's Replace keys ([toolkit decision](https://github.com/noctelvirei/database-ide/issues/8)). Layout C "Workbench" ([layout decision](https://github.com/noctelvirei/database-ide/issues/13)). Plan view ([decision](https://github.com/noctelvirei/database-ide/issues/14)): the Plan tab opens in a tree table (operator, object, estimated and actual rows, estimate error, cost %, time, reads; misestimates of 10× or more flagged); F9 switches to an SSMS-style graph (vscode-mssql icons, right-to-left, arrow width by actual rows). Estimated rows are multiplied by executions or loops before comparing with actual rows. Selecting an operator fills the inspector with every raw property. Autocomplete: keywords plus table and column names.
 
 ## Testing
 
