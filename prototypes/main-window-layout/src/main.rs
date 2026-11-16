@@ -6,7 +6,8 @@
 //! Start with `--variant a|b|c`; F9 / Shift+F9 cycle while running.
 //!
 //! Screenshot flags, used by `shots.ps1`: `--palette` opens B's command palette at start,
-//! `--plan-node N` selects plan operator N and shows the plan.
+//! `--plan-node N` selects plan operator N and shows the plan. `--keys f9,ctrl-k` replays
+//! comma-separated keys inside the app, 1.5 s apart, for checking the keyboard.
 #![windows_subsystem = "windows"]
 
 mod completion;
@@ -273,6 +274,12 @@ impl Shell {
         self.selection = Selection::Object;
         cx.notify();
     }
+
+    /// The explorer's selected item as (id, label).
+    pub fn selected_object(&self, cx: &App) -> Option<(gpui::SharedString, gpui::SharedString)> {
+        let entry = self.explorer.read(cx).selected_entry()?;
+        Some((entry.item().id.clone(), entry.item().label.clone()))
+    }
 }
 
 /// How large each variant paints the plan: it lives in narrower places in B and C.
@@ -373,6 +380,8 @@ fn main() -> anyhow::Result<()> {
     let variant = arg_after("--variant").and_then(|v| Variant::parse(&v)).unwrap_or(Variant::A);
     let open_palette = args.iter().any(|a| a == "--palette");
     let plan_node: Option<usize> = arg_after("--plan-node").and_then(|n| n.parse().ok());
+    // Leaked once at startup: gpui's keystroke parser wants a 'static string.
+    let keys: Option<&'static str> = arg_after("--keys").map(|k| &*k.leak());
 
     let dir = grid::data_dir();
     grid::ensure_data_file(&dir)?;
@@ -497,6 +506,22 @@ fn main() -> anyhow::Result<()> {
                 ]);
                 for handle in handles {
                     cx.on_focus_in(&handle, window, |_, _, cx| cx.notify()).detach();
+                }
+                if let Some(keys) = keys {
+                    let keystrokes: Vec<gpui::Keystroke> = keys
+                        .split(',')
+                        .filter_map(|k| gpui::Keystroke::parse(k.trim()).ok())
+                        .collect();
+                    // Checking only: replay keys through gpui's own dispatch, one every 400 ms,
+                    // so no key goes through the OS to another window.
+                    cx.spawn_in(window, async move |_, cx| {
+                        let executor = cx.background_executor().clone();
+                        for k in keystrokes {
+                            executor.timer(std::time::Duration::from_millis(1500)).await;
+                            let _ = cx.update(|window, cx| window.dispatch_keystroke(k, cx));
+                        }
+                    })
+                    .detach();
                 }
                 plan.update(cx, |p, _| p.scale = plan_scale(variant));
                 if let Some(node) = plan_node {

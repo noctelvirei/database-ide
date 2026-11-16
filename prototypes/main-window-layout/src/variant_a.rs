@@ -164,6 +164,8 @@ pub fn render(shell: &mut Shell, window: &mut Window, cx: &mut Context<Shell>) -
 
     let main = div()
         .flex_1()
+        .min_w_0()
+        .overflow_hidden()
         .h_full()
         .flex()
         .flex_col()

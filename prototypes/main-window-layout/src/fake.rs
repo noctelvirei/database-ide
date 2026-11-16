@@ -292,6 +292,27 @@ pub fn explorer_items() -> Vec<TreeItem> {
         .collect()
 }
 
+/// Every table, view and procedure as (explorer id, palette label), for B's command palette.
+pub fn objects() -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for (ci, c) in CONNECTIONS.iter().enumerate() {
+        for (di, db) in c.databases.iter().enumerate() {
+            let did = format!("c{ci}/d{di}");
+            let at = format!("{}.{}", c.name, db.name);
+            for (i, t) in db.tables.iter().enumerate() {
+                out.push((format!("{did}/t{i}"), format!("{}   table   {at}", t.name)));
+            }
+            for (i, v) in db.views.iter().enumerate() {
+                out.push((format!("{did}/v{i}"), format!("{v}   view   {at}")));
+            }
+            for (i, p) in db.procedures.iter().enumerate() {
+                out.push((format!("{did}/p{i}"), format!("{p}   procedure   {at}")));
+            }
+        }
+    }
+    out
+}
+
 /// The kind of explorer item an id names, for the icon and the colour of its label.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ItemKind {

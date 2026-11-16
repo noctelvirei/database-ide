@@ -50,7 +50,7 @@ function Save-ClientShot([IntPtr] $hwnd, [string] $path) {
 $shots = @(
     @{ Name = "variant-a"; Args = @("--variant", "a") },
     @{ Name = "variant-b"; Args = @("--variant", "b") },
-    @{ Name = "variant-b-palette"; Args = @("--variant", "b", "--palette") },
+    @{ Name = "variant-b-palette"; Args = @("--variant", "b", "--palette", "--plan-node", "6") },
     @{ Name = "variant-c"; Args = @("--variant", "c") },
     @{ Name = "variant-c-plan-node"; Args = @("--variant", "c", "--plan-node", "6") }
 )

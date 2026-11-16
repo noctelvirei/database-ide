@@ -20,7 +20,7 @@ const PAGE_ROWS: usize = 128;
 /// Pages kept in memory at most: 32 x 128 = 4,096 rows, whatever the grid's position.
 const CACHE_PAGES: usize = 32;
 
-const COLUMN_NAMES: [&str; COLS] = [
+pub const COLUMN_NAMES: [&str; COLS] = [
     "order_id",
     "customer",
     "created_at",
