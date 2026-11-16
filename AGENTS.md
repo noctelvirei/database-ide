@@ -1,18 +1,42 @@
 # Database IDE
 
-A lightweight SQL IDE written in Rust, for SQL Server, PostgreSQL and MySQL: the fast replacement for SSMS a DBA uses every day. Personal tool first; an open-source release stays possible. Windows first, with nothing that rules out macOS or Linux later.
+A lightweight SQL IDE written in Rust, for SQL Server, PostgreSQL and MySQL: the fast replacement for SSMS a DBA uses every day. Open source (MIT OR Apache-2.0). Windows first, with nothing that rules out macOS or Linux later.
+
+Read before any change:
+- [docs/spec.md](docs/spec.md): what v1 is and how it is put together.
+- [CODE_STANDARDS.md](CODE_STANDARDS.md): versions, structure, errors, the checks and the E2E harness.
+- [CONTEXT.md](CONTEXT.md): the vocabulary. Use its terms in code and prose.
 
 ## State
 
-Planning. The route to a first-version spec is the GitHub issue labelled `wayfinder:map`. There is no code yet. `CODE_STANDARDS.md` and the `## Factory` section get written once the UI toolkit is chosen; until then the repo is not fully set up for implementation.
+Building the engine. Codex builds it from Linear tickets; Claude orchestrates, reviews and merges. The UI (gpui) follows in a Claude session on the engine's interface. The planning map stays on GitHub as the issue labelled `wayfinder:map`.
 
-Once the spec is done, the implementation plan moves to Linear as tickets. Codex builds the engine first (everything below the UI, testable with no window), each ticket orchestrated, reviewed and merged by Claude. The UI is then built in a Claude session on the engine's interface. GitHub Issues keep the planning map.
+## Public repository
+
+Keep this PC's paths, drive letters, user names, machine names and other private projects out of code, tests, commits, issues and pull requests.
+
+## Factory
+
+Each ticket runs the factory loop (start, plan, build, verify, review, record, merge and close) with these parameters:
+
+| Parameter | Value |
+|---|---|
+| Tracker | Linear, team "Database IDE" (implementation tickets). GitHub Issues hold the planning map only. |
+| Merge | Claude, the orchestrator, merges once the checks, the E2E harness and review pass. |
+| Writer and reviewer | Codex writes each engine ticket; Claude reviews the branch against `main`. |
+| Checks | The commands in [CODE_STANDARDS.md](CODE_STANDARDS.md#verification). |
+| E2E harness | Named in [CODE_STANDARDS.md](CODE_STANDARDS.md#e2e-harness). |
+| Scenarios | `scenarios/`. None written yet; each record says "no scenarios". |
+| CI | None. |
+| Extra escalations | Adding a dependency or changing a pinned version; changing the engine's run/event interface once a second engine uses it; anything that writes to a server outside a test database. |
+
+Root checkout: stays on a clean `main` matching `origin/main`. Ticket worktrees live on the data drive, one per ticket, from `origin/main`.
 
 ## Agent skills
 
 ### Issue tracker
 
-Issues, the wayfinder map and its tickets live in GitHub Issues on the public repo noctelvirei/database-ide (open source since 2026-11-16, MIT OR Apache-2.0; keep this PC's paths and other private projects out of issues, comments and files), through the `gh` CLI. See `docs/agents/issue-tracker.md`.
+The planning map and its tickets live in GitHub Issues on noctelvirei/database-ide through the `gh` CLI. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
