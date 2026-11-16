@@ -73,8 +73,16 @@ const RULES = [
 const sources = execFileSync('git', ['ls-files', '-z', '--', '*.rs'], { cwd: root, encoding: 'utf8' })
   .split('\0')
   .filter(Boolean);
+// Blanks string literals and comments (keeping newlines, so line numbers hold)
+// so that text about a rule never trips it.
+// shortcut: raw strings with `"` inside (r#"…"#) and nested block comments are
+// not handled; upgrade if the check ever misreads one.
+const STRINGS_AND_COMMENTS = /"(?:\\.|[^"\\])*"|\/\/[^\n]*|\/\*[\s\S]*?\*\//g;
+const codeOnly = (text) =>
+  text.replace(STRINGS_AND_COMMENTS, (match) => match.replace(/[^\n]/g, ' '));
+
 for (const file of sources) {
-  readFileSync(path.join(root, file), 'utf8')
+  codeOnly(readFileSync(path.join(root, file), 'utf8'))
     .split('\n')
     .forEach((line, index) => {
       for (const rule of RULES) {
