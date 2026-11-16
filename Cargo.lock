@@ -952,7 +952,7 @@ dependencies = [
 [[package]]
 name = "postgres-protocol"
 version = "0.6.12"
-source = "git+https://github.com/noctelvirei/rust-postgres?rev=fadce4426eab629e4f28634d4ef5b5b164fabfc7#fadce4426eab629e4f28634d4ef5b5b164fabfc7"
+source = "git+https://github.com/noctelvirei/rust-postgres?rev=a0d7f2416bfebe14a4f7603f00ac410e07a64c2c#a0d7f2416bfebe14a4f7603f00ac410e07a64c2c"
 dependencies = [
  "base64",
  "byteorder",
@@ -969,7 +969,7 @@ dependencies = [
 [[package]]
 name = "postgres-types"
 version = "0.2.14"
-source = "git+https://github.com/noctelvirei/rust-postgres?rev=fadce4426eab629e4f28634d4ef5b5b164fabfc7#fadce4426eab629e4f28634d4ef5b5b164fabfc7"
+source = "git+https://github.com/noctelvirei/rust-postgres?rev=a0d7f2416bfebe14a4f7603f00ac410e07a64c2c#a0d7f2416bfebe14a4f7603f00ac410e07a64c2c"
 dependencies = [
  "bytes",
  "fallible-iterator",
@@ -1488,7 +1488,7 @@ dependencies = [
 [[package]]
 name = "tokio-postgres"
 version = "0.7.18"
-source = "git+https://github.com/noctelvirei/rust-postgres?rev=fadce4426eab629e4f28634d4ef5b5b164fabfc7#fadce4426eab629e4f28634d4ef5b5b164fabfc7"
+source = "git+https://github.com/noctelvirei/rust-postgres?rev=a0d7f2416bfebe14a4f7603f00ac410e07a64c2c#a0d7f2416bfebe14a4f7603f00ac410e07a64c2c"
 dependencies = [
  "async-trait",
  "byteorder",

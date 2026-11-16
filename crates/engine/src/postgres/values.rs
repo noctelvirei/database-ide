@@ -4,7 +4,7 @@ use tokio_postgres::{SimpleColumn, types::Type};
 
 use crate::session::{Column, TypeCategory, Value, temporal};
 
-/// The fork supplies no provenance or nullability; unknown type names retain their OID.
+/// Builds labels and types before optional catalog enrichment; unknown types retain their OID.
 pub(super) fn column(column: &SimpleColumn) -> Column {
     let oid = column.type_oid();
     Column {
