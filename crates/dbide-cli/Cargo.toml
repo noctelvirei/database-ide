@@ -8,6 +8,8 @@ repository.workspace = true
 [dependencies]
 clap.workspace = true
 dbide-engine = { path = "../engine" }
+tokio.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 dbide-test-servers = { path = "../test-servers" }

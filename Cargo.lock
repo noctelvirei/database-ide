@@ -340,6 +340,8 @@ dependencies = [
  "clap",
  "dbide-engine",
  "dbide-test-servers",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]
