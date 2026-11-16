@@ -1,0 +1,12 @@
+<ShowPlanXML><BatchSequence><Batch><Statements>
+  <StmtSimple StatementText="SELECT 1" StatementType="SELECT" StatementEstRows="1" StatementSubTreeCost="1">
+    <QueryPlan><RelOp PhysicalOp="Constant Scan" LogicalOp="Constant Scan" EstimateRows="1" EstimatedTotalSubtreeCost="1" /></QueryPlan>
+  </StmtSimple>
+  <StmtCond StatementText="IF 1=1" StatementType="COND">
+    <Then><Statements>
+      <StmtSimple StatementText="SELECT 2" StatementType="SELECT" StatementEstRows="1" StatementSubTreeCost="2">
+        <QueryPlan><RelOp PhysicalOp="Constant Scan" LogicalOp="Constant Scan" EstimateRows="1" EstimatedTotalSubtreeCost="2" /></QueryPlan>
+      </StmtSimple>
+    </Statements></Then>
+  </StmtCond>
+</Statements></Batch></BatchSequence></ShowPlanXML>
