@@ -8,9 +8,9 @@ Use **`mssql-tds`** (Microsoft's pure-Rust TDS client, [microsoft/mssql-rs](http
 
 It is the only option where every requirement on the list is met by public API: Windows sign-in through the SSPI `Negotiate` package (Kerberos with NTLM fallback), statement-by-statement navigation with row counts, PRINT/RAISERROR messages, an SSMS-style "continue after error" mode, a cancel handle that another task can fire, `TrustServerCertificate`, named instances via SQL Browser, and LocalDB. It ships a mock TDS server crate that lets Codex test the UI-free engine natively on Windows without a SQL Server.
 
-tiberius fails two requirements outright in 0.13.0: Windows sign-in is NTLM only, and the query stream discards PRINT/RAISERROR messages and per-statement row counts. ODBC through `odbc-api` can do everything, but only by dropping to `unsafe` raw-handle code for messages, statement-wise navigation and cancel, and it needs Microsoft's closed-source driver installed on every machine.
+tiberius fails two requirements outright in 0.13.0: Windows sign-in is NTLM only, and the query stream discards PRINT/RAISERROR messages and per-statement row counts. ODBC through `odbc-api` can do everything, but only by dropping to `unsafe` raw-handle code for messages, statement-wise navigation and cancel, and it needs Microsoft's separately installed driver on every machine.
 
-The main risk with `mssql-tds` is churn: four breaking minor releases between 2026-09-10 (0.1.0) and 2026-11-07 (0.4.0). That is why the version is pinned and wrapped.
+The main risk with `mssql-tds` is churn: four 0.x releases between 2026-09-10 (0.1.0) and 2026-11-07 (0.4.0), and the 0.4 docs mark some changes as breaking (the `ResultSet` trait, `ClientContext::multi_subnet_failover`). That is why the version is pinned and wrapped.
 
 ## Options compared
 
@@ -31,10 +31,10 @@ The main risk with `mssql-tds` is churn: four breaking minor releases between 20
 | sql_variant | Yes, decoded (source) | Yes, decoded to base type (source) | Driver type `SQL_SS_VARIANT` (not checked in detail) |
 | geography / CLR UDT | Raw bytes (source) | Raw bytes (source) | Raw bytes (not checked in detail) |
 | Large varbinary | Whole value per row (source) | Whole value, or chunked PLP reads (source) | `SQLGetData` in parts (not checked in detail) |
-| Builds on this PC (rustc 1.93, MSVC) | Yes (run) | Yes (run) | Yes (run) |
+| Builds, links and runs on this PC (rustc 1.93, MSVC) | Yes (run) | Yes (run) | Yes (run) |
 | Testing without SQL Server | None shipped | `mssql-mock-tds` (MIT) mock server (crate) | None; needs driver and server |
-| Maintenance | Dormant 2024-07 to 2026-08; revived by one outside contributor; RustSec asked about status (repo, issue) | Microsoft team, 100 commits in the last 3 months; 0.x with breaking releases (repo, crates.io) | One maintainer, active; stable API at major 30 (repo) |
-| Licence | MIT or Apache-2.0 | MIT | `odbc-api` MIT; ODBC Driver 18 is proprietary, installed separately |
+| Maintenance | No release and only CI or chore commits from 2024-07 to 2026-08; revived mostly by one outside contributor; RustSec asked about status (repo, issue) | Microsoft repo, at least 100 commits since 2026-08-16; 0.x with breaking releases (repo, crates.io) | One main maintainer, active (repo) |
+| Licence | MIT or Apache-2.0 | MIT | `odbc-api` MIT; ODBC Driver 18 is a Microsoft "redistributable installer", not open source; terms not read |
 
 "source" means read in the crate source at that version; "docs" means Microsoft Learn or crate docs; "run" means checked on this PC; "inferred" means it follows from verified facts but was not run against a server.
 
@@ -80,25 +80,24 @@ The main risk with `mssql-tds` is churn: four breaking minor releases between 20
 
 - **tiberius.** `ColumnType` covers `Money`, `Money4`, `DatetimeOffsetn`, `Xml`, `Guid` and the rest ([row.rs L36](https://docs.rs/crate/tiberius/0.13.0/source/src/row.rs#36)); `sql_variant` is fully decoded and CLR UDTs (geography, geometry, hierarchyid) come back as raw bytes ([type_info.rs L44, L206-L212](https://docs.rs/crate/tiberius/0.13.0/source/src/tds/codec/type_info.rs#44)).
 - **mssql-tds.** `ColumnValues` has `DateTimeOffset`, `Money`, `SmallMoney`, `Xml`, `Bytes`, `Json` and `Vector` ([column_values.rs](https://docs.rs/crate/mssql-tds/0.4.0/source/src/datatypes/column_values.rs)); `sql_variant` decodes to its base type ([decoder.rs L1736, L1786](https://docs.rs/crate/mssql-tds/0.4.0/source/src/datatypes/decoder.rs#1736)); UDT columns decode as bytes ([decoder.rs L3086](https://docs.rs/crate/mssql-tds/0.4.0/source/src/datatypes/decoder.rs#3086)).
-- Raw bytes for geography match what SSMS shows in its grid (`0xE6100000…`), so it is enough for the results grid.
-
 ### Builds and testing on this PC
 
-- `cargo check` of a scratch crate depending on `mssql-tds =0.4.0`, `tiberius =0.13.0` (with `sql-browser-tokio`) and `odbc-api =30.1.0` passed on Windows 11 with rustc 1.93.0 and MSVC, no OpenSSL. mssql-tds uses Schannel on Windows by default.
+- A scratch binary depending on `mssql-tds =0.4.0`, `tiberius =0.13.0` (with `sql-browser-tokio`) and `odbc-api =30.1.0` built, linked and ran on Windows 11 with rustc 1.93.0 and MSVC, no OpenSSL. It called each crate: mssql-tds `create_client` against a closed port returned an error, tiberius built a `Config` with `AuthMethod::Integrated`, and odbc-api listed 7 installed ODBC drivers. mssql-tds uses Schannel on Windows by default.
 - `mssql-mock-tds` 0.4.0 (MIT) is a mock TDS server library and CLI: login, TLS 7.4 and 8.0, registered result sets, INFO messages, errors and delays ([README](https://docs.rs/crate/mssql-mock-tds/0.4.0/source/README.md)). It does not run SQL, so it tests the engine's protocol handling, not query results. Its non-Windows builds need OpenSSL; on Windows it uses `native-tls`.
 - No SQL Server service is installed on this PC. ODBC Driver 17 and 18 are installed (registry `ODBCINST.INI`).
 
 ### Maintenance and licence
 
-- **tiberius** ([prisma/tiberius](https://github.com/prisma/tiberius)). 0.12.3 shipped 2024-07-19; no commits between 2025-07-29 and 2026-08; then 100 commits in August-September 2026, 97 by one contributor who first forked the crate, and 0.13.0 published by a Prisma owner on 2026-09-25. In [#427](https://github.com/prisma/tiberius/issues/427) the RustSec working group asked about its maintenance status after DoS reports went unanswered, and another contributor forked it as the `mssql` crate. MIT or Apache-2.0.
-- **mssql-tds** ([microsoft/mssql-rs](https://github.com/microsoft/mssql-rs)). Published by `microsoft-oss-releases`; 100 commits since 2026-08-16 from Microsoft staff including the ODBC driver team; it also underpins `mssql-python`, an alpha ODBC driver and sqlcmd. Releases 0.1.0 (2026-09-10), 0.2.0 (2026-10-06), 0.3.0 (2026-10-25), 0.4.0 (2026-11-07). `edition = "2024"`. MIT. A placeholder crate `mssql-rs` 0.0.1-alpha.1 (2026-11-10) is described as "a future Microsoft SQL Server Driver".
-- **odbc-api** ([pacman82/odbc-api](https://github.com/pacman82/odbc-api)). Active, one main maintainer, 9 open issues. MIT. Microsoft ODBC Driver 18 is closed source, free to redistribute, and needs an MSI install (admin) on each machine.
+- **tiberius** ([prisma/tiberius](https://github.com/prisma/tiberius)). 0.12.3 shipped 2024-07-19. Between then and August 2026 there was no release, and the only commits were a dependency bump (2025-07-29) and CI or security-policy chores (2026-02, 2026-03). Then at least 100 commits landed in August-September 2026, almost all by one contributor who had first forked the crate, and a Prisma owner published 0.13.0 on 2026-09-25. In [#427](https://github.com/prisma/tiberius/issues/427) the RustSec working group asked about its maintenance status after DoS reports went unanswered, and another contributor forked it as the `mssql` crate. MIT or Apache-2.0.
+- **mssql-tds** ([microsoft/mssql-rs](https://github.com/microsoft/mssql-rs)). Published by the `microsoft-oss-releases` crates.io account; at least 100 commits since 2026-08-16. Commit authors include David Engel, who is listed as a reviewer of Microsoft's ODBC driver documentation ([keyword page](https://learn.microsoft.com/en-us/sql/connect/odbc/dsn-connection-string-attribute) metadata). The repository also underpins `mssql-python`, an alpha ODBC driver and sqlcmd. Releases 0.1.0 (2026-09-10), 0.2.0 (2026-10-06), 0.3.0 (2026-10-25), 0.4.0 (2026-11-07). `edition = "2024"`. MIT. A placeholder crate `mssql-rs` 0.0.1-alpha.1 (2026-11-10) is described as "a future Microsoft SQL Server Driver".
+- **odbc-api** ([pacman82/odbc-api](https://github.com/pacman82/odbc-api)). Active, one main maintainer, 9 open issues. MIT. Microsoft ODBC Driver 18 (18.7.1.1, 2026-09-07) is a separate Windows installer that Microsoft calls a "redistributable installer"; its Linux packages sit in Microsoft's `ms-non-oss` repository ([download page](https://learn.microsoft.com/en-us/sql/connect/odbc/download-odbc-driver-for-sql-server)).
 
 ## Judgement
 
 - **Why not tiberius.** NTLM-only Windows sign-in rules out Kerberos-only domains and linked-server delegation, and the dropped INFO, DONE and ERROR tokens rule out an SSMS-style Messages pane without forking the token loop. Its maintenance has only just restarted, and that work rests on one outside contributor.
 - **Why not ODBC.** It reaches every requirement, but the three that matter most to this IDE (messages, statement-wise results and cancel) all need `unsafe` raw-handle code that `odbc-api` exists to hide. It adds a native install that the user must make on every machine, and it gives the engine nothing to test with except a real server.
 - **Why mssql-tds despite its age.** Its API was designed around the same statement-wise model msodbcsql uses, by the team that maintains msodbcsql, and the IDE's needs (messages, row counts, continue after error, cancel from another task, TLS trust, named instances) are public, documented features, not workarounds. Churn is the cost: pin `=0.4.x`, keep every `mssql_tds` import in one engine module, and expect to follow Microsoft's later `mssql-rs` driver if it replaces this one.
+- **Geography as bytes is enough.** All three return CLR UDTs as raw bytes; SSMS also shows geography as hex in its grid, so the results grid needs nothing more.
 - **Testing plan for Codex.** Unit-level protocol tests against `mssql-mock-tds` run in `cargo test` with no server. End-to-end tests that check plans, messages and cancel need a real SQL Server; SQL Server Developer or Express installs natively on Windows (no WSL, no Docker), but that is a system-wide install the owner has to choose. LocalDB is the lighter variant and mssql-tds can connect to it.
 
 ## Not verified
@@ -108,3 +107,4 @@ The main risk with `mssql-tds` is churn: four breaking minor releases between 20
 - That msodbcsql sends a parameterless `SQLExecDirect` as a SQL batch rather than an RPC was not checked; it matters only if ODBC is chosen.
 - Whether mssql-tds's `next_row()` returns promptly when the cancel handle fires mid-row was not exercised.
 - ODBC type handling for sql_variant, datetimeoffset and UDTs through `odbc-api` was not checked in detail.
+- The ODBC Driver 18 licence terms themselves were not read, nor whether its installer needs administrator rights.
