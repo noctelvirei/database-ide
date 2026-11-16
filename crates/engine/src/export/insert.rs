@@ -81,7 +81,7 @@ fn literal(value: &Value, engine: Engine) -> Result<String, Error> {
         Value::Integer(value) => value.to_string(),
         Value::UnsignedInteger(value) => value.to_string(),
         Value::Decimal(value) if decimal(value) => value.clone(),
-        Value::Float(value) if value.is_finite() => value.to_string(),
+        Value::Float(value) if value.is_finite() => format!("{value:e}"),
         Value::Decimal(_) | Value::Float(_) => return Err(Error::Literal),
         Value::Bytes(value) => {
             let hex = super::text::hex(value);

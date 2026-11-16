@@ -230,6 +230,174 @@ fn insert_rejects_unvalidated_decimal_sql() {
 }
 
 #[test]
+fn insert_float_literals_use_scientific_notation() {
+    let store = store(
+        &["a", "b"],
+        vec![vec![Value::Float(1e100), Value::Float(1e-100)]],
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("rows.sql");
+    export::write(
+        &store.reader(),
+        &path,
+        &Format::Insert {
+            engine: dbide_engine::danger::Engine::SqlServer,
+            table: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(path).unwrap(),
+        "INSERT INTO [dbo].[items] ([a], [b]) VALUES (1e100, 1e-100);\n"
+    );
+}
+
+// Windows' built-in ZIP reader checks the actual workbook cells without another crate.
+#[cfg(windows)]
+fn workbook_part(path: &std::path::Path, part: &str) -> String {
+    let output = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            r#"
+            $ErrorActionPreference = 'Stop'
+            [Console]::OutputEncoding = [Text.UTF8Encoding]::new()
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            $zip = [IO.Compression.ZipFile]::OpenRead($env:DBIDE_EXPORT_TEST_FILE)
+            try {
+                $reader = [IO.StreamReader]::new($zip.GetEntry($env:DBIDE_EXPORT_TEST_PART).Open())
+                try { [Console]::Write($reader.ReadToEnd()) } finally { $reader.Dispose() }
+            } finally { $zip.Dispose() }
+        "#,
+        ])
+        .env("DBIDE_EXPORT_TEST_FILE", path)
+        .env("DBIDE_EXPORT_TEST_PART", part)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
+}
+
+#[test]
+#[cfg(windows)]
+fn xlsx_preserves_decimals_that_underflow_as_text() {
+    let tiny = format!("0.{}1", "0".repeat(400));
+    let store = store(&["a"], vec![vec![Value::Decimal(tiny.clone())]]);
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("rows.xlsx");
+    export::write(&store.reader(), &path, &Format::Xlsx).unwrap();
+    let xml = workbook_part(&path, "xl/worksheets/sheet1.xml");
+    assert!(xml.contains("<c r=\"A2\" t=\"inlineStr\">"));
+    assert!(xml.contains(&tiny));
+}
+
+#[test]
+#[cfg(windows)]
+fn xlsx_preserves_floats_outside_excel_range_as_text() {
+    let store = store(
+        &["small", "large"],
+        vec![vec![Value::Float(1e-320), Value::Float(1e308)]],
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("rows.xlsx");
+    export::write(&store.reader(), &path, &Format::Xlsx).unwrap();
+    let xml = workbook_part(&path, "xl/worksheets/sheet1.xml");
+    assert!(xml.contains("<c r=\"A2\" t=\"inlineStr\">"));
+    assert!(xml.contains("<c r=\"B2\" t=\"inlineStr\">"));
+}
+
+#[test]
+#[cfg(windows)]
+fn xlsx_keeps_formula_like_values_as_text() {
+    let store = store(&["a"], vec![vec![Value::Text("=1+1".into())]]);
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("rows.xlsx");
+    export::write(&store.reader(), &path, &Format::Xlsx).unwrap();
+    assert!(
+        workbook_part(&path, "xl/worksheets/sheet1.xml")
+            .contains("<c r=\"A2\" t=\"inlineStr\"><is><t>=1+1</t></is></c>")
+    );
+}
+
+#[test]
+#[cfg(windows)]
+fn xlsx_writes_supported_numeric_values_as_numbers() {
+    let store = store(
+        &["integer", "decimal", "float"],
+        vec![vec![
+            Value::Integer(42),
+            Value::Decimal("123456789012345.000".into()),
+            Value::Float(1.25),
+        ]],
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("rows.xlsx");
+    export::write(&store.reader(), &path, &Format::Xlsx).unwrap();
+    let xml = workbook_part(&path, "xl/worksheets/sheet1.xml");
+    assert!(xml.contains("<c r=\"A2\"><v>42</v></c>"));
+    assert!(xml.contains("<c r=\"B2\"><v>123456789012345</v></c>"));
+    assert!(xml.contains("<c r=\"C2\"><v>1.25</v></c>"));
+}
+
+#[test]
+#[cfg(windows)]
+fn xlsx_preserves_numbers_beyond_excel_precision_as_text() {
+    let store = store(
+        &["integer", "decimal"],
+        vec![vec![
+            Value::Integer(12345678901234567),
+            Value::Decimal("1234567890123456.78".into()),
+        ]],
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("rows.xlsx");
+    export::write(&store.reader(), &path, &Format::Xlsx).unwrap();
+    let xml = workbook_part(&path, "xl/worksheets/sheet1.xml");
+    assert!(xml.contains("<c r=\"A2\" t=\"inlineStr\"><is><t>12345678901234567</t></is></c>"));
+    assert!(xml.contains("<c r=\"B2\" t=\"inlineStr\"><is><t>1234567890123456.78</t></is></c>"));
+}
+
+#[test]
+#[cfg(windows)]
+fn xlsx_writes_booleans_as_booleans() {
+    let store = store(&["a"], vec![vec![Value::Bool(true)]]);
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("rows.xlsx");
+    export::write(&store.reader(), &path, &Format::Xlsx).unwrap();
+    assert!(
+        workbook_part(&path, "xl/worksheets/sheet1.xml")
+            .contains("<c r=\"A2\" t=\"b\"><v>1</v></c>")
+    );
+}
+
+#[test]
+#[cfg(windows)]
+fn xlsx_writes_dates_and_timestamps_as_formatted_excel_dates() {
+    use dbide_engine::session::temporal::{Date, Timestamp};
+    let store = store(
+        &["date", "timestamp"],
+        vec![vec![
+            Value::Date(Date::parse("2026-11-16").unwrap()),
+            Value::Timestamp(Timestamp::parse("2026-11-16T12:00:00").unwrap()),
+        ]],
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("rows.xlsx");
+    export::write(&store.reader(), &path, &Format::Xlsx).unwrap();
+    let xml = workbook_part(&path, "xl/worksheets/sheet1.xml");
+    assert!(xml.contains("<c r=\"A2\" s=\"1\"><v>46342</v></c>"));
+    assert!(xml.contains("<c r=\"B2\" s=\"2\"><v>46342.5</v></c>"));
+    let styles = workbook_part(&path, "xl/styles.xml");
+    assert!(styles.contains("yyyy-mm-dd"));
+    assert!(styles.contains("yyyy-mm-dd hh:mm:ss.000"));
+}
+
+#[test]
 fn xlsx_writes_a_nonempty_zip_file() {
     let store = store(
         &["a", "b", "c", "d", "e"],
@@ -269,6 +437,14 @@ fn xlsx_repeats_headers_on_a_second_sheet_after_the_excel_row_limit() {
     );
     assert_eq!(report.rows, 1_048_577);
     assert_eq!(report.max_page_rows, 256);
+    #[cfg(windows)]
+    {
+        let xml = workbook_part(&report.path, "xl/worksheets/sheet2.xml");
+        assert!(xml.contains("<c r=\"A1\" t=\"inlineStr\"><is><t>a</t></is></c>"));
+        assert!(xml.contains("<c r=\"A2\"><v>1</v></c>"));
+        assert!(xml.contains("<c r=\"A3\"><v>2</v></c>"));
+        assert_eq!(xml.matches("<row ").count(), 3);
+    }
 }
 
 #[test]
@@ -414,4 +590,120 @@ async fn run_to_file_rejects_rows_without_a_header() {
             .await
             .is_err()
     );
+}
+
+#[tokio::test]
+async fn run_to_file_rejects_a_row_with_the_wrong_width() {
+    use dbide_engine::session::{Event, Run};
+    let run = Run::new(
+        futures::stream::iter(vec![
+            Event::ResultSetStarted {
+                columns: columns(&["a"]),
+            },
+            Event::Rows(vec![vec![]]),
+        ]),
+        tokio_util::sync::CancellationToken::new(),
+    );
+    let directory = tempfile::tempdir().unwrap();
+    assert_eq!(
+        export::run_to_file(run, &directory.path().join("rows.csv"), &Format::default())
+            .await
+            .unwrap_err()
+            .to_string(),
+        "Invalid result row: expected 1 cells, received 0"
+    );
+    assert!(directory.path().join("rows-1.csv.partial").exists());
+    assert!(!directory.path().join("rows-1.csv").exists());
+}
+
+#[tokio::test]
+async fn run_to_file_preserves_server_errors_and_empty_results() {
+    use dbide_engine::session::{Event, Run};
+    let error = Event::Error {
+        text: "statement failed".into(),
+        line: Some(std::num::NonZeroU64::new(7).unwrap()),
+        code: Some("42".into()),
+    };
+    let run = Run::new(
+        futures::stream::iter(vec![
+            Event::ResultSetStarted {
+                columns: columns(&["a"]),
+            },
+            error.clone(),
+        ]),
+        tokio_util::sync::CancellationToken::new(),
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let report = export::run_to_file(
+        run,
+        &directory.path().join("rows.csv"),
+        &Format::Csv { bom: false },
+    )
+    .await
+    .unwrap();
+    assert_eq!(report.events[0], error);
+    assert_eq!(report.files[0].rows, 0);
+    assert_eq!(
+        report.files[0].path,
+        directory.path().join("rows-1.csv.partial")
+    );
+    assert_eq!(
+        std::fs::read_to_string(&report.files[0].path).unwrap(),
+        "a\r\n"
+    );
+}
+
+async fn cancelled_file(format: Format, extension: &str) -> Vec<u8> {
+    use dbide_engine::session::{Event, Run};
+    use futures::StreamExt;
+    let token = tokio_util::sync::CancellationToken::new();
+    let cancel = token.clone();
+    let source = futures::stream::iter(vec![
+        Event::ResultSetStarted {
+            columns: columns(&["a"]),
+        },
+        Event::Rows(vec![vec![Value::Integer(1)]]),
+        Event::RowCount(1),
+    ])
+    .inspect(move |event| {
+        if matches!(event, Event::RowCount(_)) {
+            cancel.cancel();
+        }
+    });
+    let directory = tempfile::tempdir().unwrap();
+    let run = Run::new(source, token);
+    let report = export::run_to_file(
+        run,
+        &directory.path().join(format!("rows.{extension}")),
+        &format,
+    )
+    .await
+    .unwrap();
+    assert_eq!(report.files[0].path.extension().unwrap(), "partial");
+    assert_eq!(report.files[0].rows, 1);
+    std::fs::read(&report.files[0].path).unwrap()
+}
+
+#[tokio::test]
+async fn cancelled_run_finalizes_a_valid_partial_workbook() {
+    let bytes = cancelled_file(Format::Xlsx, "xlsx").await;
+    assert_eq!(&bytes[..2], b"PK");
+    assert!(
+        bytes
+            .windows(b"xl/worksheets/sheet1.xml".len())
+            .any(|window| window == b"xl/worksheets/sheet1.xml")
+    );
+}
+
+#[tokio::test]
+async fn cancelled_run_flushes_the_partial_insert_script() {
+    let bytes = cancelled_file(
+        Format::Insert {
+            engine: dbide_engine::danger::Engine::SqlServer,
+            table: None,
+        },
+        "sql",
+    )
+    .await;
+    assert_eq!(bytes, b"INSERT INTO [dbo].[items] ([a]) VALUES (1);\n");
 }

@@ -37,6 +37,24 @@ fn header(worksheet: &mut Worksheet, columns: &[Column]) -> Result<(), Error> {
     Ok(())
 }
 
+fn supported_number(number: f64) -> bool {
+    // Excel has no subnormal numbers and limits entered values to this magnitude.
+    number == 0.0 || (f64::MIN_POSITIVE..=9.999_999_999_999_99e307).contains(&number.abs())
+}
+
+fn exact_number(text: &str) -> Option<f64> {
+    let digits: String = text
+        .split(['e', 'E'])
+        .next()?
+        .chars()
+        .filter(char::is_ascii_digit)
+        .collect();
+    let significant = digits.trim_matches('0').len();
+    let number = text.parse::<f64>().ok()?;
+    (supported_number(number) && significant <= 15 && (number != 0.0 || significant == 0))
+        .then_some(number)
+}
+
 impl Writer {
     pub(super) fn new(file: File, columns: &[Column]) -> Result<Self, Error> {
         if columns.len() > 16_384 {
@@ -72,18 +90,12 @@ impl Writer {
                 Value::Bool(value) => {
                     worksheet.write_boolean(self.row, column, *value)?;
                 }
-                Value::Float(value) if value.is_finite() => {
+                Value::Float(value) if supported_number(*value) => {
                     worksheet.write_number(self.row, column, *value)?;
                 }
                 Value::Integer(_) | Value::UnsignedInteger(_) | Value::Decimal(_) => {
                     let text = super::text::cell(value);
-                    let significant = text
-                        .trim_start_matches(['-', '+', '0', '.'])
-                        .bytes()
-                        .filter(u8::is_ascii_digit)
-                        .count();
-                    let number = text.parse::<f64>().ok().filter(|number| number.is_finite());
-                    if let Some(number) = number.filter(|_| significant <= 15) {
+                    if let Some(number) = exact_number(&text) {
                         worksheet.write_number(self.row, column, number)?;
                     } else {
                         worksheet.write_string(self.row, column, &text)?;

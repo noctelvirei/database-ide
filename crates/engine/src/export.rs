@@ -30,7 +30,9 @@ pub enum Format {
         /// Whether to prefix UTF-8 output with a byte-order mark.
         bom: bool,
     },
-    /// Constant-memory workbook, repeating headers on each overflow sheet.
+    /// Constant-memory workbook, repeating headers on each overflow sheet. Integers and
+    /// decimals beyond 15 significant digits or Excel's numeric range stay as text, as do
+    /// floats outside Excel's numeric range, out-of-range dates and offset-bearing times/timestamps.
     Xlsx,
     /// One INSERT per row, avoiding every engine's multi-row VALUES limit.
     Insert {
@@ -182,7 +184,7 @@ pub async fn run_to_file(
 }
 
 enum Writer {
-    Csv(csv::Writer),
+    Csv(Box<csv::Writer>),
     Xlsx(Box<xlsx::Writer>),
     Insert(insert::Writer),
 }
@@ -207,7 +209,7 @@ impl Output {
         let partial = PathBuf::from(partial);
         let file = File::create_new(&partial)?;
         let writer = match format {
-            Format::Csv { bom } => Writer::Csv(csv::Writer::new(file, columns, *bom)?),
+            Format::Csv { bom } => Writer::Csv(Box::new(csv::Writer::new(file, columns, *bom)?)),
             Format::Xlsx => Writer::Xlsx(Box::new(xlsx::Writer::new(file, columns)?)),
             Format::Insert { engine, table } => Writer::Insert(insert::Writer::new(
                 file,
