@@ -9,6 +9,7 @@ repository.workspace = true
 futures.workspace = true
 sqlparser.workspace = true
 thiserror.workspace = true
+tempfile.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 
