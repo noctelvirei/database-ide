@@ -16,10 +16,17 @@ The doc keeps three kinds of statement apart:
 
 The reason (judgement):
 
-- It is the only candidate that passed both checks.
-  - It stayed near 100 MB with a SQL editor and a 100,000-row grid loaded: 98.5 MB private working set, of which 59 MB is the test data itself.
-  - It ships, ready to use, a virtualised table and a code editor with tree-sitter SQL highlighting, multi-cursor, find/replace and a completion hook.
-- **Tauri** gets the best editor and existing plan viewers for free. But WebView2 alone used 83 MB private (327 MB summed working set) for an empty page. Loaded, it reached 96 MB in the webview processes before counting any data, so it cannot meet a 100 MB target once the app holds results.
+- **The UI's own memory cost decides it.** With a SQL editor and a 100,000-row grid loaded, the measurements are below. Subtract the 59 MB the test data takes on its own, and the UI itself costs about 39 MB for gpui and about 98 MB for Tauri (WebView2). That gap holds under any memory metric and any data volume.
+
+  | Loaded app | Private WS | Summed WS | Commit |
+  |---|---|---|---|
+  | gpui | 98.5 MB | 143 MB | 154 MB |
+  | Tauri | 157 MB | 399 MB | 218 MB |
+
+  - gpui passes the 100 MB target only on private working set. Which metric counts is the owner's decision (see Method).
+- **Minimal window.** gpui, egui (glow) and Slint pass all three memory columns. Tauri passes only private working set (83 MB). It fails summed working set (319 MB) and commit (141 MB).
+- **Ready-made widgets.** gpui-component ships a virtualised table and a code editor with tree-sitter SQL highlighting, find/replace and a completion hook. The current docs also list multi-cursor. Those docs describe 0.10, while 0.5.1 was the version measured (see the loaded-window notes).
+- **Tauri** gets the best editor and existing plan viewers for free, but WebView2 costs too much. An empty page used 83 MB private. Loaded, the webview processes reached 96 MB before counting any data, so Tauri cannot meet a 100 MB target once the app holds results.
 - **egui** (glow renderer) and **Slint** are the lightest: 23–28 MB. Neither has a code editor with multi-cursor and find/replace, so the editor would have to be written. egui is the fallback if the gpui spike fails.
 
 The costs of gpui:
@@ -97,6 +104,7 @@ A **data-only** process holding the same strings with no UI used **59.3 MB priva
 Notes on the table:
 
 - **Tauri per process** (private WS, MB, from a separate run totalling 159.2): host 63.3, which is mostly the data. The webview children 36.6, 27.3, 21.2, 6.5, 2.7 and 1.6, totalling 95.9.
+- **gpui-component version**: the measured app uses 0.5.1, but the editor features cited in the Capabilities table come from the 0.10 docs. The 0.5.1 source has an `input/search.rs`, so find/replace is likely there. Multi-cursor in 0.5.1 is not verified. The 98.5 MB is a measurement of 0.5.1, not of the full 0.10 feature set.
 - **gpui exe size**: 57.5 MB, because the `tree-sitter-languages` feature compiles in every bundled grammar. Building with only the SQL grammar would shrink it. Not measured.
 - **Tauri startup**: the loaded app's run 1, at 1065 ms, missed the 1 s target. Its warm runs took 470–700 ms.
 - **Not measured**:
