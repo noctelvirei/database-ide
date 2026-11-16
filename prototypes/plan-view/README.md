@@ -20,13 +20,13 @@ Sources and licences are in [`plans/NOTICE.md`](plans/NOTICE.md). Estimated rows
 
 Selecting an operator in any view fills the inspector: warnings and the misestimate first, then rows, executions, own and inclusive cost and time, reads, predicates and engine-specific details.
 
-Screenshots (1600 × 1000, the app window only) are in [`screenshots/`](screenshots): each view with the first SQL Server plan (`a-graph-sqlserver.png`, `b-table-sqlserver.png`, `c-icicle-sqlserver.png`) and with the PostgreSQL plan (`*-postgres.png`), plus three with a misestimated operator selected: `misestimate-a-graph-postgres.png` (Seq Scan on customers, 128 estimated, 2,500 actual), `misestimate-b-table-sqlserver-keylookup.png` and `misestimate-c-icicle-sqlserver.png` (Clustered Index Seek, 22,749 estimated, 21 actual).
+Screenshots (1600 × 1000, the app window only) are in [`screenshots/`](screenshots): each view with the first SQL Server plan (`a-graph-sqlserver.png`, `b-table-sqlserver.png`, `c-icicle-sqlserver.png`) and with the PostgreSQL plan (`*-postgres.png`), plus three with a misestimated operator selected: `misestimate-a-graph-postgres.png` (Seq Scan on customers, 128 estimated, 2,500 actual), `misestimate-b-table-sqlserver-keylookup.png` (Clustered Index Seek, 22,749 estimated, 21 actual) and `misestimate-c-icicle-sqlserver.png` (Nested Loops, 156× too many rows estimated). `warning-a-graph-sqlserver.png` shows A's warning badge on the spilling Hash Match with the spill in the inspector. `keys-check.png` is the result of replaying F9, F8, F8, Down, Down from A: view B, the PostgreSQL plan, Sort selected.
 
 ## What the screenshots show
 
 - The Plan tab in layout C gets about 960 × 400 px. A's graph of 16 operators is wider and taller than that, so it scrolls in both directions and never shows the whole plan at once; B and C fit both plans without scrolling sideways.
 - B makes the misestimates and the expensive rows readable at a glance (the key lookup at 96 % cost and 41.2M reads, the 1,083× seek), but loses the shape of the plan below a few levels of indentation.
-- C shows where the cost goes in one look, but long single-input chains (Compute Scalar, Parallelism, Stream Aggregate) each take a full-width row, and operators under about 0.05 % of the cost are too thin to see or click.
+- C shows where the cost goes in one look, but long single-input chains (Compute Scalar, Parallelism, Stream Aggregate) each take a full-width row, and cheap operators are a few pixels wide or not drawn at all. The worst misestimate in `serially-parallel` (the 1,083× seek) costs 0.2 %, so C can't show it: sizing by cost hides exactly the cheap operator whose bad estimate caused the expensive one.
 - SQL Server doesn't time some operators (Compute Scalar); they show their input's rows and time, as SSMS does.
 - PostgreSQL costs a node per loop. The inner side of a nested loop is multiplied by the outer side's estimated rows so cost percentages add up; without that, C hides the inner index scans entirely.
 

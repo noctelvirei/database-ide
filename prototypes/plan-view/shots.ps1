@@ -56,13 +56,16 @@ $shots = @(
     @{ Name = 'c-icicle-postgres'; Args = @('--variant', 'c', '--plan', '2') },
     @{ Name = 'misestimate-a-graph-postgres'; Args = @('--variant', 'a', '--plan', '2', '--select', '6') },
     @{ Name = 'misestimate-b-table-sqlserver-keylookup'; Args = @('--variant', 'b', '--plan', '1', '--select', '15') },
-    @{ Name = 'misestimate-c-icicle-sqlserver'; Args = @('--variant', 'c', '--plan', '1', '--select', '15') }
+    @{ Name = 'misestimate-c-icicle-sqlserver'; Args = @('--variant', 'c', '--plan', '1', '--select', '5') },
+    @{ Name = 'warning-a-graph-sqlserver'; Args = @('--variant', 'a', '--plan', '0', '--select', '6') },
+    # Keyboard check: F9 to B, F8 twice to the PostgreSQL plan, Down twice selects Sort.
+    @{ Name = 'keys-check'; Args = @('--variant', 'a', '--plan', '0', '--keys', 'f9,f8,f8,down,down'); Wait = 12 }
 )
 New-Item -ItemType Directory -Force $OutDir | Out-Null
 foreach ($shot in $shots) {
     $proc = Start-Process -FilePath $Exe -ArgumentList $shot.Args -PassThru
     try {
-        Start-Sleep -Seconds $WaitSeconds
+        Start-Sleep -Seconds $(if ($shot.ContainsKey('Wait')) { $shot.Wait } else { $WaitSeconds })
         $proc.Refresh()
         Save-ClientShot $proc.MainWindowHandle (Join-Path $OutDir "$($shot.Name).png")
     }
