@@ -13,7 +13,7 @@ The product decisions are in [docs/spec.md](docs/spec.md) and the vocabulary in 
   - our fork of `tokio-postgres` at https://github.com/noctelvirei/rust-postgres, through `[patch.crates-io]` ([ADR 0001](docs/adr/0001-own-tokio-postgres-fork.md))
   - `mysql_async`
 - TLS for PostgreSQL and MySQL: `native-tls` (SChannel on Windows).
-- Other crates to use before writing anything by hand: `sqlparser` (danger check), `quick-xml` (showplan), `serde` / `serde_json` (EXPLAIN JSON, plan trees), `toml` (connections file), `keyring` (passwords), `csv`, `rust_xlsxwriter` (constant-memory mode), `thiserror` (error types), `tracing` (logging), `tempfile` (spill files and test servers), `clap` (CLI). Adding any other dependency needs the owner's yes.
+- Other crates to use before writing anything by hand: `sqlparser` (danger check), `quick-xml` (showplan), `serde` / `serde_json` (EXPLAIN JSON, plan trees), `toml` (connections file), `keyring` (passwords), `csv`, `rust_xlsxwriter` (constant-memory mode), `thiserror` (error types), `tracing` (logging), `tempfile` (spill files and test servers), `clap` (CLI), `futures`, `tokio-util`, `bytes`, `postgres-native-tls`, `rand` (test database names), `memmap2` (reading the spill file). Adding any other dependency needs the owner's yes. Overnight, a ticket that needs one is parked with the question on it, and work moves to the next independent ticket.
 - Pinned versions upgrade only on purpose, in a change of their own.
 
 ## Structure
@@ -58,7 +58,8 @@ Real servers are the test ([testing decision](https://github.com/noctelvirei/dat
 - **PostgreSQL 18**: the harness starts a throwaway server per test run: `initdb` into a temp folder, a free port, deleted afterwards. Binaries from `DBIDE_PG_BIN`.
 - **MySQL 8.4**: the same, with `mysqld --initialize-insecure`, binaries from `DBIDE_MYSQL_BIN`.
 - **SQL Server 2025 Developer**: a fresh `dbide_test_<random>` database per test, dropped afterwards, plus a sweep for leftovers. Server from `DBIDE_MSSQL` (host, port, sign-in).
-- A test whose server variable is unset fails with a message naming the variable, unless it is run through the matching feature-gated skip (`--skip mssql`), which the record must state. A skipped engine is never reported as passing.
+- Every real-server test's name starts with its engine: `mssql_`, `pg_`, `mysql_`. A test whose server variable is unset fails with a message naming the variable. While a server isn't available, run `cargo test --workspace --locked -- --skip mssql_` (and so on), and the record states exactly which prefixes were skipped. A skipped engine is never reported as passing.
+- Tests that touch Windows Credential Manager use the service name `database-ide-test` and delete their entries afterwards.
 - `mssql-mock-tds` only for failures a real server won't produce on demand.
 - Test data is invented, from scripts in the repo.
 

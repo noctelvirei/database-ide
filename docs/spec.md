@@ -1,6 +1,6 @@
 # Database IDE: first-version spec
 
-The decisions behind each section are closed tickets linked from the [wayfinder map](https://github.com/noctelvirei/database-ide/issues/1); this file gathers them into one buildable whole. Vocabulary is in [CONTEXT.md](../CONTEXT.md). Where this file and a ticket disagree, the ticket's resolution comment wins and this file is fixed.
+The decisions behind each section are closed tickets linked from the [wayfinder map](https://github.com/noctelvirei/database-ide/issues/1); this file gathers them into one buildable whole. Vocabulary is in [CONTEXT.md](../CONTEXT.md). This file is authoritative; the tickets record why.
 
 ## What it is
 
