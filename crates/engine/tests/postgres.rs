@@ -535,7 +535,10 @@ async fn pg_copy_protocol_failure_discards_the_connection_instead_of_hanging() {
     .await
     .unwrap();
     assert!(matches!(failed[0], Event::Error { .. }));
-    assert!(matches!(failed[1], Event::Done { .. }));
+    assert!(
+        matches!(&failed[1], Event::Error { text, .. } if text == "PostgreSQL connection is closed")
+    );
+    assert!(matches!(failed[2], Event::Done { .. }));
     let next: Vec<_> =
         tokio::time::timeout(Duration::from_secs(3), session.run("SELECT 1").collect())
             .await
@@ -628,4 +631,31 @@ async fn pg_batch_on_a_terminated_session_reports_an_error() {
             .any(|event| matches!(event, Event::Error { .. })),
         "{second:?}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_escape_format_bytea_ff_converts_without_panicking() {
+    let database = database().await;
+    let mut session = open(&database).await;
+    let events: Vec<_> = session
+        .run("SET bytea_output = 'escape'; SELECT decode('ff', 'hex')")
+        .collect()
+        .await;
+    assert!(
+        events.contains(&Event::Rows(vec![vec![Value::Bytes(vec![0xff])]])),
+        "{events:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_danger_estimate_of_a_delete_inside_a_cte_is_unknown() {
+    let database = database().await;
+    let mut session = open(&database).await;
+    setup(&mut session, "CREATE TABLE t (id int)").await;
+    let batch = "WITH removed AS (DELETE FROM t RETURNING *) SELECT * FROM removed";
+    let check = danger::check(batch, Engine::PostgreSql);
+    let estimates = postgres::estimate_rows(&mut session, batch, &check.statements)
+        .await
+        .unwrap();
+    assert_eq!(estimates, vec![None]);
 }

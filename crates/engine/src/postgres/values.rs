@@ -123,7 +123,7 @@ fn bytea(text: &str) -> Option<Vec<u8>> {
         {
             return None;
         }
-        bytes.push((digits[0] - b'0') * 64 + (digits[1] - b'0') * 8 + digits[2] - b'0');
+        bytes.push((digits[0] - b'0') * 64 + (digits[1] - b'0') * 8 + (digits[2] - b'0'));
     }
     Some(bytes)
 }

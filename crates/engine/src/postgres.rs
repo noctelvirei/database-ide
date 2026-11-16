@@ -1,6 +1,8 @@
 //! PostgreSQL simple-query sessions, ordered notices, cancellation and execution plans.
 
 use std::fmt;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use futures::{StreamExt, future, stream};
@@ -82,6 +84,9 @@ struct Request {
     mode: Option<PlanMode>,
     events: mpsc::Sender<Event>,
     cancel: CancellationToken,
+    /// Set by the worker once it has handled the request; a run whose events end
+    /// without it saw the worker stop (closed connection or panic).
+    handled: Arc<AtomicBool>,
 }
 
 struct Notice {
@@ -195,21 +200,27 @@ impl Postgres {
     fn request<'a>(&'a mut self, batch: &str, mode: Option<PlanMode>) -> Run<'a> {
         let token = CancellationToken::new();
         let (events, receiver) = mpsc::channel(16);
+        let handled = Arc::new(AtomicBool::new(false));
         let request = Request {
             batch: batch.into(),
             mode,
             events,
             cancel: token.clone(),
+            handled: handled.clone(),
         };
         let requests = self.requests.clone();
         let source = stream::once(async move {
             if requests.send(request).await.is_err() {
                 return stream::once(async { closed() }).boxed();
             }
-            stream::unfold(receiver, |mut receiver| async move {
+            let events = stream::unfold(receiver, |mut receiver| async move {
                 receiver.recv().await.map(|event| (event, receiver))
-            })
-            .boxed()
+            });
+            // Checked after the channel closes: the worker sets it before dropping the sender.
+            let stopped =
+                stream::once(async move { (!handled.load(Ordering::Acquire)).then(closed) })
+                    .filter_map(future::ready);
+            events.chain(stopped).boxed()
         })
         .flatten();
         Run::new(source, token)
@@ -245,21 +256,21 @@ async fn worker(
             }
             request = requests.recv() => {
                 let Some(request) = request else { break; };
-                if request.cancel.is_cancelled() { continue; }
-                if let Some(mode) = request.mode {
-                    if plans::run(&client, &mut notices, &cancellation, &request, mode).await.is_err() { break; }
-                } else {
-                    if execution::run(&client, &mut notices, &cancellation, &request, &request.batch, false).await.is_err() { break; }
+                if request.cancel.is_cancelled() {
+                    request.handled.store(true, Ordering::Release);
+                    continue;
                 }
+                let failed = if let Some(mode) = request.mode {
+                    plans::run(&client, &mut notices, &cancellation, &request, mode).await.is_err()
+                } else {
+                    execution::run(&client, &mut notices, &cancellation, &request, &request.batch, false).await.is_err()
+                };
+                if failed { break; }
+                request.handled.store(true, Ordering::Release);
             }
         }
     }
-    // A request queued while the worker stopped would otherwise end with Done alone,
-    // which reads as success; answer each with the closed-connection error instead.
-    requests.close();
-    while let Ok(request) = requests.try_recv() {
-        execution::send(&request, closed()).await;
-    }
+    // Requests still queued are dropped unhandled here, so their runs end with `closed()`.
 }
 
 /// The error a run reports when the session's connection is gone.
@@ -289,8 +300,9 @@ async fn idle_query(
 }
 
 /// Estimates flagged UPDATE/DELETE rows in finding order without executing those statements.
-/// Other danger kinds return None; rows come from the top estimated-plan node after adding
-/// RETURNING 1 where absent (PostgreSQL otherwise reports zero for a ModifyTable root).
+/// Other danger kinds, and an UPDATE/DELETE inside a CTE, return None; rows come from
+/// the top estimated-plan node after adding RETURNING 1 where absent (PostgreSQL
+/// otherwise reports zero for a ModifyTable root).
 pub async fn estimate_rows(
     session: &mut Postgres,
     batch: &str,

@@ -145,14 +145,17 @@ pub(super) async fn estimate_rows(
     batch: &str,
     flagged: &[DangerousStatement],
 ) -> Result<Vec<Option<f64>>, Error> {
-    let mut statements = statements(batch)?.into_iter().peekable();
+    let statements = statements(batch)?;
     let mut estimates = Vec::with_capacity(flagged.len());
     for finding in flagged {
         if !matches!(finding.kind, DangerKind::Update | DangerKind::Delete) {
             estimates.push(None);
             continue;
         }
-        let mut statement = statements
+        // A flagged UPDATE/DELETE nested in a CTE has no top-level statement of its own;
+        // its estimate is unknown rather than an error.
+        let Some(found) = statements
+            .iter()
             .find(|statement| match &statement.statement {
                 Statement::Update(update) => {
                     finding.kind == DangerKind::Update
@@ -164,8 +167,11 @@ pub(super) async fn estimate_rows(
                 }
                 _ => false,
             })
-            .ok_or(Error::EstimateStatement)?
-            .statement;
+        else {
+            estimates.push(None);
+            continue;
+        };
+        let mut statement = found.statement.clone();
         let returning = match &mut statement {
             Statement::Update(update) => &mut update.returning,
             Statement::Delete(delete) => &mut delete.returning,
