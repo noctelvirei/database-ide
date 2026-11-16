@@ -43,8 +43,12 @@ A run whose rows stream straight into an export file without being shown in the 
 _Avoid_: Bulk export, dump
 
 **Dangerous statement**:
-A statement the IDE asks the user to confirm before running: an `UPDATE` or `DELETE` with no `WHERE`, a `DROP` or a `TRUNCATE`.
+A statement that can destroy data or take a database away, which the IDE asks the user to confirm before running, such as an `UPDATE` or `DELETE` with no real `WHERE`, a `DROP`, a `TRUNCATE` or a `RESTORE DATABASE`.
 _Avoid_: Destructive query, unsafe SQL
+
+**Danger check**:
+The per-connection setting, inherited from its connection folder, that decides whether dangerous statements are confirmed before a run.
+_Avoid_: Safe mode, production mode
 
 **Edit mode**:
 The state of a results grid in which its cells can be changed; grids are read-only until the user turns it on.
