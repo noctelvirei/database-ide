@@ -7,21 +7,23 @@
 //! - `BENCH_FIRST_FRAME`: file to write the epoch ms of the first `render()` call to.
 //! - `SPIKE_DUMP`: file F12 writes the app state to, as JSON, for the keyboard script.
 //! - `SPIKE_AUTOSCROLL`: file to write frame-time statistics to after scrolling the grid
-//!   from the first row to the last; `SPIKE_AUTOSCROLL_STEP` sets the rows per frame.
+//!   from the first row to the last; see `autoscroll.rs` for the modes.
 //! - `SPIKE_KEYSCRIPT`: file to append the keyboard script's per-step state to; runs it.
 //! - `SPIKE_DATA_DIR`: folder for the data file (default: a folder in the temp directory).
 #![windows_subsystem = "windows"]
 
+mod autoscroll;
 mod completion;
 mod grid;
 mod keyscript;
 mod plan;
 
+use std::cell::Cell;
 use std::rc::Rc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::{
-    App, AppContext, Bounds, Context, Entity, FocusHandle, Focusable, KeyBinding, Render,
+    App, AppContext, Bounds, Context, Pixels, canvas, Entity, FocusHandle, Focusable, KeyBinding, Render,
     SharedString, Window, WindowBounds, WindowOptions, actions, div, prelude::*, px, size,
 };
 use gpui_component::input::{Editor, EditorState, ShowCompletions};
@@ -55,20 +57,13 @@ enum Pane {
 
 const PANES: [Pane; 4] = [Pane::Editor, Pane::Grid, Pane::Plan, Pane::Details];
 
-/// Frame-time recording while the grid scrolls itself end to end.
-struct AutoScroll {
-    out: String,
-    step: usize,
-    row: usize,
-    last: Option<Instant>,
-    intervals_ms: Vec<f64>,
-}
-
 pub(crate) struct Workbench {
     editor: Entity<EditorState>,
     table: Entity<TableState<FileRows>>,
     pub(crate) plan: Entity<PlanView>,
     details_focus: FocusHandle,
+    /// The grid pane's bounds as last painted, for the scroll measurement.
+    grid_bounds: Rc<Cell<Bounds<Pixels>>>,
     first_frame_written: bool,
 }
 
@@ -140,70 +135,6 @@ impl Workbench {
             plan.selected.map(|i| plan.nodes[i].name),
         )
     }
-
-    fn start_autoscroll(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let Ok(out) = std::env::var("SPIKE_AUTOSCROLL") else { return };
-        let step = std::env::var("SPIKE_AUTOSCROLL_STEP")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(997);
-        let table = self.table.clone();
-        let state = AutoScroll { out, step, row: 0, last: None, intervals_ms: Vec::new() };
-        // Give the window a second to settle before scrolling.
-        cx.spawn_in(window, async move |_, cx| {
-            cx.background_executor().timer(Duration::from_secs(1)).await;
-            let _ = cx.update(|window, _| autoscroll_frame(table, state, window));
-        })
-        .detach();
-    }
-}
-
-/// One frame of the self-driven scroll: record the interval since the last frame, move the
-/// grid on by `step` rows, and ask for another frame until the last row has been shown.
-fn autoscroll_frame(table: Entity<TableState<FileRows>>, mut s: AutoScroll, window: &mut Window) {
-    window.on_next_frame(move |window, cx| {
-        let now = Instant::now();
-        if let Some(last) = s.last {
-            s.intervals_ms.push(now.duration_since(last).as_secs_f64() * 1000.);
-        }
-        s.last = Some(now);
-        if s.row >= grid::ROWS {
-            write_frame_stats(&s);
-            return;
-        }
-        let row = s.row.min(grid::ROWS - 1);
-        table.update(cx, |t, cx| {
-            t.scroll_to_row(row, cx);
-            cx.notify();
-        });
-        s.row += s.step;
-        if s.row >= grid::ROWS && row != grid::ROWS - 1 {
-            s.row = grid::ROWS - 1;
-        } else if row == grid::ROWS - 1 {
-            s.row = grid::ROWS;
-        }
-        window.refresh();
-        autoscroll_frame(table, s, window);
-    });
-}
-
-fn write_frame_stats(s: &AutoScroll) {
-    let mut v = s.intervals_ms.clone();
-    v.sort_by(|a, b| a.total_cmp(b));
-    let pct = |p: f64| v.get(((v.len() as f64 - 1.) * p).round() as usize).copied().unwrap_or(0.);
-    let over = |ms: f64| v.iter().filter(|x| **x > ms).count();
-    let text = format!(
-        "{{\"step_rows\":{},\"frames\":{},\"p50_ms\":{:.2},\"p95_ms\":{:.2},\"p99_ms\":{:.2},\"max_ms\":{:.2},\"over_25ms\":{},\"over_50ms\":{}}}\n",
-        s.step,
-        v.len(),
-        pct(0.5),
-        pct(0.95),
-        pct(0.99),
-        v.last().copied().unwrap_or(0.),
-        over(25.),
-        over(50.)
-    );
-    let _ = std::fs::write(&s.out, text);
 }
 
 fn pane_frame(focused: bool, cx: &App) -> gpui::Div {
@@ -222,7 +153,7 @@ impl Render for Workbench {
                 let ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis());
                 let _ = std::fs::write(path, ms.to_string());
             }
-            self.start_autoscroll(window, cx);
+            autoscroll::start(self.table.clone(), self.grid_bounds.clone(), window, cx);
             if let Ok(out) = std::env::var("SPIKE_KEYSCRIPT") {
                 cx.spawn_in(window, async move |this, cx| keyscript::start(out, this, cx).await)
                     .detach();
@@ -286,7 +217,20 @@ impl Render for Workbench {
             .child(
                 pane_frame(focused == Some(Pane::Grid), cx)
                     .flex_1()
-                    .child(DataTable::new(&self.table).stripe(true)),
+                    .relative()
+                    .child(
+                        DataTable::new(&self.table)
+                            .stripe(true)
+                            .scrollbar_mode(gpui_component::scroll::ScrollbarMode::Always),
+                    )
+                    .child({
+                        let grid_bounds = self.grid_bounds.clone();
+                        canvas(move |b, _, _| grid_bounds.set(b), |_, _, _, _| {})
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full()
+                    }),
             )
             .child(
                 div()
@@ -382,7 +326,14 @@ fn main() -> anyhow::Result<()> {
                 })
                 .detach();
                 cx.observe(&plan, |_, _, cx| cx.notify()).detach();
-                Workbench { editor: editor.clone(), table, plan, details_focus, first_frame_written: false }
+                Workbench {
+                    editor: editor.clone(),
+                    table,
+                    plan,
+                    details_focus,
+                    grid_bounds: Rc::default(),
+                    first_frame_written: false,
+                }
             });
             editor.update(cx, |e, cx| e.focus(window, cx));
             cx.new(|cx| Root::new(view, window, cx))

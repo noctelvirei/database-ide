@@ -1,0 +1,16 @@
+scroll.ps1 output, release build, 120 Hz display (8.33 ms per frame). Memory is the single gpui-spike.exe process.
+
+-Mode jump (TableState::scroll_to_row, 997 rows per frame)
+before scroll: working_set_mb=123.5 private_ws_mb=75.4 commit_mb=103.1
+frames: {"mode":"jump","step":997,"frames":1004,"seconds":8.6,"last_visible_row_end":1000000,"p50_ms":8.33,"p95_ms":8.98,"p99_ms":20.17,"max_ms":44.93,"over_25ms":7,"over_50ms":0}
+after scroll: working_set_mb=123.1 private_ws_mb=73.8 commit_mb=102.7
+
+-Mode wheel (scroll-wheel events over the grid, 997 rows of pixels per frame)
+before scroll: working_set_mb=119.9 private_ws_mb=75.5 commit_mb=99.6
+frames: {"mode":"wheel","step":997,"frames":1004,"seconds":8.6,"last_visible_row_end":1000000,"p50_ms":8.32,"p95_ms":9.11,"p99_ms":15.41,"max_ms":121.52,"over_25ms":5,"over_50ms":1}
+after scroll: working_set_mb=123.3 private_ws_mb=75.2 commit_mb=102.9
+
+-Mode drag (scrollbar thumb pressed and dragged 1 px per frame, scrollbar mode Always)
+before scroll: working_set_mb=121.1 private_ws_mb=72.1 commit_mb=100.8
+frames: {"mode":"drag","step":1,"frames":526,"seconds":4.4,"last_visible_row_end":1000000,"p50_ms":8.34,"p95_ms":9.28,"p99_ms":10.68,"max_ms":16.93,"over_25ms":0,"over_50ms":0}
+after scroll: working_set_mb=123.7 private_ws_mb=74.3 commit_mb=103.8

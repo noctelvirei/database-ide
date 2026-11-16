@@ -31,8 +31,12 @@ cargo run --release
 | Arrows | Plan: Up/Down previous/next operator, Left parent, Right first child |
 | F12 | Write app state to `SPIKE_DUMP` (measurement only) |
 
+Ctrl+Space, Ctrl+Home/End in the grid, the pane keys and the plan's arrow keys are bound by the spike, not by gpui-component; see RESULTS.md.
+
 ## Measurement scripts
 
 - `measure.ps1`: startup and memory, the same method as the toolkit research.
-- `scroll.ps1`: frame times while the grid scrolls itself end to end, then memory.
-- `keys.ps1`: sends the keyboard script with real key presses and records the state after each step.
+- `scroll.ps1 -Mode jump|wheel|drag`: frame times while the grid scrolls itself end to end, then memory.
+- `keys.ps1`: runs the keyboard script in `src/keyscript.rs` and saves screenshots; the app records its state after each step.
+
+Each script takes `-Exe` with the path of the release exe. Their outputs from the spike run are in `evidence/`.

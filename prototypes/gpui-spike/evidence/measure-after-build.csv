@@ -1,0 +1,7 @@
+app,run,startup_ms,processes,working_set_mb,private_ws_mb,commit_mb,process_tree
+gpui-spike,1,735,1,121.1,70.5,100.4,gpui-spike.exe x1
+gpui-spike,2,146,1,119.3,70.9,99.0,gpui-spike.exe x1
+gpui-spike,3,148,1,119.5,71.0,99.1,gpui-spike.exe x1
+gpui-spike,4,182,1,119.5,71.0,99.1,gpui-spike.exe x1
+gpui-spike,5,199,1,120.9,70.2,100.4,gpui-spike.exe x1
+gpui-spike,6,125,1,117.3,70.8,98.9,gpui-spike.exe x1
