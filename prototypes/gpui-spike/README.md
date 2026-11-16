@@ -16,7 +16,7 @@ From this folder:
 cargo run --release
 ```
 
-`rust-toolchain.toml` pins Rust 1.100.0. The first run writes the 1M-row data file (about 140 MB) to a folder in the system temp directory, or to `SPIKE_DATA_DIR` if set; later runs reuse it. Set `CARGO_TARGET_DIR` to keep build output off the source drive.
+`rust-toolchain.toml` pins Rust 1.100.0. The first run writes the 1M-row data file (118 MB, plus an 8 MB row index) to a folder in the system temp directory, or to `SPIKE_DATA_DIR` if set; later runs reuse it. Set `CARGO_TARGET_DIR` to keep build output off the source drive.
 
 ## Keys
 

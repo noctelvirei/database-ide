@@ -173,13 +173,21 @@ fn write_stats(r: &Run, last_row: usize, grid: Bounds<Pixels>) {
     v.sort_by(|a, b| a.total_cmp(b));
     let pct = |p: f64| v.get(((v.len() as f64 - 1.) * p).round() as usize).copied().unwrap_or(0.);
     let over = |ms: f64| v.iter().filter(|x| **x > ms).count();
+    // Frame number and length of every interval over 25 ms, to tell warm-up from mid-scroll.
+    let slow: Vec<String> = r
+        .intervals_ms
+        .iter()
+        .enumerate()
+        .filter(|(_, ms)| **ms > 25.)
+        .map(|(i, ms)| format!("{i}:{ms:.0}"))
+        .collect();
     let mode = match r.mode {
         Mode::Jump => "jump",
         Mode::Wheel => "wheel",
         Mode::Drag => "drag",
     };
     let text = format!(
-        "{{\"mode\":\"{mode}\",\"grid\":\"{grid:?}\",\"step\":{},\"frames\":{},\"seconds\":{:.1},\"last_visible_row_end\":{last_row},\"p50_ms\":{:.2},\"p95_ms\":{:.2},\"p99_ms\":{:.2},\"max_ms\":{:.2},\"over_25ms\":{},\"over_50ms\":{}}}\n",
+        "{{\"mode\":\"{mode}\",\"grid\":\"{grid:?}\",\"step\":{},\"frames\":{},\"seconds\":{:.1},\"last_visible_row_end\":{last_row},\"p50_ms\":{:.2},\"p95_ms\":{:.2},\"p99_ms\":{:.2},\"max_ms\":{:.2},\"over_25ms\":{},\"over_50ms\":{},\"slow_frames\":\"{}\"}}\n",
         r.step,
         v.len(),
         r.last.map_or(0., |l| l.duration_since(r.started).as_secs_f64()),
@@ -188,7 +196,8 @@ fn write_stats(r: &Run, last_row: usize, grid: Bounds<Pixels>) {
         pct(0.99),
         v.last().copied().unwrap_or(0.),
         over(25.),
-        over(50.)
+        over(50.),
+        slow.join(" ")
     );
     let _ = std::fs::write(&r.out, text);
 }

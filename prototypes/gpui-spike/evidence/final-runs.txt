@@ -1,0 +1,36 @@
+app,run,startup_ms,processes,working_set_mb,private_ws_mb,commit_mb,process_tree
+gpui-spike,1,796,1,117.0,70.9,98.9,gpui-spike.exe x1
+gpui-spike,2,125,1,117.0,70.9,98.8,gpui-spike.exe x1
+gpui-spike,3,173,1,117.0,70.8,98.8,gpui-spike.exe x1
+gpui-spike,4,124,1,116.9,70.7,98.6,gpui-spike.exe x1
+gpui-spike,5,132,1,117.2,70.9,99.0,gpui-spike.exe x1
+gpui-spike,6,124,1,117.3,70.8,98.9,gpui-spike.exe x1
+== wheel
+before scroll: working_set_mb=120.8 private_ws_mb=75.3 commit_mb=102.5
+frames: {"mode":"wheel","grid":"Bounds { origin: Point { x: 2px, y: 263px }, size: Size { 1496px × 335px } }","step":997,"frames":1004,"seconds":8.6,"last_visible_row_end":1000000,"p50_ms":8.32,"p95_ms":8.82,"p99_ms":20.16,"max_ms":43.35,"over_25ms":4,"over_50ms":0,"slow_frames":"162:43 281:26 801:30 877:35"}
+after scroll: working_set_mb=120.7 private_ws_mb=73.9 commit_mb=102.4
+== jump
+before scroll: working_set_mb=120.2 private_ws_mb=74.7 commit_mb=101.9
+frames: {"mode":"jump","grid":"Bounds { origin: Point { x: 2px, y: 263px }, size: Size { 1496px × 335px } }","step":997,"frames":1004,"seconds":8.4,"last_visible_row_end":1000000,"p50_ms":8.32,"p95_ms":8.75,"p99_ms":9.41,"max_ms":18.92,"over_25ms":0,"over_50ms":0,"slow_frames":""}
+after scroll: working_set_mb=119.8 private_ws_mb=72.7 commit_mb=101.5
+== wheel
+before scroll: working_set_mb=120.3 private_ws_mb=74.7 commit_mb=101.9
+frames: {"mode":"wheel","grid":"Bounds { origin: Point { x: 2px, y: 263px }, size: Size { 1496px × 335px } }","step":997,"frames":1004,"seconds":8.4,"last_visible_row_end":1000000,"p50_ms":8.32,"p95_ms":8.73,"p99_ms":9.34,"max_ms":15.09,"over_25ms":0,"over_50ms":0,"slow_frames":""}
+after scroll: working_set_mb=120.7 private_ws_mb=73.9 commit_mb=102.3
+== jump
+before scroll: working_set_mb=120.3 private_ws_mb=74.4 commit_mb=102.0
+frames: {"mode":"jump","grid":"Bounds { origin: Point { x: 2px, y: 263px }, size: Size { 1496px × 335px } }","step":997,"frames":1004,"seconds":8.4,"last_visible_row_end":1000000,"p50_ms":8.32,"p95_ms":8.72,"p99_ms":9.83,"max_ms":16.40,"over_25ms":0,"over_50ms":0,"slow_frames":""}
+after scroll: working_set_mb=120.0 private_ws_mb=73.2 commit_mb=101.7
+== wheel
+before scroll: working_set_mb=120.6 private_ws_mb=74.8 commit_mb=102.3
+frames: {"mode":"wheel","grid":"Bounds { origin: Point { x: 2px, y: 263px }, size: Size { 1496px × 335px } }","step":997,"frames":1004,"seconds":8.4,"last_visible_row_end":1000000,"p50_ms":8.31,"p95_ms":8.76,"p99_ms":11.26,"max_ms":19.43,"over_25ms":0,"over_50ms":0,"slow_frames":""}
+after scroll: working_set_mb=120.5 private_ws_mb=73.8 commit_mb=102.1
+== jump
+before scroll: working_set_mb=120.1 private_ws_mb=74.5 commit_mb=101.7
+frames: {"mode":"jump","grid":"Bounds { origin: Point { x: 2px, y: 263px }, size: Size { 1496px × 335px } }","step":997,"frames":1004,"seconds":8.4,"last_visible_row_end":1000000,"p50_ms":8.32,"p95_ms":8.68,"p99_ms":9.04,"max_ms":13.88,"over_25ms":0,"over_50ms":0,"slow_frames":""}
+after scroll: working_set_mb=119.6 private_ws_mb=72.9 commit_mb=101.1
+== drag
+before scroll: working_set_mb=119.1 private_ws_mb=72.9 commit_mb=100.7
+frames: {"mode":"drag","grid":"Bounds { origin: Point { x: 2px, y: 263px }, size: Size { 1496px × 335px } }","step":1,"frames":6000,"seconds":50.0,"last_visible_row_end":10,"p50_ms":8.32,"p95_ms":8.72,"p99_ms":9.08,"max_ms":13.99,"over_25ms":0,"over_50ms":0,"slow_frames":""}
+after scroll: working_set_mb=118.8 private_ws_mb=72.0 commit_mb=100.4
+ALL DONE

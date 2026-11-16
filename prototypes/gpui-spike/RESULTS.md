@@ -4,16 +4,16 @@ Run on 2026-11-16, Windows 11 Pro 10.0.26300, 120 Hz display, Rust 1.100.0, rele
 
 **Versions:** gpui-component `=0.10.0` (crates.io, published 2026-11-16, the newest) with only the `tree-sitter-sql` feature; gpui as `gpui-pre =0.3.12` and its platform crate `gpui-pre-platform =0.3.12`, the versions gpui-component 0.10.0 pins.
 
-**Verdict: pass on every condition, with two keyboard gaps the app has to close itself.** Neither gap needs a hand-built widget.
+**Verdict: four of the five conditions pass as shipped. "Fully usable by keyboard" is not met out of the box: the find/replace panel's Replace and Replace All have no key.** The likely fix is a patch of about 15 lines to gpui-component's search panel, carried in our own fork; it was read in the source, not built. Everything else the keyboard needed was a one-line key binding in the app.
 
 | Condition (issue #8) | Result | Evidence |
 |---|---|---|
 | Editor: multi-cursor, find/replace, completion popup | **Pass** | Script steps 13–22, screenshots |
-| 1M rows paged from a file scroll with no stutter | **Pass** | `evidence/scroll.txt` |
+| 1M rows paged from a file scroll with no stutter | **Pass**: p50 8.3 ms at 120 Hz; one frame over 50 ms in 8 end-to-end runs | `evidence/scroll.txt`, `evidence/final-runs.txt` |
 | Custom plan tree renders and responds to clicks | **Pass** | Steps 28–32, `plan-click.png` |
-| Idle app opens in under 1 s | **Pass**: 735 ms first run after a build, 148–208 ms warm | `evidence/measure-*.csv` |
-| Idle app under 100 MB private working set | **Pass**: 70.9 MB | `evidence/measure-final.csv` |
-| Fully usable by keyboard | **Pass with two gaps**: Replace has no key, and the grid needs app bindings | Steps 1–31 |
+| Idle app opens in under 1 s | **Pass**: 796 ms first run after the final build, 125 ms warm median | `evidence/final-runs.txt` |
+| Idle app under 100 MB private working set | **Pass**: 70.9 MB | `evidence/final-runs.txt` |
+| Fully usable by keyboard | **Not met as shipped**: Replace / Replace All are mouse-only. Fix: a small patch to the search panel (below). Everything else works by keyboard, given one-line app bindings | Steps 1–31 |
 
 ## What was built
 
@@ -30,31 +30,40 @@ The code is in `src/`: `main.rs` (window, panes, keys), `grid.rs` (data file and
 
 Measured with the research's `measure.ps1`, unchanged: first frame is the first `render()` call of the root view; memory is read 5 s after it and summed over the app's processes (there is one).
 
-| | Startup (ms) | Private WS (MB) | Summed WS (MB) | Commit (MB) |
-|---|---|---|---|---|
-| First run after a build | 735 | 70.5 | 121.1 | 100.4 |
-| Warm, median of 5 (first measurement) | 148 | 70.9 | 119.5 | 99.1 |
-| Warm, median of 5 (final build) | 208 | 70.9 | 119.3 | 99.1 |
+| Build | Startup run 1, straight after the build (ms) | Warm startup, median of runs 2–6 (ms) | Private WS (MB) | Summed WS (MB) | Commit (MB) |
+|---|---|---|---|---|---|
+| Final (the committed code) | 796 | 125 | 70.9 | 117.0 | 98.9 |
+| Earlier (before the scrollbar and measurement changes; `evidence/measure-earlier-build.csv`) | 735 | 148 | 70.9 | 119.5 | 99.1 |
 
 - **Against the research.** The research's loaded gpui app (0.5.1, a 100k-row grid held in a `Vec`) used 98.5 MB private, of which 59 MB was its data. This app holds no rows in memory, so 70.9 MB is the UI with every feature loaded.
 - **The 100 MB target** passes on private working set, the measure issue #8 chose, with 29 MB to spare. Summed working set (119 MB) would fail, as the research predicted for gpui.
 - **First run after a build** was not a cold start after a reboot; no reboot test was made.
-- **The two warm medians** come from two builds an hour apart and differ by 60 ms. The difference is within run-to-run noise (single runs ranged 125–236 ms).
+- **Warm runs vary.** Single warm runs across all measurements ranged 124–236 ms.
 
 ## Scrolling the 1M-row grid
 
 `scroll.ps1` makes the app scroll itself from row 0 to row 999,999, one step per frame, and records the interval between frames. At 120 Hz a frame is 8.33 ms; a stutter shows as an interval of 25 ms or more (three missed frames).
 
-| How it was driven | Frames | p50 | p95 | p99 | Max | Frames ≥ 25 ms |
-|---|---|---|---|---|---|---|
-| `scroll_to_row`, 997 rows per frame | 1,004 | 8.33 | 8.98 | 20.2 | 44.9 | 7 |
-| Wheel events over the grid, 997 rows per frame | 1,004 | 8.32 | 9.11 | 15.4 | 121.5 | 5 |
-| Scrollbar thumb dragged 1 px per frame | 526 | 8.34 | 9.28 | 10.7 | 16.9 | 0 |
+Each row is one run of 1,004 frames (526 for the drag). Times in ms.
+
+| How it was driven | Run | p50 | p95 | p99 | Max | Frames > 25 ms | Frames > 50 ms |
+|---|---|---|---|---|---|---|---|
+| `scroll_to_row`, 997 rows per frame | 1 | 8.33 | 8.98 | 20.2 | 44.9 | 7 | 0 |
+| | 2 | 8.32 | 8.75 | 9.4 | 18.9 | 0 | 0 |
+| | 3 | 8.32 | 8.72 | 9.8 | 16.4 | 0 | 0 |
+| | 4 | 8.32 | 8.68 | 9.0 | 13.9 | 0 | 0 |
+| Wheel events over the grid, 997 rows per frame | 1 | 8.32 | 9.11 | 15.4 | 121.5 | 5 | 1 |
+| | 2 | 8.32 | 8.82 | 20.2 | 43.4 | 4 | 0 |
+| | 3 | 8.32 | 8.73 | 9.3 | 15.1 | 0 | 0 |
+| | 4 | 8.31 | 8.76 | 11.3 | 19.4 | 0 | 0 |
+| Scrollbar thumb dragged 1 px per frame | 1 | 8.34 | 9.28 | 10.7 | 16.9 | 0 | 0 |
 
 - **Worst case by design.** At 997 rows per frame every frame lands on a page that is not cached, so every frame reads from disk and parses 128 rows. Dragging the thumb 1 px moves about 1,900 rows a frame, also a cache miss every frame.
-- **The outliers** are under 1 % of frames. Each long frame in the wheel and jump runs is one frame, not a run of them; the drag run had none. Judgement: this passes "no stutter". The single 121 ms frame is worth a look when the real grid is built.
-- **Memory stays flat.** Private working set before and after scrolling the whole grid: 75.4 → 73.8 MB, 75.5 → 75.2 MB and 72.1 → 74.3 MB. ("Before" is read 1 s after the first frame, so it sits above the settled 70.9 MB.)
+- **The slow frames are single frames in mid-scroll, not warm-up.** Wheel run 2 logged its four at frames 162, 281, 801 and 877 (43, 26, 30 and 35 ms). Across the 8 jump and wheel runs, 16 of 8,032 frames went over 25 ms and one over 50 ms (121 ms, in the first wheel run; it did not come back in three more). Judgement: this passes "no stutter". The 121 ms frame is worth watching when the real grid is built.
+- **A second drag run did not scroll.** The synthesized press missed the thumb, so the run only shows idle frames (max 14 ms); it is left out of the table. The successful run went end to end.
+- **Memory stays flat.** Private working set before and after scrolling the whole grid stayed within ±2.2 MB in all nine runs, for example 75.4 → 73.8 MB (jump), 75.5 → 75.2 MB (wheel) and 72.1 → 74.3 MB (drag). ("Before" is read 1 s after the first frame, so it sits above the settled 70.9 MB.)
 - **The last rows draw correctly.** `grid-end.png` shows rows 999,991–999,999 aligned with their cells, so the roughly 32M px of content height causes no visible float error.
+- **Paging was served from a warm file cache.** The data file was written minutes earlier and read many times, so Windows held it in memory. Paging from a cold disk was not measured.
 - **Scrollbar mode.** The grid's scrollbar is set to `Always`. gpui-component follows the Windows "hide scroll bars" setting by default, and a hidden scrollbar cannot be grabbed until it appears.
 
 ## Keyboard script
@@ -76,9 +85,11 @@ Measured with the research's `measure.ps1`, unchanged: first frame is the first 
 | 28–31 | In the plan: Down selects the root, Down ×3 and Right reach Nested Loops, Left returns to its parent Hash Match; Ctrl+4 moves to the details pane, which shows the selected operator |
 | 32 | A mouse click on operator 10 selected Clustered Index Scan and filled the details panel (`plan-click.png`) |
 
-**Gaps the app has to close.** None of them needs a hand-built widget.
+**Gaps.**
 
-- **Replace has no key.** The built-in find/replace panel offers Replace and Replace All as buttons only. Tab cycles between its two text fields, and Enter in either field moves to the next match. The editor's public API has `replace_current_search_match` and `replace_all_search_matches`, but the panel keeps the replacement text private. A keyboard Replace therefore means the app draws its own find bar over that API: about 100 lines, not done in the spike.
+- **Replace has no key (the failing condition).** The built-in find/replace panel (`gpui-component` `src/input/search.rs`) offers Replace and Replace All as buttons only. Tab cycles between its two text fields, and Enter in either field moves to the next match. The panel keeps the replacement text private, so the app cannot add the key from outside. Two routes:
+  - **Patch the panel** in a fork, as the project already does for tokio-postgres. Declare two actions, bind keys to them in the panel's existing `SearchPanel` key context, and add two `.on_action` lines that call the panel's existing `replace_next` and `replace_all`. About 15 lines; read in the source, not built.
+  - **Draw an own find bar** over the editor's public API (`set_search_query`, `replace_current_search_match`, `replace_all_search_matches`). That replaces the off-the-shelf panel, so it is the heavier route.
 - **App bindings needed** (each one line in this spike):
   - Ctrl+Space for completion: gpui-component binds no key to `ShowCompletions`.
   - Ctrl+Home / Ctrl+End in the grid.
