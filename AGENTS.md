@@ -6,6 +6,8 @@ A lightweight SQL IDE written in Rust, for SQL Server, PostgreSQL and MySQL: the
 
 Planning. The route to a first-version spec is the GitHub issue labelled `wayfinder:map`. There is no code yet. `CODE_STANDARDS.md` and the `## Factory` section get written once the UI toolkit is chosen; until then the repo is not fully set up for implementation.
 
+Once the spec is done, the implementation plan moves to Linear as tickets. Codex builds the engine first (everything below the UI, testable with no window), each ticket orchestrated, reviewed and merged by Claude. The UI is then built in a Claude session on the engine's interface. GitHub Issues keep the planning map.
+
 ## Agent skills
 
 ### Issue tracker
