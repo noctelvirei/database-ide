@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/engine", "crates/dbide-cli"]
+members = ["crates/engine", "crates/dbide-cli", "crates/test-servers"]
 resolver = "3"
 
 [workspace.package]
