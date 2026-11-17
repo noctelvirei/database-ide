@@ -380,9 +380,10 @@ async fn mssql_autocomplete_contains_fixture_objects_and_columns_in_declaration_
 #[tokio::test(flavor = "multi_thread")]
 async fn mssql_autocomplete_returns_all_500_tables_and_columns_within_five_seconds() {
     let (database, mut session) = mssql_open(false).await;
-    run(&mut session, "CREATE SCHEMA bulk").await;
+    // `bulk` is reserved in T-SQL (BULK INSERT), so this schema has another name.
+    run(&mut session, "CREATE SCHEMA many").await;
     let sql = (0..500)
-        .map(|n| format!("CREATE TABLE bulk.bulk_{n} (zebra integer, apple integer);"))
+        .map(|n| format!("CREATE TABLE many.bulk_{n} (zebra integer, apple integer);"))
         .collect::<String>();
     run(&mut session, &sql).await;
     let mut session = CountedSession {
@@ -395,7 +396,7 @@ async fn mssql_autocomplete_returns_all_500_tables_and_columns_within_five_secon
         .unwrap();
     let elapsed = start.elapsed();
     assert_eq!(session.queries, 2);
-    assert_large_catalog(&catalog, "bulk", elapsed);
+    assert_large_catalog(&catalog, "many", elapsed);
     artifact(database.database(), &catalog);
 }
 
