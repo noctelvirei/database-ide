@@ -78,13 +78,15 @@ Clipboard text with headers, CSV, `.xlsx` (constant-memory writing), INSERT scri
 
 Per engine: databases, schemas, tables, views, procedures, functions, indexes; a table's columns, keys and indexes; filter and search across databases; Script as CREATE / ALTER / SELECT from the system catalogs.
 
-## Format
+## Formatter
 
-The engine formats SQL text for one engine's dialect. It changes layout and keyword case only; identifiers, literals and comments are copied byte for byte.
+The engine formats SQL text for one engine's dialect. It changes layout and the case of structural keywords only; identifiers, literals and comments are copied byte for byte.
 
 - Tokens come from `sqlparser`'s tokenizer in the engine's dialect (brackets, backticks, `$tag$` quotes, `N'…'` literals and comments included). No formatter crate: `sqlformat` corrupts strings with backslashes and has no MySQL dialect; `sqlparser`'s printer drops comments.
-- Style: keywords upper case; 4-space indent; `SELECT`, `FROM`, `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY` each start a line with their items indented beneath, one per line, trailing commas; `JOIN … ON` on one line with further `AND`/`OR` conditions indented beneath; subqueries indented one level; one blank line between statements; a statement that fits in 80 characters stays on one line. Batch separators (`GO`) stay on their own line.
-- Guard: the output is tokenized again and compared with the input, ignoring whitespace and keyword case. Any other difference, or input that doesn't tokenize (an unclosed string), returns an error and the original text.
+- Keyword case: only a fixed list of structural keywords reserved in all three engines is upper-cased (`SELECT`, `FROM`, `WHERE`, `JOIN`, `ON`, `AND`, `OR`, `GROUP`, `ORDER`, `BY`, `HAVING`, `INSERT`, `INTO`, `VALUES`, `UPDATE`, `SET`, `DELETE`, `CREATE`, `ALTER`, `DROP` and the like). `sqlparser` marks many non-reserved words as keywords (`name`, `type`, `status`, `user`), and changing their case can change meaning under a case-sensitive collation, so every word not on the list keeps its bytes.
+- Style: 4-space indent; `SELECT`, `FROM`, `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY` each start a line with their items indented beneath, one per line, trailing commas; `JOIN … ON` on one line with further `AND`/`OR` conditions indented beneath; subqueries indented one level; one blank line between statements; a statement that fits in 80 characters stays on one line. Batch separators (`GO`) stay on their own line.
+- A `--` line comment always ends its line; the one-line rule never joins code after it.
+- Guard: the output is tokenized again and compared with the input, ignoring spaces and line breaks and the case of the listed keywords. Comments are compared byte for byte. Any other difference, or input that doesn't tokenize (an unclosed string), returns an error and the original text.
 - Formats any fragment, so a selection formats on its own.
 
 ## UI
@@ -130,7 +132,7 @@ SSMS's shortcuts, not remappable in v1:
 | F8 | Focus the object explorer |
 | Ctrl+O / Ctrl+S | Open / save a `.sql` file |
 
-### Format
+### Formatting
 
 Ctrl+K Ctrl+F formats the selection, or the whole tab, through the engine's formatter, as one undo step. A refusal leaves the text unchanged and says why in the messages strip. Never formats on save.
 

@@ -20,7 +20,7 @@ The product decisions are in [docs/spec.md](docs/spec.md) and the vocabulary in 
 
 - `crates/engine`: the library; everything below the UI. No UI dependency, ever.
 - `crates/dbide-cli`: the E2E harness binary; uses only the engine's public API.
-- `crates/app`: the gpui UI, added later.
+- `crates/app`: the gpui UI. It calls only the engine's public API and holds no SQL or driver code.
 - Inside the engine, one module per piece of knowledge, split by feature, not by layer: `session` (the common run/event/cancel interface), `spill` (the row file and its index), `mssql`, `postgres`, `mysql` (one per engine, each the only place its driver is used), `plan` (the shared operator tree; showplan and EXPLAIN parsing live in their engine modules or `plan`'s submodules), `export`, `connections`, `danger`, `grid_edit`, `objects`.
 - A driver type never appears in another module's signature. Engine modules convert to the engine's own types at their boundary.
 - Module files sit as `foo.rs` beside `foo/`, never `foo/mod.rs`. No source file above 1000 lines. No re-exports (`pub use`), no `#[path]`, no `include!`.
@@ -63,6 +63,16 @@ Real servers are the test ([testing decision](https://github.com/noctelvirei/dat
 - Tests that touch Windows Credential Manager use the service name `database-ide-test` and delete their entries afterwards.
 - `mssql-mock-tds` only for failures a real server won't produce on demand.
 - Test data is invented, from scripts in the repo.
+
+### UI E2E harness
+
+The app is tested as a user drives it, in a real window, against the same real servers. The gpui spike ([prototype/gpui-spike](https://github.com/noctelvirei/database-ide/tree/prototype/gpui-spike/prototypes/gpui-spike)) proved the method; U1 builds it into `crates/app`:
+
+- A test mode, `--ui-script <file>`, runs a script of steps inside the app. Keys go through gpui's `Window::dispatch_keystroke`, the path a real key takes after Windows' message translation: the keymap, the focused element's actions and text input. Synthetic OS input (SendInput) is not used, because it lands in whatever window has focus.
+- After each step the app appends its visible state as one JSON line (focused pane, tab titles, editor text and selection, messages, grid row counts, dialog contents). Tests assert on those lines.
+- A step can name a screenshot; a PowerShell script captures the app's window into the test's artifact folder. Screenshots are the proof a rerun reproduces, not the assertion.
+- Startup time, idle private working set and the zipped release size are measured on every UI ticket, against the targets in the spec.
+- Windows UI Automation can't drive the app: gpui's Windows accessibility is incomplete.
 
 ## Sources
 
