@@ -38,7 +38,7 @@ SELECT (SELECT c.name, CASE WHEN t.is_user_defined = 1 THEN QUOTENAME(SCHEMA_NAM
     CONVERT(nvarchar(100), ic.increment_value) AS identity_increment,
     ic.is_not_for_replication AS identity_not_for_replication,
     d.name AS default_constraint, c.collation_name AS collation,
-    c.is_sparse AS sparse, c.is_rowguidcol AS rowguidcol,
+    c.is_sparse AS sparse, c.is_rowguidcol AS [rowguidcol],
     CAST(CASE WHEN c.generated_always_type <> 0 OR c.is_filestream = 1 OR c.is_column_set = 1
         OR c.encryption_type IS NOT NULL OR c.xml_collection_id <> 0
         OR EXISTS (SELECT 1 FROM sys.masked_columns mc WHERE mc.object_id = c.object_id

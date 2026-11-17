@@ -119,7 +119,17 @@ async fn table(session: &mut dyn Session, object: &Object, key: i32) -> Result<S
         } else {
             sql.push_str(&format!(" {}", column.type_name));
             if let Some(collation) = details.collation {
-                sql.push_str(&format!(" COLLATE {}", quote(&collation)));
+                // COLLATE takes a bare name; a bracketed one is a syntax error.
+                if collation.is_empty()
+                    || !collation
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_')
+                {
+                    return Err(Error::Catalog(format!(
+                        "unexpected collation name {collation:?}"
+                    )));
+                }
+                sql.push_str(&format!(" COLLATE {collation}"));
             }
             if let Some(seed) = details.identity_seed {
                 let increment = details
