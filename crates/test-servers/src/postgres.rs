@@ -79,11 +79,23 @@ impl Postgres {
         let server = match shared.upgrade() {
             Some(server) => server,
             None => {
-                let server = Arc::new(Server::start()?);
+                let server = Arc::new(Server::start(false)?);
                 *shared = Arc::downgrade(&server);
                 server
             }
         };
+        Self::create_database(server)
+    }
+
+    /// Creates a database on a separate Windows SSPI server; the harness login still uses SCRAM.
+    /// Fails under the same conditions as start; the default shared server is unchanged.
+    #[cfg(windows)]
+    pub fn start_with_sspi() -> Result<Self, Error> {
+        Self::create_database(Arc::new(Server::start(true)?))
+    }
+
+    // Each handle owns a database regardless of the server's sign-in policy.
+    fn create_database(server: Arc<Server>) -> Result<Self, Error> {
         let name = Builder::new()
             .prefix("dbide_test_")
             .rand_bytes(24)
@@ -171,8 +183,8 @@ impl Server {
             .path()
     }
 
-    // Initializes SCRAM sign-in and waits for a loopback-only server to be ready.
-    fn start() -> Result<Self, Error> {
+    // Keeps harness administration on SCRAM and optionally enables loopback SSPI for other roles.
+    fn start(sspi: bool) -> Result<Self, Error> {
         let bin = std::env::var_os("DBIDE_PG_BIN")
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
@@ -207,6 +219,16 @@ impl Server {
                 .arg(password_file.path()),
         )?;
         password_file.close()?;
+        if sspi {
+            fs::write(
+                data.join("pg_hba.conf"),
+                format!(
+                    "host all {USER} 127.0.0.1/32 scram-sha-256\n\
+                     host all all 127.0.0.1/32 sspi include_realm=0\n\
+                     host all all ::1/128 sspi include_realm=0\n"
+                ),
+            )?;
+        }
         let listener = TcpListener::bind((HOST, 0))?;
         let port = listener.local_addr()?.port();
         fs::write(

@@ -59,6 +59,7 @@ Real servers are the test ([testing decision](https://github.com/noctelvirei/dat
 - **MySQL 8.4**: the same, with `mysqld --initialize-insecure`, binaries from `DBIDE_MYSQL_BIN`.
 - **SQL Server 2025 Developer**: a fresh `dbide_test_<random>` database per test, dropped afterwards, plus a sweep for leftovers. Server from `DBIDE_MSSQL` (host, port, sign-in).
 - Every real-server test's name starts with its engine: `mssql_`, `pg_`, `mysql_`. A test whose server variable is unset fails with a message naming the variable. While a server isn't available, run `cargo test --workspace --locked -- --skip mssql_` (and so on), and the record states exactly which prefixes were skipped. A skipped engine is never reported as passing.
+- **PostgreSQL Kerberos**: `pg_kerberos_` tests sign in to a PostgreSQL server that accepts only `gss`, named by `DBIDE_PG_KERBEROS_HOST`, as the role `DBIDE_PG_KERBEROS_USER`. Run them in a process that holds that realm's credentials (`runas /netonly` or `CreateProcessWithLogonW` with `LOGON_NETCREDENTIALS_ONLY`), and skip them in the main run with `--skip pg_kerberos_`. The main run's SQL Server tests sign in as the current Windows account, so they can't share that process.
 - Tests that touch Windows Credential Manager use the service name `database-ide-test` and delete their entries afterwards.
 - `mssql-mock-tds` only for failures a real server won't produce on demand.
 - Test data is invented, from scripts in the repo.

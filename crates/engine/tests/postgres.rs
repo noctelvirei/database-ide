@@ -467,15 +467,97 @@ async fn pg_wrong_password_is_clear_and_redacted() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn pg_windows_sign_in_is_explicitly_unsupported() {
+async fn pg_windows_sign_in_to_a_password_only_server_reports_password_missing() {
     let database = database().await;
     let mut connection = details(&database);
     connection.sign_in = SignInMethod::Windows;
+    let error = tokio::time::timeout(
+        Duration::from_secs(3),
+        postgres::connect(&connection, Some(database.password())),
+    )
+    .await
+    .expect("password-only server must return an error without hanging")
+    .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "PostgreSQL: Windows sign-in failed: password missing"
+    );
+}
+
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_windows_sign_in_without_a_user_uses_the_current_windows_account() {
+    let database = tokio::task::spawn_blocking(Database::start_with_sspi)
+        .await
+        .unwrap()
+        .unwrap();
+    let user = std::env::var("USERNAME").expect("USERNAME must name the current Windows account");
+    database
+        .query(&format!(
+            "CREATE ROLE \"{}\" LOGIN",
+            user.replace('"', "\"\"")
+        ))
+        .unwrap();
+    let mut connection = details(&database);
+    connection.sign_in = SignInMethod::Windows;
+    connection.user = None;
+    let mut session =
+        tokio::time::timeout(Duration::from_secs(5), postgres::connect(&connection, None))
+            .await
+            .expect("SSPI sign-in must complete without hanging")
+            .unwrap();
+    let events: Vec<_> = session.run("SELECT current_user").collect().await;
+    assert_eq!(events[1], Event::Rows(vec![vec![Value::Text(user)]]));
+}
+
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_windows_sign_in_to_a_missing_database_is_not_reported_as_a_sign_in_failure() {
+    let database = tokio::task::spawn_blocking(Database::start_with_sspi)
+        .await
+        .unwrap()
+        .unwrap();
+    let user = std::env::var("USERNAME").expect("USERNAME must name the current Windows account");
+    database
+        .query(&format!(
+            "CREATE ROLE \"{}\" LOGIN",
+            user.replace('"', "\"\"")
+        ))
+        .unwrap();
+    let mut connection = details(&database);
+    connection.sign_in = SignInMethod::Windows;
+    connection.user = None;
+    connection.database = Some("no_such_database".into());
     let error = postgres::connect(&connection, None).await.unwrap_err();
     assert_eq!(
         error.to_string(),
-        "PostgreSQL Windows sign-in is not supported yet"
+        "PostgreSQL: database \"no_such_database\" does not exist"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_kerberos_windows_sign_in_authenticates_the_requested_role_with_gss() {
+    let host = std::env::var("DBIDE_PG_KERBEROS_HOST")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .expect("Set DBIDE_PG_KERBEROS_HOST to the Kerberos PostgreSQL host");
+    let user = std::env::var("DBIDE_PG_KERBEROS_USER")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .expect("Set DBIDE_PG_KERBEROS_USER to the Kerberos PostgreSQL role");
+    let mut connection = Connection::new(Engine::PostgreSql, host);
+    connection.sign_in = SignInMethod::Windows;
+    connection.user = Some(user.clone());
+    connection.database = Some("postgres".into());
+    connection.tls = TlsMode::Off;
+    let mut session = postgres::connect(&connection, None).await.unwrap();
+    let events: Vec<_> = session.run("SELECT current_user").collect().await;
+    assert_eq!(events[1], Event::Rows(vec![vec![Value::Text(user)]]));
+    let events: Vec<_> = session
+        .run("SELECT gss_authenticated FROM pg_stat_gssapi WHERE pid = pg_backend_pid()")
+        .collect()
+        .await;
+    assert_eq!(events[1], Event::Rows(vec![vec![Value::Bool(true)]]));
 }
 
 #[tokio::test(flavor = "multi_thread")]

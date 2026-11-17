@@ -77,7 +77,7 @@ pub struct Connection {
     pub instance: Option<String>,
     /// Where the caller obtains the login credentials.
     pub sign_in: SignInMethod,
-    /// Database login name; ignored by Windows sign-in.
+    /// Database login or PostgreSQL Windows sign-in role; SQL Server Windows sign-in ignores it.
     pub user: Option<String>,
     /// Initial database, or the server/login default when absent.
     pub database: Option<String>,
