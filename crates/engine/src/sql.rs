@@ -33,6 +33,16 @@ pub(crate) fn qualified_identifier(text: &str) -> Result<Vec<String>, Error> {
     Err(Error::Identifier)
 }
 
+/// Writes SQL Server's ` COLLATE <name>` clause, or None when the catalog name isn't a plain
+/// collation name. COLLATE takes the name bare; a bracketed name is a syntax error.
+pub(crate) fn mssql_collate(collation: &str) -> Option<String> {
+    let plain = !collation.is_empty()
+        && collation
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_');
+    plain.then(|| format!(" COLLATE {collation}"))
+}
+
 /// A value or identifier cannot be represented without changing its meaning.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -120,4 +130,23 @@ pub(crate) fn literal(value: &Value, engine: Engine) -> Result<String, Error> {
         }
         _ => string(&crate::export::text::cell(value), engine)?,
     })
+}
+
+#[cfg(test)]
+mod collate_tests {
+    use super::mssql_collate;
+
+    #[test]
+    fn mssql_collation_names_are_written_bare() {
+        assert_eq!(
+            mssql_collate("Latin1_General_100_CI_AS_SC_UTF8").as_deref(),
+            Some(" COLLATE Latin1_General_100_CI_AS_SC_UTF8")
+        );
+    }
+
+    #[test]
+    fn mssql_collation_names_that_need_quoting_are_refused() {
+        assert_eq!(mssql_collate("Latin1]; DROP TABLE t; --"), None);
+        assert_eq!(mssql_collate(""), None);
+    }
 }
