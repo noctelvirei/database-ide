@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::connections::{Connection, SignInMethod, TlsMode};
 use crate::danger::Engine;
-use crate::session::{Event, PlanMode, Run, Session};
+use crate::session::{ConnectError, ConnectErrorKind, Event, PlanMode, Run, Session};
 
 pub(crate) mod batches;
 mod execution;
@@ -73,7 +73,7 @@ enum Work {
 
 /// Opens SQL or current-account Windows sign-in. Named instances use SQL Browser (SSRP).
 /// Mandatory/Optional TLS encrypt with TDS 7.4; Off permits the server to require encryption.
-pub async fn connect(details: &Connection, password: Option<&str>) -> Result<Mssql, Error> {
+pub async fn connect(details: &Connection, password: Option<&str>) -> Result<Mssql, ConnectError> {
     if details.engine != Engine::SqlServer
         || details.host.trim().is_empty()
         || details.port == Some(0)
@@ -85,7 +85,12 @@ pub async fn connect(details: &Connection, password: Option<&str>) -> Result<Mss
         || (details.sign_in != SignInMethod::Windows
             && details.user.as_ref().is_none_or(|name| name.is_empty()))
     {
-        return Err(Error::InvalidConnection);
+        return Err(ConnectError::new(
+            ConnectErrorKind::InvalidDetails,
+            details,
+            password,
+            &Error::InvalidConnection.to_string(),
+        ));
     }
     let address = if let Some(instance) = &details.instance {
         format!("tcp:{}\\{instance}", details.host)
@@ -115,7 +120,7 @@ pub async fn connect(details: &Connection, password: Option<&str>) -> Result<Mss
     let client = TdsConnectionProvider {}
         .create_client(context, &address, None)
         .await
-        .map_err(|error| Error::Server(redact(&error.to_string(), password)))?;
+        .map_err(|error| connect_error(&error, details, password))?;
     let database = client.database().to_owned();
     let (current_tx, current) = watch::channel(database.clone());
     let (requests, receiver) = mpsc::channel(1);
@@ -127,11 +132,66 @@ pub async fn connect(details: &Connection, password: Option<&str>) -> Result<Mss
     })
 }
 
-fn redact(text: &str, password: Option<&str>) -> String {
-    match password.filter(|password| !password.is_empty()) {
-        Some(password) => text.replace(password, "[redacted]"),
-        None => text.into(),
-    }
+fn connect_error(
+    error: &mssql_tds::error::Error,
+    details: &Connection,
+    password: Option<&str>,
+) -> ConnectError {
+    use mssql_tds::error::Error as DriverError;
+    let kind = match error {
+        DriverError::SqlServerError { diagnostics } => {
+            // A missing default database can arrive alongside a login failure.
+            if diagnostics.errors.iter().any(|error| {
+                matches!(error.number, 4060 | 4064 | 916)
+                    || (error.number == 18456 && matches!(error.state, 38 | 46))
+            }) {
+                ConnectErrorKind::DatabaseUnavailable
+            } else if diagnostics
+                .errors
+                .iter()
+                .any(|error| matches!(error.number, 18456 | 18452))
+            {
+                if details.sign_in == SignInMethod::Windows {
+                    ConnectErrorKind::WindowsSignInFailed
+                } else {
+                    ConnectErrorKind::BadCredentials
+                }
+            } else {
+                ConnectErrorKind::Other
+            }
+        }
+        DriverError::Security(_) if details.sign_in == SignInMethod::Windows => {
+            ConnectErrorKind::WindowsSignInFailed
+        }
+        DriverError::Io(error) => return ConnectError::io(error, details, password),
+        DriverError::ConnectionError(text) => {
+            // Parallel connects erase io::Error, retaining its standard numeric OS diagnostic.
+            if let Some(code) = text
+                .rsplit_once("(os error ")
+                .and_then(|(_, suffix)| suffix.split_once(')'))
+                .and_then(|(code, _)| code.parse::<i32>().ok())
+            {
+                let mapped =
+                    ConnectError::io(&std::io::Error::from_raw_os_error(code), details, password);
+                if mapped.kind != ConnectErrorKind::Other {
+                    return mapped;
+                }
+            }
+            ConnectErrorKind::Other
+        }
+        DriverError::TimeoutError(_) => ConnectErrorKind::Timeout,
+        DriverError::CertificateExpired | DriverError::CertificateMismatch => ConnectErrorKind::Tls,
+        DriverError::TlsError(cause) if crate::session::certificate_failure(cause) => {
+            ConnectErrorKind::Tls
+        }
+        DriverError::TlsHandshakeError { source, .. }
+            if crate::session::certificate_failure(source.as_ref()) =>
+        {
+            ConnectErrorKind::Tls
+        }
+        _ => ConnectErrorKind::Other,
+    };
+    ConnectError::new(kind, details, password, &error.to_string())
 }
 
 impl Mssql {
@@ -266,4 +326,24 @@ pub async fn estimate_rows(
     flagged: &[crate::danger::DangerousStatement],
 ) -> Result<Vec<Option<f64>>, Error> {
     plans::estimate_rows(session, batch, flagged).await
+}
+
+#[cfg(test)]
+mod connect_tests {
+    use super::*;
+
+    #[test]
+    fn unclassified_parallel_connect_error_keeps_the_driver_diagnostic_without_the_password() {
+        let details = Connection::new(Engine::SqlServer, "127.0.0.1");
+        let driver = mssql_tds::error::Error::ConnectionError(
+            "All parallel connection attempts failed: access denied (os error 10013); invented-secret".into(),
+        );
+        let error = connect_error(&driver, &details, Some("invented-secret"));
+        assert_eq!(error.kind, ConnectErrorKind::Other);
+        assert_eq!(
+            error.message,
+            "Connection Error: All parallel connection attempts failed: access denied (os error 10013); [redacted]"
+        );
+        assert!(!format!("{error:?}").contains("invented-secret"));
+    }
 }

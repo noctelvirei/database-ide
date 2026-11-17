@@ -8,13 +8,12 @@ use std::time::Duration;
 
 use futures::{StreamExt, future, stream};
 use tokio::sync::{mpsc, oneshot};
-use tokio_postgres::error::SqlState;
 use tokio_postgres::{AsyncMessage, Client, Config};
 use tokio_util::sync::CancellationToken;
 
 use crate::connections::{Connection, SignInMethod, TlsMode};
 use crate::danger::Engine;
-use crate::session::{Event, PlanMode, Run, Session};
+use crate::session::{ConnectError, ConnectErrorKind, Event, PlanMode, Run, Session};
 
 mod cancel;
 mod execution;
@@ -118,7 +117,18 @@ impl Drop for ConnectionTask {
 /// Connect using saved, password-free details and a separately supplied password.
 /// Uses the native certificate store; Optional TLS permits plaintext fallback.
 /// Windows sign-in uses the current logon session and ignores the supplied password.
-pub async fn connect(details: &Connection, password: Option<&str>) -> Result<Postgres, Error> {
+pub async fn connect(
+    details: &Connection,
+    password: Option<&str>,
+) -> Result<Postgres, ConnectError> {
+    let invalid = || {
+        ConnectError::new(
+            ConnectErrorKind::InvalidDetails,
+            details,
+            password,
+            &Error::InvalidConnection.to_string(),
+        )
+    };
     let windows_sign_in = details.sign_in == SignInMethod::Windows;
     // shortcut: USERNAME assumes an unchanged Windows environment; use the account API if needed.
     let windows_user = windows_sign_in
@@ -129,9 +139,9 @@ pub async fn connect(details: &Connection, password: Option<&str>) -> Result<Pos
         .as_deref()
         .or(windows_user.as_deref())
         .filter(|name| !name.is_empty())
-        .ok_or(Error::InvalidConnection)?;
+        .ok_or_else(invalid)?;
     if details.engine != Engine::PostgreSql {
-        return Err(Error::InvalidConnection);
+        return Err(invalid());
     }
     let mut config = Config::new();
     config
@@ -155,14 +165,27 @@ pub async fn connect(details: &Connection, password: Option<&str>) -> Result<Pos
     builder
         .danger_accept_invalid_certs(details.trust_server_certificate)
         .danger_accept_invalid_hostnames(details.trust_server_certificate);
-    let tls = builder.build()?;
+    let tls = builder.build().map_err(|error| {
+        ConnectError::new(
+            ConnectErrorKind::Other,
+            details,
+            password,
+            &error.to_string(),
+        )
+    })?;
     let establish = async {
         let addresses =
-            tokio::net::lookup_host((details.host.as_str(), details.port.unwrap_or(5432))).await?;
-        let mut error = Error::Io(std::io::Error::new(
-            std::io::ErrorKind::AddrNotAvailable,
-            "host resolved to no addresses",
-        ));
+            tokio::net::lookup_host((details.host.as_str(), details.port.unwrap_or(5432)))
+                .await
+                .map_err(|error| ConnectError::io(&error, details, password))?;
+        let mut error = ConnectError::io(
+            &std::io::Error::new(
+                std::io::ErrorKind::AddrNotAvailable,
+                "host resolved to no addresses",
+            ),
+            details,
+            password,
+        );
         for address in addresses {
             // connect_raw discards the host; hostaddr pins cancellation without changing the SPN.
             let mut attempt = config.clone();
@@ -177,23 +200,10 @@ pub async fn connect(details: &Connection, password: Option<&str>) -> Result<Pos
                         .source()
                         .is_some_and(|source| source.is::<std::io::Error>()) =>
                 {
-                    error = cause.into();
+                    error = connect_error(&cause, details, password);
                 }
                 Err(cause) => {
-                    // Only sign-in failures name Windows sign-in: client-side SSPI or
-                    // configuration errors and the server's authorization refusals,
-                    // not later startup errors such as a missing database.
-                    let sign_in_failed = windows_sign_in
-                        && cause.as_db_error().is_none_or(|db| {
-                            *db.code() == SqlState::INVALID_AUTHORIZATION_SPECIFICATION
-                                || *db.code() == SqlState::INVALID_PASSWORD
-                        });
-                    return Err(match Error::from(cause) {
-                        Error::Server(text) if sign_in_failed => {
-                            Error::Server(format!("Windows sign-in failed: {text}"))
-                        }
-                        error => error,
-                    });
+                    return Err(connect_error(&cause, details, password));
                 }
             }
         }
@@ -207,7 +217,7 @@ pub async fn connect(details: &Connection, password: Option<&str>) -> Result<Pos
             establish,
         )
         .await
-        .map_err(|_| Error::ConnectTimeout)?
+        .map_err(|_| ConnectError::new(ConnectErrorKind::Timeout, details, password, ""))?
     }?;
     let cancellation =
         cancel::Cancellation::new(&client, address, details.host.clone(), tls.clone());
@@ -241,7 +251,16 @@ pub async fn connect(details: &Connection, password: Option<&str>) -> Result<Pos
         "SET DateStyle = 'ISO, YMD'; SET bytea_output = 'hex'; SET statement_timeout = {}",
         u64::from(details.query_timeout) * 1000
     );
-    idle_query(&client, &mut notices, &setup).await?;
+    idle_query(&client, &mut notices, &setup)
+        .await
+        .map_err(|error| {
+            ConnectError::new(
+                ConnectErrorKind::Other,
+                details,
+                password,
+                &error.to_string(),
+            )
+        })?;
     let database = details.database.as_deref().unwrap_or(user).to_owned();
     let (requests, receiver) = mpsc::channel(1);
     tokio::spawn(worker(
@@ -257,6 +276,54 @@ pub async fn connect(details: &Connection, password: Option<&str>) -> Result<Pos
         details: details.clone(),
         requests,
     })
+}
+
+fn connect_error(
+    error: &tokio_postgres::Error,
+    details: &Connection,
+    password: Option<&str>,
+) -> ConnectError {
+    let windows = details.sign_in == SignInMethod::Windows;
+    let kind = match error.code().map(|code| code.code()) {
+        Some("28P01" | "28000") if windows => ConnectErrorKind::WindowsSignInFailed,
+        Some("28P01" | "28000") => ConnectErrorKind::BadCredentials,
+        Some("3D000" | "42501") => ConnectErrorKind::DatabaseUnavailable,
+        _ => {
+            if let Some(io) = error
+                .source()
+                .and_then(|source| source.downcast_ref::<std::io::Error>())
+            {
+                return ConnectError::io(io, details, password);
+            }
+            // These driver categories have no public structured accessor.
+            if error.to_string() == "timeout waiting for server" {
+                ConnectErrorKind::Timeout
+            } else if error.source().is_some_and(|source| {
+                source.is::<native_tls::Error>() && crate::session::certificate_failure(source)
+            }) {
+                ConnectErrorKind::Tls
+            // tokio-postgres keeps its authentication category private, exposing only Display.
+            } else if windows
+                && (error.to_string() == "authentication error"
+                    || error
+                        .source()
+                        .is_some_and(|source| source.to_string() == "password missing"))
+            {
+                ConnectErrorKind::WindowsSignInFailed
+            } else {
+                ConnectErrorKind::Other
+            }
+        }
+    };
+    let diagnostic = error.as_db_error().map_or_else(
+        || {
+            error
+                .source()
+                .map_or_else(|| error.to_string(), |source| format!("{error}: {source}"))
+        },
+        |db| db.message().into(),
+    );
+    ConnectError::new(kind, details, password, &diagnostic)
 }
 
 impl Postgres {

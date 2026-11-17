@@ -324,8 +324,10 @@ async fn mysql_search_all_reports_a_refused_database_without_losing_other_hits()
         .iter()
         .find(|skipped| skipped.database == refused.database())
         .unwrap_or_else(|| panic!("{report:#?}"));
-    assert!(refusal.reason.contains("1045"), "{report:#?}");
-    assert!(refusal.reason.contains("Access denied"), "{report:#?}");
+    assert_eq!(
+        refusal.reason,
+        "Sign-in failed: the user name or password is wrong."
+    );
     assert!(
         report.skipped.iter().all(|skipped| {
             skipped.database == refused.database()
