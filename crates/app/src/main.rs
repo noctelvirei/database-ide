@@ -51,7 +51,10 @@ fn main() -> ExitCode {
         _ => None,
     };
 
-    gpui_platform::application().run(move |cx: &mut App| {
+    // The component icons gpui-component draws (the find panel's buttons among them).
+    gpui_platform::application()
+        .with_assets(gpui_kit_assets::Assets)
+        .run(move |cx: &mut App| {
         gpui_component::init(cx);
         keymap::bind(cx);
         let bounds = Bounds::centered(None, size(px(1400.), px(900.)), cx);
