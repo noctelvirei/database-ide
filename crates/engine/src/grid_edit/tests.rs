@@ -1,5 +1,167 @@
 use super::*;
 
+#[test]
+fn self_join_is_not_a_single_table_query() {
+    assert!(!single_table_query(
+        "SELECT a.id, b.name FROM fruit a JOIN fruit b ON b.id = a.id + 1",
+        Engine::PostgreSql
+    ));
+}
+
+#[test]
+fn single_table_alias_is_a_single_table_query() {
+    assert!(single_table_query(
+        "SELECT f.id, f.name FROM fruit AS f",
+        Engine::PostgreSql
+    ));
+}
+
+#[test]
+fn comma_join_is_not_a_single_table_query() {
+    assert!(!single_table_query(
+        "SELECT a.id FROM fruit a, fruit b",
+        Engine::PostgreSql
+    ));
+}
+
+#[test]
+fn derived_table_is_not_a_single_table_query() {
+    assert!(!single_table_query(
+        "SELECT id FROM (SELECT id FROM fruit) f",
+        Engine::PostgreSql
+    ));
+}
+
+#[test]
+fn cte_is_not_a_single_table_query() {
+    assert!(!single_table_query(
+        "WITH f AS (SELECT id FROM fruit) SELECT id FROM f",
+        Engine::PostgreSql
+    ));
+}
+
+#[test]
+fn unparseable_statement_is_not_a_single_table_query() {
+    assert!(!single_table_query(
+        "SELECT id FROM fruit WHERE",
+        Engine::PostgreSql
+    ));
+}
+
+#[test]
+fn multiple_statements_are_not_a_single_table_query() {
+    assert!(!single_table_query(
+        "SELECT id FROM fruit; SELECT id FROM fruit",
+        Engine::PostgreSql
+    ));
+}
+
+#[test]
+fn union_is_not_a_single_table_query() {
+    assert!(!single_table_query(
+        "SELECT id FROM fruit UNION ALL SELECT id FROM fruit",
+        Engine::PostgreSql
+    ));
+}
+
+#[test]
+fn table_function_is_not_a_single_table_query() {
+    assert!(!single_table_query(
+        "SELECT id FROM fruit()",
+        Engine::PostgreSql
+    ));
+}
+
+#[test]
+fn sql_server_single_table_uses_its_dialect() {
+    assert!(single_table_query(
+        "SELECT TOP 200 [id] FROM [fruit] AS f",
+        Engine::SqlServer
+    ));
+}
+
+#[test]
+fn mysql_single_table_uses_its_dialect() {
+    assert!(single_table_query(
+        "SELECT `id` FROM `fruit` AS f LIMIT 200",
+        Engine::MySql
+    ));
+}
+
+#[test]
+fn sql_server_float_originals_remain_numeric() {
+    let script = result(Engine::SqlServer)
+        .script(&[
+            Change::Update {
+                original: vec![Value::Float(0.1), Value::Float(0.2), Value::Null],
+                cells: vec![Cell {
+                    column: 1,
+                    value: Value::Float(0.3),
+                }],
+            },
+            Change::Delete {
+                original: vec![Value::Float(0.1), Value::Float(0.2), Value::Null],
+            },
+        ])
+        .unwrap();
+    assert_eq!(
+        script.sql(),
+        "UPDATE [odd.schema].[t]]`\"] SET [v]]`\"] = 3e-1 WHERE [id] = 1e-1 AND [v]]`\"] = 2e-1;\nDELETE FROM [odd.schema].[t]]`\"] WHERE [id] = 1e-1 AND [v]]`\"] = 2e-1;\n"
+    );
+}
+
+#[test]
+fn mysql_float_originals_remain_numeric() {
+    let script = result(Engine::MySql)
+        .script(&[
+            Change::Update {
+                original: vec![Value::Float(0.1), Value::Float(0.2), Value::Null],
+                cells: vec![Cell {
+                    column: 1,
+                    value: Value::Float(0.3),
+                }],
+            },
+            Change::Delete {
+                original: vec![Value::Float(0.1), Value::Float(0.2), Value::Null],
+            },
+        ])
+        .unwrap();
+    assert_eq!(
+        script.sql(),
+        "UPDATE `odd.schema`.`t]``\"` SET `v]``\"` = 3e-1 WHERE `id` = 1e-1 AND `v]``\"` = 2e-1;\nDELETE FROM `odd.schema`.`t]``\"` WHERE `id` = 1e-1 AND `v]``\"` = 2e-1;\n"
+    );
+}
+
+#[test]
+fn postgresql_update_compares_float_keys_in_the_column_type() {
+    let script = result(Engine::PostgreSql)
+        .script(&[Change::Update {
+            original: vec![Value::Float(0.1), Value::Null, Value::Null],
+            cells: vec![Cell {
+                column: 1,
+                value: Value::Text("pear".into()),
+            }],
+        }])
+        .unwrap();
+    assert_eq!(
+        script.sql(),
+        "UPDATE \"odd.schema\".\"t]`\"\"\" SET \"v]`\"\"\" = E'pear' WHERE \"id\" = E'0.1' AND \"v]`\"\"\" IS NULL;\n"
+    );
+}
+
+#[test]
+fn postgresql_delete_compares_float_originals_in_the_column_type() {
+    let script = result(Engine::PostgreSql)
+        .script(&[Change::Delete {
+            original: vec![Value::Integer(7), Value::Float(0.1), Value::Null],
+        }])
+        .unwrap();
+    assert_eq!(
+        script.sql(),
+        "DELETE FROM \"odd.schema\".\"t]`\"\"\" WHERE \"id\" = E'7' AND \"v]`\"\"\" = E'0.1';\n"
+    );
+}
+
 fn result(engine: Engine) -> EditableResult {
     EditableResult {
         engine,
@@ -38,7 +200,7 @@ fn update_checks_null_originals_and_quotes_postgresql_identifiers_and_literals()
         .unwrap();
     assert_eq!(
         script.sql(),
-        "UPDATE \"odd.schema\".\"t]`\"\"\" SET \"v]`\"\"\" = E'O''Brien\\\\tree' WHERE \"id\" = 7 AND \"v]`\"\"\" IS NULL;\n"
+        "UPDATE \"odd.schema\".\"t]`\"\"\" SET \"v]`\"\"\" = E'O''Brien\\\\tree' WHERE \"id\" = E'7' AND \"v]`\"\"\" IS NULL;\n"
     );
 }
 
@@ -89,7 +251,7 @@ fn delete_omits_noncomparable_postgresql_columns_but_checks_comparable_originals
         .unwrap();
     assert_eq!(
         script.sql(),
-        "DELETE FROM \"odd.schema\".\"t]`\"\"\" WHERE \"id\" = 7 AND \"v]`\"\"\" = E'old';\n"
+        "DELETE FROM \"odd.schema\".\"t]`\"\"\" WHERE \"id\" = E'7' AND \"v]`\"\"\" = E'old';\n"
     );
 }
 
@@ -218,7 +380,7 @@ fn key_edits_match_the_original_key_and_each_original_only_once() {
         .unwrap();
     assert_eq!(
         script.sql(),
-        "UPDATE \"odd.schema\".\"t]`\"\"\" SET \"id\" = 8 WHERE \"id\" = 7;\n"
+        "UPDATE \"odd.schema\".\"t]`\"\"\" SET \"id\" = 8 WHERE \"id\" = E'7';\n"
     );
 }
 

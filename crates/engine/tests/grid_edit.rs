@@ -28,13 +28,17 @@ async fn open(database: &Database) -> Postgres {
 
 #[derive(Debug, Default)]
 struct ResultSet {
+    statement: String,
     columns: Vec<Column>,
     rows: Vec<Vec<Value>>,
 }
 
 async fn query(session: &mut Postgres, sql: &str) -> ResultSet {
     let mut run = session.run(sql);
-    let mut result = ResultSet::default();
+    let mut result = ResultSet {
+        statement: sql.into(),
+        ..ResultSet::default()
+    };
     while let Some(event) = run.next().await {
         match event {
             Event::ResultSetStarted { columns } => result.columns = columns,
@@ -47,9 +51,14 @@ async fn query(session: &mut Postgres, sql: &str) -> ResultSet {
 }
 
 async fn editable(session: &mut Postgres, result: &ResultSet) -> EditableResult {
-    match grid_edit::inspect(session, Engine::PostgreSql, &result.columns)
-        .await
-        .unwrap()
+    match grid_edit::inspect(
+        session,
+        Engine::PostgreSql,
+        &result.statement,
+        &result.columns,
+    )
+    .await
+    .unwrap()
     {
         Editability::Editable(result) => result,
         Editability::ReadOnly(reason) => panic!("{reason}"),
@@ -61,6 +70,97 @@ fn text_cell(column: usize, value: &str) -> Cell {
         column,
         value: Value::Text(value.into()),
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_self_join_says_joins_arent_editable() {
+    let database = database().await;
+    let mut session = open(&database).await;
+    query(&mut session, "CREATE TABLE fruit (id integer PRIMARY KEY, name text); INSERT INTO fruit VALUES (1, 'apple'), (2, 'pear')").await;
+    let result = query(
+        &mut session,
+        "SELECT a.id, b.name FROM fruit a JOIN fruit b ON b.id = a.id + 1",
+    )
+    .await;
+    let policy = grid_edit::inspect(
+        &mut session,
+        Engine::PostgreSql,
+        &result.statement,
+        &result.columns,
+    )
+    .await
+    .unwrap();
+    assert!(matches!(policy, Editability::ReadOnly(reason) if reason == "joins aren't editable"));
+    assert_eq!(
+        query(&mut session, "SELECT id, name FROM fruit ORDER BY id")
+            .await
+            .rows,
+        vec![
+            vec![Value::Integer(1), Value::Text("apple".into())],
+            vec![Value::Integer(2), Value::Text("pear".into())]
+        ]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_update_with_unchanged_real_key_saves_without_conflict() {
+    let database = database().await;
+    let mut session = open(&database).await;
+    query(&mut session, "CREATE TABLE fruit (id real PRIMARY KEY, name text); INSERT INTO fruit VALUES (0.1, 'apple')").await;
+    let result = query(&mut session, "SELECT id, name FROM fruit").await;
+    assert_eq!(
+        result.rows,
+        vec![vec![Value::Float(0.1), Value::Text("apple".into())]]
+    );
+    let policy = editable(&mut session, &result).await;
+    let report = session
+        .save(
+            policy
+                .script(&[Change::Update {
+                    original: result.rows[0].clone(),
+                    cells: vec![text_cell(1, "pear")],
+                }])
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(report.conflict, None);
+    assert_eq!(report.rows.updated, 1);
+    assert_eq!(
+        query(&mut session, "SELECT id, name FROM fruit").await.rows,
+        vec![vec![Value::Float(0.1), Value::Text("pear".into())]]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_delete_with_unchanged_real_original_saves_without_conflict() {
+    let database = database().await;
+    let mut session = open(&database).await;
+    query(&mut session, "CREATE TABLE fruit (id integer PRIMARY KEY, weight real); INSERT INTO fruit VALUES (1, 0.1)").await;
+    let result = query(&mut session, "SELECT id, weight FROM fruit").await;
+    assert_eq!(
+        result.rows,
+        vec![vec![Value::Integer(1), Value::Float(0.1)]]
+    );
+    let policy = editable(&mut session, &result).await;
+    let report = session
+        .save(
+            policy
+                .script(&[Change::Delete {
+                    original: result.rows[0].clone(),
+                }])
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(report.conflict, None);
+    assert_eq!(report.rows.deleted, 1);
+    assert_eq!(
+        query(&mut session, "SELECT id, weight FROM fruit")
+            .await
+            .rows,
+        Vec::<Vec<Value>>::new()
+    );
 }
 
 fn artifact(database: &Database, name: &str, contents: &str) {
@@ -81,7 +181,11 @@ async fn pg_single_table_result_with_primary_key_is_editable() {
         "CREATE TABLE fruit (id integer PRIMARY KEY, name text)",
     )
     .await;
-    let result = query(&mut session, "SELECT id AS number, name FROM fruit").await;
+    let result = query(
+        &mut session,
+        "SELECT f.id AS number, f.name FROM fruit AS f",
+    )
+    .await;
     let result = editable(&mut session, &result).await;
     assert_eq!(result.key_columns(), &[0]);
     assert!(!result.columns()[0].read_only);
@@ -98,14 +202,19 @@ async fn pg_result_without_a_key_column_says_no_key_column_in_result() {
     )
     .await;
     let result = query(&mut session, "SELECT name FROM fruit").await;
-    let policy = grid_edit::inspect(&mut session, Engine::PostgreSql, &result.columns)
-        .await
-        .unwrap();
+    let policy = grid_edit::inspect(
+        &mut session,
+        Engine::PostgreSql,
+        &result.statement,
+        &result.columns,
+    )
+    .await
+    .unwrap();
     assert!(matches!(policy, Editability::ReadOnly(reason) if reason == "no key column in result"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn pg_join_with_columns_from_two_tables_says_columns_from_2_tables() {
+async fn pg_join_with_columns_from_two_tables_says_joins_arent_editable() {
     let database = database().await;
     let mut session = open(&database).await;
     query(
@@ -118,10 +227,15 @@ async fn pg_join_with_columns_from_two_tables_says_columns_from_2_tables() {
         "SELECT f.id, g.id FROM fruit f JOIN grove g ON f.id = g.id",
     )
     .await;
-    let policy = grid_edit::inspect(&mut session, Engine::PostgreSql, &result.columns)
-        .await
-        .unwrap();
-    assert!(matches!(policy, Editability::ReadOnly(reason) if reason == "columns from 2 tables"));
+    let policy = grid_edit::inspect(
+        &mut session,
+        Engine::PostgreSql,
+        &result.statement,
+        &result.columns,
+    )
+    .await
+    .unwrap();
+    assert!(matches!(policy, Editability::ReadOnly(reason) if reason == "joins aren't editable"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -129,9 +243,14 @@ async fn pg_expression_columns_only_says_expression_columns_only() {
     let database = database().await;
     let mut session = open(&database).await;
     let result = query(&mut session, "SELECT 1 AS number").await;
-    let policy = grid_edit::inspect(&mut session, Engine::PostgreSql, &result.columns)
-        .await
-        .unwrap();
+    let policy = grid_edit::inspect(
+        &mut session,
+        Engine::PostgreSql,
+        &result.statement,
+        &result.columns,
+    )
+    .await
+    .unwrap();
     assert!(matches!(policy, Editability::ReadOnly(reason) if reason == "expression columns only"));
 }
 
@@ -177,7 +296,7 @@ async fn pg_save_changes_exactly_the_edited_added_and_deleted_rows() {
         .unwrap();
     assert_eq!(
         script.sql(),
-        "UPDATE \"public\".\"fruit\" SET \"name\" = E'grape' WHERE \"id\" = 1 AND \"name\" = E'apple';\nINSERT INTO \"public\".\"fruit\" (\"id\") VALUES (3);\nDELETE FROM \"public\".\"fruit\" WHERE \"id\" = 2 AND \"name\" = E'plum';\n"
+        "UPDATE \"public\".\"fruit\" SET \"name\" = E'grape' WHERE \"id\" = E'1' AND \"name\" = E'apple';\nINSERT INTO \"public\".\"fruit\" (\"id\") VALUES (3);\nDELETE FROM \"public\".\"fruit\" WHERE \"id\" = E'2' AND \"name\" = E'plum';\n"
     );
     artifact(&database, "save.sql", script.sql());
     let report = session.save(script).await.unwrap();
@@ -398,7 +517,7 @@ async fn pg_nullable_unique_key_is_not_an_editable_result() {
     .await;
     let result = query(&mut session, "SELECT id, name FROM fruit").await;
     assert!(
-        matches!(grid_edit::inspect(&mut session, Engine::PostgreSql, &result.columns).await.unwrap(),
+        matches!(grid_edit::inspect(&mut session, Engine::PostgreSql, &result.statement, &result.columns).await.unwrap(),
         Editability::ReadOnly(reason) if reason == "no key column in result")
     );
 }
@@ -525,7 +644,7 @@ async fn pg_varchar_original_changed_by_another_session_conflicts_on_delete() {
         .unwrap();
     assert_eq!(
         script.sql(),
-        "DELETE FROM \"public\".\"fruit\" WHERE \"id\" = 1 AND \"name\" = E'apple';\n"
+        "DELETE FROM \"public\".\"fruit\" WHERE \"id\" = E'1' AND \"name\" = E'apple';\n"
     );
     let report = session.save(script).await.unwrap();
     assert_eq!(
@@ -590,7 +709,7 @@ async fn pg_quoted_table_names_with_dots_are_saved_without_changing_the_target()
         .unwrap();
     assert_eq!(
         script.sql(),
-        "UPDATE \"public\".\"fruit.box\" SET \"Fruit Name\" = E'O''Brien' WHERE \"key\" = 1 AND \"Fruit Name\" = E'apple';\n"
+        "UPDATE \"public\".\"fruit.box\" SET \"Fruit Name\" = E'O''Brien' WHERE \"key\" = E'1' AND \"Fruit Name\" = E'apple';\n"
     );
     assert_eq!(session.save(script).await.unwrap().rows.updated, 1);
     assert_eq!(

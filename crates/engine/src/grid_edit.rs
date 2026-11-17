@@ -2,6 +2,10 @@
 
 use std::collections::BTreeSet;
 
+use sqlparser::ast::{SetExpr, Statement as SqlStatement, TableFactor};
+use sqlparser::dialect::{Dialect, MsSqlDialect, MySqlDialect, PostgreSqlDialect};
+use sqlparser::parser::Parser;
+
 use crate::danger::Engine;
 use crate::session::{Column, Session, Value};
 use crate::sql::{identifier, literal};
@@ -191,9 +195,11 @@ pub struct SaveReport {
 
 /// Looks up keys and column policy on the tab's session. Expressions alongside base
 /// columns stay read-only. SQL Server and MySQL catalog adapters are not implemented yet.
+/// Supply the single statement that produced these columns; ambiguous sources are read-only.
 pub async fn inspect(
     session: &mut dyn Session,
     engine: Engine,
+    statement: &str,
     columns: &[Column],
 ) -> Result<Editability, Error> {
     let mut tables = BTreeSet::new();
@@ -206,6 +212,10 @@ pub async fn inspect(
     if tables.is_empty() {
         return Ok(Editability::ReadOnly("expression columns only".into()));
     }
+    // Wire provenance identifies base tables, not distinct instances in a self-join.
+    if !single_table_query(statement, engine) {
+        return Ok(Editability::ReadOnly("joins aren't editable".into()));
+    }
     if tables.len() != 1 {
         return Ok(Editability::ReadOnly(format!(
             "columns from {} tables",
@@ -217,6 +227,30 @@ pub async fn inspect(
         Engine::PostgreSql => postgres::inspect(session, table, columns).await,
         Engine::SqlServer | Engine::MySql => Err(Error::Unsupported(engine)),
     }
+}
+
+fn single_table_query(statement: &str, engine: Engine) -> bool {
+    let dialect: &dyn Dialect = match engine {
+        Engine::SqlServer => &MsSqlDialect {},
+        Engine::PostgreSql => &PostgreSqlDialect {},
+        Engine::MySql => &MySqlDialect {},
+    };
+    let Ok(statements) = Parser::parse_sql(dialect, statement) else {
+        return false;
+    };
+    let [SqlStatement::Query(query)] = statements.as_slice() else {
+        return false;
+    };
+    if query.with.is_some() {
+        return false;
+    }
+    let SetExpr::Select(select) = query.body.as_ref() else {
+        return false;
+    };
+    let [table] = select.from.as_slice() else {
+        return false;
+    };
+    table.joins.is_empty() && matches!(table.relation, TableFactor::Table { args: None, .. })
 }
 
 impl EditableResult {
@@ -343,7 +377,10 @@ impl EditableResult {
                     predicates.push(if original[index] == Value::Null {
                         format!("{column} IS NULL")
                     } else {
-                        format!("{column} = {}", literal(&original[index], self.engine)?)
+                        format!(
+                            "{column} = {}",
+                            crate::sql::original_literal(&original[index], self.engine)?
+                        )
                     });
                 }
                 let predicate = predicates.join(" AND ");

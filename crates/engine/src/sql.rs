@@ -58,6 +58,16 @@ fn decimal(text: &str) -> bool {
     digits != 0
 }
 
+/// Encodes an optimistic predicate's original value in the base column's comparison type.
+pub(crate) fn original_literal(value: &Value, engine: Engine) -> Result<String, Error> {
+    // PostgreSQL coerces an unknown string literal to the column type, avoiding real-to-double promotion.
+    if engine == Engine::PostgreSql && !matches!(value, Value::Null | Value::Bytes(_)) {
+        string(&crate::export::text::cell(value), engine)
+    } else {
+        literal(value, engine)
+    }
+}
+
 /// Encodes one cell without depending on backslash-escape settings; refuses invalid numerics.
 pub(crate) fn literal(value: &Value, engine: Engine) -> Result<String, Error> {
     Ok(match value {
