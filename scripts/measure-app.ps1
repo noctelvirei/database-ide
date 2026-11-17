@@ -1,4 +1,5 @@
-#Requires -Version 7.6
+#Requires -Version 5.1
+# Runs on Windows PowerShell 5.1, which every Windows PC has, so contributors need nothing installed.
 <#
 .SYNOPSIS
 Measures the app against the spec's targets: startup under 1 s, idle private working set
@@ -22,7 +23,6 @@ param(
 )
 Set-StrictMode -Version 3.0
 $ErrorActionPreference = 'Stop'
-$PSNativeCommandUseErrorActionPreference = $true
 
 function Get-ProcessTree([int] $RootId) {
     $all = Get-CimInstance Win32_Process

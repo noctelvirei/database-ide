@@ -19,6 +19,10 @@ use crate::keymap::{
     ToggleActualPlan, TogglePlanView, ToggleResults, UncommentLines,
 };
 
+/// How many of the newest messages the strip renders; it shows as many as fit.
+// shortcut: U3 replaces this with the scrolling messages list.
+const MESSAGES_SHOWN: usize = 20;
+
 /// A focusable region of the workbench, in F6 order.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize)]
 pub enum Pane {
@@ -178,7 +182,7 @@ impl Workbench {
             .flex_col()
             .border_2()
             .border_color(if focused == Some(pane) {
-                theme.ring
+                theme.primary
             } else {
                 theme.border
             })
@@ -211,12 +215,22 @@ impl Render for Workbench {
             .flex_col()
             .child(self.pane(Pane::QueryTabs, focused, cx).flex_1())
             .child(self.pane(Pane::Explorer, focused, cx).flex_1());
+        // Newest message at the bottom; older ones scroll out of the top.
+        let newest = self.messages.len().saturating_sub(MESSAGES_SHOWN);
         let messages = self
             .pane(Pane::Messages, focused, cx)
             .h(px(96.))
             .px_2()
             .text_sm()
-            .children(self.messages.iter().rev().take(4).rev().cloned());
+            .child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .justify_end()
+                    .overflow_hidden()
+                    .children(self.messages[newest..].iter().cloned()),
+            );
         let mut middle = div()
             .flex_1()
             .flex()

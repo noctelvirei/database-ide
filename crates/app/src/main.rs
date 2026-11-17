@@ -15,7 +15,7 @@ use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
-use gpui::{App, AppContext as _, Bounds, WindowBounds, WindowOptions, px, size};
+use gpui::{App, AppContext as _, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size};
 use gpui_component::Root;
 
 use crate::ui_script::UiScript;
@@ -57,6 +57,10 @@ fn main() -> ExitCode {
         let bounds = Bounds::centered(None, size(px(1400.), px(900.)), cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
+            titlebar: Some(TitlebarOptions {
+                title: Some("Database IDE".into()),
+                ..Default::default()
+            }),
             ..Default::default()
         };
         let opened = cx.open_window(options, |window, cx| {
