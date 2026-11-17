@@ -2,6 +2,9 @@
 
 use serde::Deserialize;
 
+/// MySQL catalog browsing, search and Script as over the common session interface.
+pub mod mysql;
+
 /// PostgreSQL catalog browsing, search and Script as over the common session interface.
 pub mod postgres;
 
