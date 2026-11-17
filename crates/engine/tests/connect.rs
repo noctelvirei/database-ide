@@ -2,6 +2,15 @@ use dbide_engine::connections::{Connection, SignInMethod, TlsMode};
 use dbide_engine::danger::Engine;
 use dbide_engine::session::{ConnectErrorKind, connect};
 
+/// A port on 127.0.0.1 that refuses connections: bound, so nothing else takes it, but not
+/// listening. Keep the socket alive for the test.
+fn closed_port() -> (tokio::net::TcpSocket, u16) {
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let port = socket.local_addr().unwrap().port();
+    (socket, port)
+}
+
 fn details(engine: Engine, host: &str, port: u16, user: &str, database: &str) -> Connection {
     let mut details = Connection::new(engine, host);
     details.port = Some(port);
@@ -42,10 +51,9 @@ async fn mysql_windows_sign_in_returns_invalid_details_without_disclosing_passwo
 
 #[tokio::test]
 async fn mssql_closed_port_returns_unreachable_without_disclosing_password() {
-    let socket = tokio::net::TcpSocket::new_v4().unwrap();
-    socket.bind("127.0.0.1:61997".parse().unwrap()).unwrap();
+    let (_socket, port) = closed_port();
     let mut details = Connection::new(Engine::SqlServer, "127.0.0.1");
-    details.port = Some(61997);
+    details.port = Some(port);
     details.user = Some("dbide_test".into());
     let error = connect(&details, Some("invented-secret"))
         .await
@@ -53,17 +61,16 @@ async fn mssql_closed_port_returns_unreachable_without_disclosing_password() {
     assert_eq!(error.kind, ConnectErrorKind::Unreachable);
     assert_eq!(
         error.message,
-        "Can't reach 127.0.0.1:61997: the connection was refused."
+        format!("Can't reach 127.0.0.1:{port}: the connection was refused.")
     );
     assert!(!format!("{error:?}").contains("invented-secret"));
 }
 
 #[tokio::test]
 async fn pg_closed_port_returns_unreachable_without_disclosing_password() {
-    let socket = tokio::net::TcpSocket::new_v4().unwrap();
-    socket.bind("127.0.0.1:61998".parse().unwrap()).unwrap();
+    let (_socket, port) = closed_port();
     let mut details = Connection::new(Engine::PostgreSql, "127.0.0.1");
-    details.port = Some(61998);
+    details.port = Some(port);
     details.user = Some("dbide_test".into());
     let error = connect(&details, Some("invented-secret"))
         .await
@@ -71,7 +78,7 @@ async fn pg_closed_port_returns_unreachable_without_disclosing_password() {
     assert_eq!(error.kind, ConnectErrorKind::Unreachable);
     assert_eq!(
         error.message,
-        "Can't reach 127.0.0.1:61998: the connection was refused."
+        format!("Can't reach 127.0.0.1:{port}: the connection was refused.")
     );
     assert!(!format!("{error:?}").contains("invented-secret"));
 }
@@ -276,15 +283,14 @@ async fn mysql_untrusted_certificate_returns_tls_without_disclosing_password() {
 
 #[tokio::test]
 async fn silent_endpoint_returns_timeout_without_disclosing_password() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:61996")
-        .await
-        .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
     let accept = tokio::spawn(async move {
         let (_socket, _) = listener.accept().await.unwrap();
         std::future::pending::<()>().await;
     });
     let mut details = Connection::new(Engine::PostgreSql, "127.0.0.1");
-    details.port = Some(61996);
+    details.port = Some(port);
     details.user = Some("dbide_test".into());
     details.connect_timeout = 1;
     let error = connect(&details, Some("invented-secret"))
@@ -292,16 +298,18 @@ async fn silent_endpoint_returns_timeout_without_disclosing_password() {
         .unwrap_err();
     accept.abort();
     assert_eq!(error.kind, ConnectErrorKind::Timeout);
-    assert_eq!(error.message, "No answer from 127.0.0.1:61996 within 1 s.");
+    assert_eq!(
+        error.message,
+        format!("No answer from 127.0.0.1:{port} within 1 s.")
+    );
     assert!(!format!("{error:?}").contains("invented-secret"));
 }
 
 #[tokio::test]
 async fn mysql_closed_port_returns_unreachable_without_disclosing_password() {
-    let socket = tokio::net::TcpSocket::new_v4().unwrap();
-    socket.bind("127.0.0.1:61999".parse().unwrap()).unwrap();
+    let (_socket, port) = closed_port();
     let mut details = Connection::new(Engine::MySql, "127.0.0.1");
-    details.port = Some(61999);
+    details.port = Some(port);
     details.user = Some("dbide_test".into());
     let error = connect(&details, Some("invented-secret"))
         .await
@@ -309,7 +317,7 @@ async fn mysql_closed_port_returns_unreachable_without_disclosing_password() {
     assert_eq!(error.kind, ConnectErrorKind::Unreachable);
     assert_eq!(
         error.message,
-        "Can't reach 127.0.0.1:61999: the connection was refused."
+        format!("Can't reach 127.0.0.1:{port}: the connection was refused.")
     );
     assert!(!format!("{error:?}").contains("invented-secret"));
 }

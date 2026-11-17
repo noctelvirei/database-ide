@@ -245,8 +245,11 @@ async fn mysql_search_all_returns_hits_from_two_databases_without_switching_the_
         report.skipped.iter().all(|skipped| {
             skipped.database != first.database()
                 && skipped.database != second.database()
-                && skipped.reason.contains("1049")
-                && skipped.reason.contains("Unknown database")
+                && skipped.reason
+                    == format!(
+                        "Signed in, but database {} doesn't exist or this login can't open it.",
+                        skipped.database
+                    )
         }),
         "{report:#?}"
     );
@@ -332,8 +335,11 @@ async fn mysql_search_all_reports_a_refused_database_without_losing_other_hits()
         report.skipped.iter().all(|skipped| {
             skipped.database == refused.database()
                 || (skipped.database != source.database()
-                    && skipped.reason.contains("1049")
-                    && skipped.reason.contains("Unknown database"))
+                    && skipped.reason
+                        == format!(
+                            "Signed in, but database {} doesn't exist or this login can't open it.",
+                            skipped.database
+                        ))
         }),
         "{report:#?}"
     );
