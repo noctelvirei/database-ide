@@ -11,7 +11,7 @@ use mssql_tds::connection::client_context::{ClientContext, TdsAuthenticationMeth
 use mssql_tds::connection::tds_client::TdsClient;
 use mssql_tds::connection_provider::tds_connection_provider::TdsConnectionProvider;
 use mssql_tds::core::EncryptionSetting;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
 use crate::connections::{Connection, SignInMethod, TlsMode};
@@ -20,6 +20,7 @@ use crate::session::{Event, PlanMode, Run, Session};
 
 mod batches;
 mod execution;
+mod grid_edit;
 mod plans;
 mod values;
 
@@ -43,7 +44,7 @@ pub enum Error {
 pub struct Mssql {
     database: String,
     current: watch::Receiver<String>,
-    requests: mpsc::Sender<Request>,
+    requests: mpsc::Sender<Work>,
 }
 
 impl fmt::Debug for Mssql {
@@ -60,6 +61,14 @@ struct Request {
     events: mpsc::Sender<Event>,
     cancel: CancellationToken,
     handled: Arc<AtomicBool>,
+}
+
+enum Work {
+    Run(Request),
+    Save {
+        script: crate::grid_edit::Script,
+        reply: oneshot::Sender<Result<crate::grid_edit::SaveReport, crate::grid_edit::Error>>,
+    },
 }
 
 /// Opens SQL or current-account Windows sign-in. Named instances use SQL Browser (SSRP).
@@ -142,7 +151,7 @@ impl Mssql {
         let current = self.current.clone();
         let database = &mut self.database;
         let source = stream::once(async move {
-            if requests.send(request).await.is_err() {
+            if requests.send(Work::Run(request)).await.is_err() {
                 return stream::once(async { closed() }).boxed();
             }
             let events = stream::unfold(receiver, |mut receiver| async move {
@@ -157,6 +166,25 @@ impl Mssql {
         })
         .flatten();
         Run::new(source, token)
+    }
+
+    /// Saves a confirmed SQL Server grid script on this session, rolling back all Save
+    /// changes on conflict. An existing transaction uses a savepoint and stays open unless
+    /// a server error makes it uncommittable. Dropping the future requests rollback;
+    /// worker cleanup finishes before reuse (a commit already sent may finish).
+    pub async fn save(
+        &mut self,
+        script: crate::grid_edit::Script,
+    ) -> Result<crate::grid_edit::SaveReport, crate::grid_edit::Error> {
+        if script.engine != Engine::SqlServer {
+            return Err(crate::grid_edit::Error::Unsupported(script.engine));
+        }
+        let (reply, receiver) = oneshot::channel();
+        self.requests
+            .send(Work::Save { script, reply })
+            .await
+            .map_err(|_| grid_edit::closed())?;
+        receiver.await.map_err(|_| grid_edit::closed())?
     }
 }
 
@@ -177,11 +205,27 @@ impl Session for Mssql {
 
 async fn worker(
     mut client: TdsClient,
-    mut requests: mpsc::Receiver<Request>,
+    mut requests: mpsc::Receiver<Work>,
     current: watch::Sender<String>,
     timeout: u32,
 ) {
     while let Some(request) = requests.recv().await {
+        let request = match request {
+            Work::Save { script, mut reply } => {
+                if reply.is_closed() {
+                    continue;
+                }
+                let result = grid_edit::save(&mut client, &script, &mut reply, timeout).await;
+                let failed = client.is_connection_dead()
+                    || matches!(&result, Err(crate::grid_edit::Error::Recovery { .. }));
+                let _ = reply.send(result);
+                if failed {
+                    break;
+                }
+                continue;
+            }
+            Work::Run(request) => request,
+        };
         if !request.cancel.is_cancelled() {
             let result = execution::run(&mut client, &request, timeout).await;
             current.send_replace(client.database().to_owned());

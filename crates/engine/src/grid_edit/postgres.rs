@@ -104,6 +104,8 @@ pub(super) async fn inspect(
         table: table.table,
         columns: policy,
         key,
+        comparison_types: Vec::new(),
+        comparison_collations: Vec::new(),
     }))
 }
 
