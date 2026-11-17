@@ -261,7 +261,14 @@ async fn catalog(
     query(
         session,
         &format!(
-            "SELECT CAST({} AS CHAR CHARACTER SET utf8mb4) FROM ({}) catalog
+            // information_schema text is utf8mb3; convert it once so filters can compare it
+            // with utf8mb4 literals without a collation clash.
+            "SELECT CAST({} AS CHAR CHARACTER SET utf8mb4) FROM (SELECT
+            CONVERT(object_key USING utf8mb4) COLLATE utf8mb4_bin AS object_key,
+            CONVERT(schema_name USING utf8mb4) COLLATE utf8mb4_bin AS schema_name,
+            CONVERT(name USING utf8mb4) COLLATE utf8mb4_bin AS name,
+            CONVERT(kind USING utf8mb4) COLLATE utf8mb4_bin AS kind
+        FROM ({}) raw) catalog
         WHERE DATABASE() NOT IN ('mysql', 'sys', 'information_schema', 'performance_schema')
         AND {filter} ORDER BY BINARY schema_name, BINARY name, kind, BINARY object_key{limit}",
             queries::OBJECT_JSON,

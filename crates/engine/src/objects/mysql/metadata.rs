@@ -43,7 +43,8 @@ impl IndexPart {
                 ));
             }
         };
-        if let Some(prefix) = self.prefix {
+        // A SPATIAL key part reports SUB_PART 32, but MySQL rejects a prefix on one.
+        if let Some(prefix) = self.prefix.filter(|_| self.method != "SPATIAL") {
             sql.push_str(&format!("({prefix})"));
         }
         if self.descending != 0 {

@@ -702,7 +702,7 @@ async fn mysql_view_create_preserves_unicode_from_a_latin1_creation_context() {
         &mut session,
         "SET NAMES latin1; CREATE VIEW pears AS SELECT _latin1 X'E9' AS name,
             CAST(COERCIBILITY(_latin1 X'E9') AS SIGNED) AS coercibility,
-            _latin1 X'615C62276300' COLLATE latin1_bin AS escaped,
+            _latin1 X'615C62276300' COLLATE latin1_bin AS escaped_text,
             _utf8mb4 X'E99BAA' AS mixed_name; SET NAMES utf8mb4",
     )
     .await;
@@ -716,7 +716,7 @@ async fn mysql_view_create_preserves_unicode_from_a_latin1_creation_context() {
     assert_eq!(
         run(
             &mut session,
-            "SELECT name, coercibility, escaped, mixed_name FROM pears"
+            "SELECT name, coercibility, escaped_text, mixed_name FROM pears"
         )
         .await,
         vec![vec![
