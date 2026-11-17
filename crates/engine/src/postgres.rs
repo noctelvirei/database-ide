@@ -16,6 +16,7 @@ use crate::session::{Event, PlanMode, Run, Session};
 
 mod cancel;
 mod execution;
+mod grid_edit;
 mod metadata;
 mod plans;
 mod values;
@@ -69,7 +70,15 @@ impl From<tokio_postgres::Error> for Error {
 /// including when a consumer drops a Run. Debug never includes credentials.
 pub struct Postgres {
     database: String,
-    requests: mpsc::Sender<Request>,
+    requests: mpsc::Sender<Work>,
+}
+
+enum Work {
+    Run(Request),
+    Save {
+        script: crate::grid_edit::Script,
+        reply: oneshot::Sender<Result<crate::grid_edit::SaveReport, crate::grid_edit::Error>>,
+    },
 }
 
 impl fmt::Debug for Postgres {
@@ -219,7 +228,7 @@ impl Postgres {
         };
         let requests = self.requests.clone();
         let source = stream::once(async move {
-            if requests.send(request).await.is_err() {
+            if requests.send(Work::Run(request)).await.is_err() {
                 return stream::once(async { closed() }).boxed();
             }
             let events = stream::unfold(receiver, |mut receiver| async move {
@@ -233,6 +242,25 @@ impl Postgres {
         })
         .flatten();
         Run::new(source, token)
+    }
+
+    /// Runs a confirmed PostgreSQL grid script on this tab's session. Each statement must
+    /// affect one row; a conflict rolls back the whole Save. An existing user transaction
+    /// is protected by a savepoint and remains open. Dropping this future requests rollback;
+    /// cleanup finishes before the next session operation (a commit already sent may finish).
+    pub async fn save(
+        &mut self,
+        script: crate::grid_edit::Script,
+    ) -> Result<crate::grid_edit::SaveReport, crate::grid_edit::Error> {
+        if script.engine != Engine::PostgreSql {
+            return Err(crate::grid_edit::Error::Unsupported(script.engine));
+        }
+        let (reply, receiver) = oneshot::channel();
+        self.requests
+            .send(Work::Save { script, reply })
+            .await
+            .map_err(|_| grid_edit::closed())?;
+        receiver.await.map_err(|_| grid_edit::closed())?
     }
 }
 
@@ -253,7 +281,7 @@ impl Session for Postgres {
 async fn worker(
     client: Client,
     mut notices: mpsc::Receiver<Notice>,
-    mut requests: mpsc::Receiver<Request>,
+    mut requests: mpsc::Receiver<Work>,
     cancellation: cancel::Cancellation,
     _background: ConnectionTask,
     mut metadata: metadata::Metadata,
@@ -266,6 +294,18 @@ async fn worker(
             }
             request = requests.recv() => {
                 let Some(request) = request else { break; };
+                let request = match request {
+                    Work::Save { script, reply } => {
+                        if reply.is_closed() { continue; }
+                        let result = grid_edit::save(&client, &mut notices, &script, &reply).await;
+                        let failed = client.is_closed()
+                            || matches!(&result, Err(crate::grid_edit::Error::Recovery { .. }));
+                        let _ = reply.send(result);
+                        if failed { break; }
+                        continue;
+                    }
+                    Work::Run(request) => request,
+                };
                 if request.cancel.is_cancelled() {
                     request.handled.store(true, Ordering::Release);
                     continue;

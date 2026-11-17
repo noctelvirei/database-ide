@@ -4,7 +4,8 @@ use std::fmt::Write;
 
 use crate::session::Value;
 
-pub(super) fn hex(bytes: &[u8]) -> String {
+/// Lowercase hexadecimal without a prefix, shared with SQL literal encoding.
+pub(crate) fn hex(bytes: &[u8]) -> String {
     let mut text = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
         write!(text, "{byte:02x}").expect("formatting into a String cannot fail");
@@ -12,7 +13,8 @@ pub(super) fn hex(bytes: &[u8]) -> String {
     text
 }
 
-pub(super) fn cell(value: &Value) -> String {
+/// Lossless text representation before a destination applies its own escaping.
+pub(crate) fn cell(value: &Value) -> String {
     match value {
         Value::Null => String::new(),
         Value::Bool(value) => value.to_string(),
