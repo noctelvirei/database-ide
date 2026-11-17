@@ -17,7 +17,13 @@ pub(super) async fn columns(
 ) -> Result<Vec<Column>, Error> {
     query(
         session,
-        &queries::COLUMNS.replace("{table}", &literal(&object.name)?),
+        &format!(
+            "{} WHERE TABLE_SCHEMA = DATABASE()
+            AND CONVERT(TABLE_NAME USING utf8mb4) COLLATE utf8mb4_bin = {}
+            AND EXTRA NOT LIKE '%INVISIBLE%' ORDER BY ORDINAL_POSITION",
+            queries::COLUMNS,
+            literal(&object.name)?
+        ),
     )
     .await
 }
