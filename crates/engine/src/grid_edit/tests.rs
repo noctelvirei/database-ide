@@ -184,7 +184,133 @@ fn result(engine: Engine) -> EditableResult {
             },
         ],
         key: vec![0],
+        comparison_types: Vec::new(),
+        comparison_collations: Vec::new(),
     }
+}
+
+#[test]
+fn sql_server_predicates_convert_real_and_money_to_the_original_column_types() {
+    let mut result = result(Engine::SqlServer);
+    result.table = vec!["dbo".into(), "measurements".into()];
+    result.columns[1].name = Some("amount".into());
+    result.comparison_types = vec![Some("real".into()), Some("money".into()), None];
+    let script = result
+        .script(&[Change::Update {
+            original: vec![
+                Value::Float(0.10000000149011612),
+                Value::Decimal("12.3400".into()),
+                Value::Null,
+            ],
+            cells: vec![Cell {
+                column: 1,
+                value: Value::Decimal("13.5000".into()),
+            }],
+        }])
+        .unwrap();
+    assert_eq!(
+        script.sql(),
+        "UPDATE [dbo].[measurements] SET [amount] = 13.5000 WHERE [id] = CONVERT(real, 1.0000000149011612e-1) AND [amount] = CONVERT(money, 12.3400);\n"
+    );
+}
+
+#[test]
+fn sql_server_varchar_predicate_preserves_the_column_code_page_before_conversion() {
+    let mut result = result(Engine::SqlServer);
+    result.table = vec!["dbo".into(), "fruit".into()];
+    result.columns[1].name = Some("name".into());
+    result.comparison_types = vec![Some("int".into()), Some("varchar(40)".into()), None];
+    result.comparison_collations =
+        vec![None, Some("Latin1_General_100_CI_AS_SC_UTF8".into()), None];
+    let script = result
+        .script(&[Change::Update {
+            original: vec![Value::Integer(1), Value::Text("雪".into()), Value::Null],
+            cells: vec![Cell {
+                column: 1,
+                value: Value::Text("pear".into()),
+            }],
+        }])
+        .unwrap();
+    assert_eq!(
+        script.sql(),
+        "UPDATE [dbo].[fruit] SET [name] = N'pear' WHERE [id] = CONVERT(int, 1) AND [name] = CONVERT(varchar(40), N'雪' COLLATE [Latin1_General_100_CI_AS_SC_UTF8]);\n"
+    );
+}
+
+#[test]
+fn sql_server_delete_converts_datetime_uuid_and_binary_but_omits_noncomparable_columns() {
+    let result = EditableResult {
+        engine: Engine::SqlServer,
+        table: vec!["dbo".into(), "t]".into()],
+        columns: vec![
+            EditColumn {
+                name: Some("id".into()),
+                read_only: false,
+                comparable: true,
+            },
+            EditColumn {
+                name: Some("clock".into()),
+                read_only: false,
+                comparable: true,
+            },
+            EditColumn {
+                name: Some("bytes".into()),
+                read_only: true,
+                comparable: true,
+            },
+            EditColumn {
+                name: Some("legacy".into()),
+                read_only: false,
+                comparable: false,
+            },
+        ],
+        key: vec![0],
+        comparison_collations: Vec::new(),
+        comparison_types: vec![
+            Some("uniqueidentifier".into()),
+            Some("datetime".into()),
+            Some("varbinary(8)".into()),
+            None,
+        ],
+    };
+    let script = result
+        .script(&[Change::Delete {
+            original: vec![
+                Value::Uuid([0; 16]),
+                Value::Timestamp(
+                    crate::session::temporal::Timestamp::parse("2024-02-29T12:34:56.003").unwrap(),
+                ),
+                Value::Bytes(vec![0, 255]),
+                Value::Text("old text".into()),
+            ],
+        }])
+        .unwrap();
+    assert_eq!(
+        script.sql(),
+        "DELETE FROM [dbo].[t]]] WHERE [id] = CONVERT(uniqueidentifier, N'00000000-0000-0000-0000-000000000000') AND [clock] = CONVERT(datetime, N'2024-02-29T12:34:56.003', 126) AND [bytes] = CONVERT(varbinary(8), 0x00ff);\n"
+    );
+}
+
+#[test]
+fn sql_server_insert_quotes_unicode_and_default_insert_omits_columns() {
+    let mut result = result(Engine::SqlServer);
+    result.table = vec!["dbo".into(), "fruit".into()];
+    result.columns[1].name = Some("name".into());
+    let script = result
+        .script(&[
+            Change::Insert {
+                cells: vec![Cell {
+                    column: 1,
+                    value: Value::Text("雪 O'Brien".into()),
+                }],
+            },
+            Change::Insert { cells: vec![] },
+        ])
+        .unwrap();
+    assert_eq!(
+        script.sql(),
+        "INSERT INTO [dbo].[fruit] ([name]) VALUES (N'雪 O''Brien');\nINSERT INTO [dbo].[fruit] DEFAULT VALUES;\n"
+    );
 }
 
 #[test]
