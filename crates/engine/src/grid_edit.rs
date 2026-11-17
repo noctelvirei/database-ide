@@ -455,17 +455,10 @@ impl EditableResult {
             );
         }
         if let Some(Some(collation)) = self.comparison_collations.get(index) {
-            // SQL Server's COLLATE takes a bare name; a bracketed one is a syntax error.
-            if collation.is_empty()
-                || !collation
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '_')
-            {
-                return Err(Error::Catalog(format!(
-                    "unexpected collation name {collation:?}"
-                )));
-            }
-            value = format!("{value} COLLATE {collation}");
+            let collate = crate::sql::mssql_collate(collation).ok_or_else(|| {
+                Error::Catalog(format!("unexpected collation name {collation:?}"))
+            })?;
+            value = format!("{value}{collate}");
         }
         Ok(
             match self.comparison_types.get(index).and_then(Option::as_ref) {
