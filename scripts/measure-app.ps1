@@ -1,5 +1,4 @@
-#Requires -Version 5.1
-# Runs on Windows PowerShell 5.1, which every Windows PC has, so contributors need nothing installed.
+#Requires -Version 7.6
 <#
 .SYNOPSIS
 Measures the app against the spec's targets: startup under 1 s, idle private working set
@@ -23,6 +22,7 @@ param(
 )
 Set-StrictMode -Version 3.0
 $ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $true
 
 function Get-ProcessTree([int] $RootId) {
     $all = Get-CimInstance Win32_Process
@@ -55,7 +55,8 @@ try {
         $ids = Get-ProcessTree $app.Id
         $perf = Get-CimInstance Win32_PerfFormattedData_PerfProc_Process | Where-Object { $ids -contains [int]$_.IDProcess }
         $privateMb = ($perf | Measure-Object WorkingSetPrivate -Sum).Sum / 1MB
-        & taskkill.exe /PID $app.Id /T /F | Out-Null
+        $app.Kill($true)
+        $app.WaitForExit()
         $row = [pscustomobject]@{ Run = $run; StartupMs = $startup; Processes = @($ids).Count; PrivateMb = $privateMb }
         $rows += $row
         '{0},{1},{2},{3:N1}' -f $row.Run, $row.StartupMs, $row.Processes, $row.PrivateMb

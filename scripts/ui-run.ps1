@@ -1,5 +1,4 @@
-#Requires -Version 5.1
-# Runs on Windows PowerShell 5.1, which every Windows PC has, so contributors need nothing installed.
+#Requires -Version 7.6
 <#
 .SYNOPSIS
 Plays a UI script in the app and saves its state lines and screenshots to an artifact folder.
@@ -22,6 +21,7 @@ param(
 )
 Set-StrictMode -Version 3.0
 $ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $true
 
 Add-Type -AssemblyName System.Drawing
 Add-Type @'
@@ -80,5 +80,5 @@ try {
     Get-Content -LiteralPath $state
 }
 finally {
-    if (-not $app.HasExited) { & taskkill.exe /PID $app.Id /T /F | Out-Null }
+    if (-not $app.HasExited) { $app.Kill($true) }
 }
