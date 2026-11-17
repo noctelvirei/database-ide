@@ -15,9 +15,9 @@ struct Cli {
 enum Commands {
     /// Print the package version.
     Version,
-    /// Run a PostgreSQL batch and export each result set as a numbered CSV file.
+    /// Run a SQL Server or PostgreSQL batch and export numbered CSV result files.
     Run {
-        /// libpq keyword string or PostgreSQL URI; password falls back to DBIDE_PASSWORD.
+        /// ADO.NET, JDBC SQL Server, libpq or PostgreSQL URI; password falls back to DBIDE_PASSWORD.
         #[arg(long)]
         connection: String,
         /// SQL batch, sent unchanged.
@@ -38,6 +38,10 @@ enum Error {
     Connection(#[from] connection_string::Error),
     #[error(transparent)]
     Postgres(#[from] dbide_engine::postgres::Error),
+    #[error(transparent)]
+    Mssql(#[from] dbide_engine::mssql::Error),
+    #[error("This engine is not supported by dbide run")]
+    UnsupportedEngine,
     #[error(transparent)]
     Export(#[from] export::Error),
     #[error("Cannot read SQL file: {0}")]
@@ -77,7 +81,15 @@ async fn run() -> Result<(), Error> {
                 Some(file) => std::fs::read_to_string(file)?,
                 None => batch.expect("clap requires batch or file"),
             };
-            let mut session = dbide_engine::postgres::connect(&parsed.connection, password).await?;
+            let mut session: Box<dyn Session> = match parsed.connection.engine {
+                dbide_engine::danger::Engine::PostgreSql => {
+                    Box::new(dbide_engine::postgres::connect(&parsed.connection, password).await?)
+                }
+                dbide_engine::danger::Engine::SqlServer => {
+                    Box::new(dbide_engine::mssql::connect(&parsed.connection, password).await?)
+                }
+                _ => return Err(Error::UnsupportedEngine),
+            };
             let report =
                 export::run_to_file(session.run(&batch), &output, &export::Format::default())
                     .await?;

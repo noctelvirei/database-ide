@@ -458,8 +458,11 @@ dependencies = [
 name = "dbide-test-servers"
 version = "0.1.0"
 dependencies = [
+ "mssql-tds",
+ "rand 0.9.5",
  "tempfile",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]
