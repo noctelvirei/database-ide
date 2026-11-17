@@ -5,6 +5,7 @@ use std::io::{BufWriter, Write};
 
 use crate::danger::Engine;
 use crate::session::{Column, Value};
+use crate::sql::{identifier, literal};
 
 /// A SQL export that could not be represented or written.
 #[derive(Debug, thiserror::Error)]
@@ -27,72 +28,6 @@ pub(super) struct Writer {
     file: BufWriter<File>,
     prefix: String,
     engine: Engine,
-}
-
-fn identifier(text: &str, engine: Engine) -> Result<String, Error> {
-    if text.is_empty() || text.contains('\0') {
-        return Err(Error::Identifier);
-    }
-    Ok(match engine {
-        Engine::SqlServer => format!("[{}]", text.replace(']', "]]")),
-        Engine::PostgreSql => format!("\"{}\"", text.replace('"', "\"\"")),
-        Engine::MySql => format!("`{}`", text.replace('`', "``")),
-    })
-}
-
-fn string(text: &str, engine: Engine) -> Result<String, Error> {
-    if text.contains('\0') && engine != Engine::MySql {
-        return Err(Error::Literal);
-    }
-    let quoted = text.replace('\'', "''");
-    Ok(match engine {
-        Engine::SqlServer => format!("N'{quoted}'"),
-        Engine::PostgreSql => format!("E'{}'", quoted.replace('\\', "\\\\")),
-        // Hex conversion avoids dependence on NO_BACKSLASH_ESCAPES and connection encoding.
-        Engine::MySql => format!(
-            "CONVERT(X'{}' USING utf8mb4)",
-            super::text::hex(text.as_bytes())
-        ),
-    })
-}
-
-fn decimal(text: &str) -> bool {
-    let text = text.strip_prefix(['-', '+']).unwrap_or(text);
-    let mut dot = false;
-    let mut digits = 0;
-    for byte in text.bytes() {
-        if byte.is_ascii_digit() {
-            digits += 1;
-        } else if byte == b'.' && !dot {
-            dot = true;
-        } else {
-            return false;
-        }
-    }
-    digits != 0
-}
-
-fn literal(value: &Value, engine: Engine) -> Result<String, Error> {
-    Ok(match value {
-        Value::Null => "NULL".into(),
-        Value::Bool(value) if engine == Engine::SqlServer => u8::from(*value).to_string(),
-        Value::Bool(true) => "TRUE".into(),
-        Value::Bool(false) => "FALSE".into(),
-        Value::Integer(value) => value.to_string(),
-        Value::UnsignedInteger(value) => value.to_string(),
-        Value::Decimal(value) if decimal(value) => value.clone(),
-        Value::Float(value) if value.is_finite() => format!("{value:e}"),
-        Value::Decimal(_) | Value::Float(_) => return Err(Error::Literal),
-        Value::Bytes(value) => {
-            let hex = super::text::hex(value);
-            match engine {
-                Engine::SqlServer => format!("0x{hex}"),
-                Engine::PostgreSql => format!("E'\\\\x{hex}'::bytea"),
-                Engine::MySql => format!("_binary X'{hex}'"),
-            }
-        }
-        _ => string(&super::text::cell(value), engine)?,
-    })
 }
 
 impl Writer {
@@ -158,5 +93,14 @@ impl Writer {
         self.file.flush()?;
         self.file.get_ref().sync_all()?;
         Ok(())
+    }
+}
+
+impl From<crate::sql::Error> for Error {
+    fn from(error: crate::sql::Error) -> Self {
+        match error {
+            crate::sql::Error::Identifier => Self::Identifier,
+            crate::sql::Error::Literal => Self::Literal,
+        }
     }
 }

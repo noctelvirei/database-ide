@@ -15,9 +15,9 @@ struct Cli {
 enum Commands {
     /// Print the package version.
     Version,
-    /// Run a SQL Server or PostgreSQL batch and export numbered CSV result files.
+    /// Run a SQL Server, PostgreSQL or MySQL batch and export each result as a numbered CSV file.
     Run {
-        /// ADO.NET, JDBC SQL Server, libpq or PostgreSQL URI; password falls back to DBIDE_PASSWORD.
+        /// ADO.NET, JDBC, libpq or database URI; password falls back to DBIDE_PASSWORD.
         #[arg(long)]
         connection: String,
         /// SQL batch, sent unchanged.
@@ -40,8 +40,8 @@ enum Error {
     Postgres(#[from] dbide_engine::postgres::Error),
     #[error(transparent)]
     Mssql(#[from] dbide_engine::mssql::Error),
-    #[error("This engine is not supported by dbide run")]
-    UnsupportedEngine,
+    #[error(transparent)]
+    MySql(#[from] dbide_engine::mysql::Error),
     #[error(transparent)]
     Export(#[from] export::Error),
     #[error("Cannot read SQL file: {0}")]
@@ -88,7 +88,9 @@ async fn run() -> Result<(), Error> {
                 dbide_engine::danger::Engine::SqlServer => {
                     Box::new(dbide_engine::mssql::connect(&parsed.connection, password).await?)
                 }
-                _ => return Err(Error::UnsupportedEngine),
+                dbide_engine::danger::Engine::MySql => {
+                    Box::new(dbide_engine::mysql::connect(&parsed.connection, password).await?)
+                }
             };
             let report =
                 export::run_to_file(session.run(&batch), &output, &export::Format::default())
