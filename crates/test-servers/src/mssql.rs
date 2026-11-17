@@ -19,6 +19,8 @@ use tokio::runtime::Runtime;
 const PREFIX: &str = "dbide_test_";
 const ADMIN_DATABASE: &str = "master";
 static SWEPT: Mutex<bool> = Mutex::new(false);
+// Held while this process creates a database; see `create_database`.
+static CREATING: Mutex<()> = Mutex::new(());
 
 /// A harness failure; SQL Server errors retain driver diagnostics.
 #[derive(Debug, thiserror::Error)]
@@ -104,10 +106,10 @@ impl Mssql {
                 &runtime,
                 &mut admin,
                 &format!(
-                    "CREATE LOGIN [{}] WITH PASSWORD = N'{}', CHECK_POLICY = OFF; CREATE DATABASE [{}];",
-                    user, password, database
+                    "CREATE LOGIN [{user}] WITH PASSWORD = N'{password}', CHECK_POLICY = OFF;"
                 ),
             )?;
+            create_database(&runtime, &mut admin, &database)?;
             run_admin(
                 &runtime,
                 &mut admin,
@@ -270,6 +272,32 @@ async fn connect(
     TdsConnectionProvider::new()
         .create_client(context, &datasource, None)
         .await
+}
+
+/// Creates a database, waiting out other creators. CREATE DATABASE copies `model` and
+/// needs an exclusive lock on it, so parallel tests fail with error 1807: creates in this
+/// process take turns, and a clash with another process is retried for up to 30 seconds.
+fn create_database(runtime: &Runtime, client: &mut TdsClient, database: &str) -> Result<(), Error> {
+    const MODEL_LOCKED: u32 = 1807;
+    let _turn = CREATING.lock().map_err(|_| Error::Poisoned)?;
+    let sql = format!("CREATE DATABASE [{database}];");
+    let mut attempts = 0;
+    loop {
+        match runtime.block_on(query(client, &sql)) {
+            Ok(_) => return Ok(()),
+            Err(TdsError::SqlServerError { diagnostics })
+                if attempts < 60
+                    && diagnostics
+                        .errors
+                        .iter()
+                        .any(|error| error.number == MODEL_LOCKED) =>
+            {
+                attempts += 1;
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
 }
 
 fn run_admin(runtime: &Runtime, client: &mut TdsClient, sql: &str) -> Result<(), Error> {

@@ -1,7 +1,12 @@
 //! Optimizer estimates for the UPDATE/DELETE statements identified by the danger check.
 
 use futures::StreamExt;
-use sqlparser::{ast::Statement, dialect::MsSqlDialect, parser::Parser, tokenizer::Token};
+use sqlparser::{
+    ast::{SetExpr, Statement},
+    dialect::MsSqlDialect,
+    parser::Parser,
+    tokenizer::Token,
+};
 
 use super::{Error, Mssql, batches};
 use crate::danger::{DangerKind, DangerousStatement};
@@ -27,7 +32,15 @@ pub(super) async fn estimate_rows(
             let statement = parser
                 .parse_statement()
                 .map_err(|error| Error::Parse(error.to_string()))?;
-            let kind = match &statement {
+            // `WITH … DELETE` parses as a query whose body is the data change.
+            let change = match &statement {
+                Statement::Query(query) => match query.body.as_ref() {
+                    SetExpr::Update(inner) | SetExpr::Delete(inner) => inner,
+                    _ => &statement,
+                },
+                _ => &statement,
+            };
+            let kind = match change {
                 Statement::Update(update) => {
                     line = update.update_token.0.span.start.line + batch.line_offset;
                     Some(DangerKind::Update)

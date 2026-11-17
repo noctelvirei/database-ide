@@ -80,7 +80,8 @@ async fn mssql_select_streams_typed_columns_rows_count_then_done() {
                 name: "answer".into(),
                 type_name: "int".into(),
                 category: TypeCategory::Integer,
-                nullable: Some(false),
+                // SQL Server reports a CAST expression as nullable.
+                nullable: Some(true),
                 base_table: None,
                 base_column: None,
             }]
