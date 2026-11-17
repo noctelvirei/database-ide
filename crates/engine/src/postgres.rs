@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use futures::{StreamExt, future, stream};
 use tokio::sync::{mpsc, oneshot};
+use tokio_postgres::error::SqlState;
 use tokio_postgres::{AsyncMessage, Client, Config};
 use tokio_util::sync::CancellationToken;
 
@@ -177,7 +178,22 @@ pub async fn connect(details: &Connection, password: Option<&str>) -> Result<Pos
                 {
                     error = cause.into();
                 }
-                Err(cause) => return Err(cause.into()),
+                Err(cause) => {
+                    // Only sign-in failures name Windows sign-in: client-side SSPI or
+                    // configuration errors and the server's authorization refusals,
+                    // not later startup errors such as a missing database.
+                    let sign_in_failed = windows_sign_in
+                        && cause.as_db_error().is_none_or(|db| {
+                            *db.code() == SqlState::INVALID_AUTHORIZATION_SPECIFICATION
+                                || *db.code() == SqlState::INVALID_PASSWORD
+                        });
+                    return Err(match Error::from(cause) {
+                        Error::Server(text) if sign_in_failed => {
+                            Error::Server(format!("Windows sign-in failed: {text}"))
+                        }
+                        error => error,
+                    });
+                }
             }
         }
         Err(error)
@@ -191,13 +207,7 @@ pub async fn connect(details: &Connection, password: Option<&str>) -> Result<Pos
         )
         .await
         .map_err(|_| Error::ConnectTimeout)?
-    }
-    .map_err(|error| match error {
-        Error::Server(text) if windows_sign_in => {
-            Error::Server(format!("Windows sign-in failed: {text}"))
-        }
-        error => error,
-    })?;
+    }?;
     let cancellation =
         cancel::Cancellation::new(&client, address, details.host.clone(), tls.clone());
     let (notices_tx, mut notices) = mpsc::channel(1);

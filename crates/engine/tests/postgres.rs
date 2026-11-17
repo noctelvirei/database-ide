@@ -510,6 +510,31 @@ async fn pg_windows_sign_in_without_a_user_uses_the_current_windows_account() {
     assert_eq!(events[1], Event::Rows(vec![vec![Value::Text(user)]]));
 }
 
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_windows_sign_in_to_a_missing_database_is_not_reported_as_a_sign_in_failure() {
+    let database = tokio::task::spawn_blocking(Database::start_with_sspi)
+        .await
+        .unwrap()
+        .unwrap();
+    let user = std::env::var("USERNAME").expect("USERNAME must name the current Windows account");
+    database
+        .query(&format!(
+            "CREATE ROLE \"{}\" LOGIN",
+            user.replace('"', "\"\"")
+        ))
+        .unwrap();
+    let mut connection = details(&database);
+    connection.sign_in = SignInMethod::Windows;
+    connection.user = None;
+    connection.database = Some("no_such_database".into());
+    let error = postgres::connect(&connection, None).await.unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "PostgreSQL: database \"no_such_database\" does not exist"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn pg_kerberos_windows_sign_in_authenticates_the_requested_role_with_gss() {
     let host = std::env::var("DBIDE_PG_KERBEROS_HOST")
