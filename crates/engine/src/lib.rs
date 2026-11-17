@@ -4,9 +4,12 @@
 pub mod connections;
 pub mod danger;
 pub mod export;
+pub mod grid_edit;
 pub mod mysql;
 pub mod objects;
 pub mod plan;
 pub mod postgres;
 pub mod session;
 pub mod spill;
+
+mod sql;

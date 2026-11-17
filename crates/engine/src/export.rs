@@ -16,7 +16,7 @@ use crate::spill::Reader;
 mod clipboard;
 mod csv;
 mod insert;
-mod text;
+pub(crate) mod text;
 mod xlsx;
 
 /// Maximum rows fetched per spill read; one unusually large cell can still require memory.
