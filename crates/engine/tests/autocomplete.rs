@@ -17,6 +17,14 @@ struct CountedSession<'a> {
 }
 
 impl Session for CountedSession<'_> {
+    fn switch_database<'a>(
+        &'a mut self,
+        database: &'a str,
+        password: Option<&'a str>,
+    ) -> futures::future::BoxFuture<'a, Result<(), dbide_engine::session::Error>> {
+        self.inner.switch_database(database, password)
+    }
+
     fn current_database(&self) -> &str {
         self.inner.current_database()
     }
