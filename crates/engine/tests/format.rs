@@ -54,7 +54,7 @@ fn backslashes_in_standard_literals_keep_their_bytes() {
 }
 
 #[test]
-fn escaped_quotes_in_mysql_literals_keep_their_bytes() {
+fn escaped_quotes_keep_their_bytes_in_mysql() {
     assert_eq!(
         format(r"select 'it\'s', 'a\\b'", Engine::MySql).unwrap(),
         r"SELECT 'it\'s', 'a\\b'"
@@ -198,7 +198,7 @@ fn procedural_blocks_preserve_literal_and_comment_bytes() {
 }
 
 #[test]
-fn mysql_executable_comments_are_opaque() {
+fn executable_comments_are_opaque_in_mysql() {
     assert_eq!(
         format("select /*!50000 SQL_NO_CACHE */ a", Engine::MySql).unwrap(),
         "select /*!50000 SQL_NO_CACHE */ a"
@@ -229,4 +229,49 @@ fn formatting_twice_gives_the_same_text() {
 #[test]
 fn empty_fragments_format_to_empty_text() {
     assert_all_engines(" \r\n\t", "");
+}
+
+#[test]
+fn qualified_keywords_keep_identifier_case() {
+    assert_eq!(
+        format("select * from app.select", Engine::MySql).unwrap(),
+        "SELECT * FROM app.select"
+    );
+}
+
+#[test]
+fn nonreserved_full_and_end_keep_identifier_case() {
+    assert_eq!(
+        format("select full,end from things", Engine::MySql).unwrap(),
+        "SELECT full, end FROM things"
+    );
+}
+
+#[test]
+fn a_comment_after_go_keeps_the_batch_boundary() {
+    assert_eq!(
+        format("select 1\nGO -- batch\nselect 2", Engine::SqlServer).unwrap(),
+        "SELECT 1\nGO -- batch\n\nSELECT 2"
+    );
+}
+
+#[test]
+fn comments_in_qualified_names_do_not_turn_identifiers_into_keywords() {
+    assert_eq!(
+        format("select * from app./* name */select", Engine::MySql).unwrap(),
+        "SELECT * FROM app./* name */ select"
+    );
+}
+
+#[test]
+fn block_comments_after_go_keep_the_batch_boundary() {
+    assert_eq!(
+        format("select 1\nGO /* batch */\nselect 2", Engine::SqlServer).unwrap(),
+        "SELECT 1\nGO /* batch */\n\nSELECT 2"
+    );
+}
+
+#[test]
+fn spaces_that_separate_numeric_tokens_are_not_removed() {
+    assert_all_engines("1 . 2", "1 . 2");
 }

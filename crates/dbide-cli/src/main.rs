@@ -59,7 +59,7 @@ enum Error {
     #[error(transparent)]
     Format(#[from] format::Error),
     #[error("SQL input/output failed: {0}")]
-    File(#[from] std::io::Error),
+    Io(#[from] std::io::Error),
     #[error("Batch failed; see reported server errors")]
     Batch,
 }

@@ -19,7 +19,8 @@ pub enum Error {
 /// Formats a batch or fragment without server access, using four-space indentation and
 /// an 80-character compact layout. Only whitespace and listed structural keyword case change.
 /// Returns an error if tokenization fails or the output fails the token-preservation guard;
-/// the borrowed input is never changed. Unrecognised statements retain their original layout.
+/// the borrowed input is never changed. Unrecognised statements use conservative layout;
+/// batches with executable MySQL comments or COPY data are returned verbatim.
 pub fn format(text: &str, engine: Engine) -> Result<String, Error> {
     let dialect: &dyn Dialect = match engine {
         Engine::SqlServer => &MsSqlDialect {},
@@ -31,12 +32,26 @@ pub fn format(text: &str, engine: Engine) -> Result<String, Error> {
     let mut start = 0;
     let mut depth: usize = 0;
     for (index, token) in tokens.iter().enumerate() {
+        if index < start {
+            continue;
+        }
         if is_go(&tokens, index, engine) {
             append_statement(&mut output, &tokens[start..index]);
             newline(&mut output, 1);
             output.push_str(token.raw);
-            newline(&mut output, 1);
             start = index + 1;
+            while let Some(comment) = tokens.get(start)
+                && matches!(comment.token, Token::Whitespace(_))
+                && !has_newline(comment.gap)
+            {
+                output.push(' ');
+                output.push_str(comment.raw);
+                start += 1;
+                if comment.line_comment() || has_newline(comment.raw) {
+                    break;
+                }
+            }
+            newline(&mut output, 1);
         } else {
             match token.token {
                 Token::LParen => depth += 1,
@@ -68,6 +83,7 @@ pub fn format(text: &str, engine: Engine) -> Result<String, Error> {
 struct Lexeme<'a> {
     token: Token,
     raw: &'a str,
+    // Original whitespace between this token and the previous significant token.
     gap: &'a str,
     keyword: Option<&'static str>,
 }
@@ -97,6 +113,11 @@ impl Lexeme<'_> {
             self.token,
             Token::Whitespace(Whitespace::SingleLineComment { .. })
         )
+    }
+
+    fn word_is(&self, value: &str) -> bool {
+        matches!(&self.token, Token::Word(word) if word.quote_style.is_none())
+            && self.raw.eq_ignore_ascii_case(value)
     }
 }
 
@@ -131,7 +152,6 @@ const KEYWORDS: &[&str] = &[
     "INNER",
     "LEFT",
     "RIGHT",
-    "FULL",
     "OUTER",
     "CROSS",
     "IN",
@@ -145,7 +165,6 @@ const KEYWORDS: &[&str] = &[
     "WHEN",
     "THEN",
     "ELSE",
-    "END",
     "ASC",
     "DESC",
     "WITH",
@@ -188,6 +207,7 @@ fn lex<'a>(text: &'a str, dialect: &dyn Dialect) -> Result<Vec<Lexeme<'a>>, Erro
     };
     let mut result = Vec::new();
     let mut previous_end = 0;
+    let mut after_period = false;
     for token in tokens {
         if matches!(
             token.token,
@@ -199,12 +219,16 @@ fn lex<'a>(text: &'a str, dialect: &dyn Dialect) -> Result<Vec<Lexeme<'a>>, Erro
         let end = offset(token.span.end)?;
         let raw = text.get(start..end).ok_or(Error::ChangedTokens)?;
         let keyword = match &token.token {
-            Token::Word(word) if word.quote_style.is_none() => KEYWORDS
+            // A reserved word after a dot can be an unquoted MySQL identifier.
+            Token::Word(word) if word.quote_style.is_none() && !after_period => KEYWORDS
                 .iter()
                 .copied()
                 .find(|keyword| raw.eq_ignore_ascii_case(keyword)),
             _ => None,
         };
+        if !matches!(token.token, Token::Whitespace(_)) {
+            after_period = matches!(token.token, Token::Period);
+        }
         result.push(Lexeme {
             token: token.token,
             raw,
@@ -221,12 +245,31 @@ fn has_newline(text: &str) -> bool {
 }
 
 fn is_go(tokens: &[Lexeme<'_>], index: usize, engine: Engine) -> bool {
-    let token = &tokens[index];
-    engine == Engine::SqlServer
-        && matches!(&token.token, Token::Word(word) if word.quote_style.is_none())
-        && token.raw.eq_ignore_ascii_case("GO")
-        && (index == 0 || has_newline(token.gap))
-        && (index + 1 == tokens.len() || has_newline(tokens[index + 1].gap))
+    if engine != Engine::SqlServer || !tokens[index].word_is("GO") {
+        return false;
+    }
+    let mut before = index;
+    while before > 0 && !has_newline(tokens[before].gap) {
+        before -= 1;
+        if !matches!(tokens[before].token, Token::Whitespace(_)) {
+            return false;
+        }
+        if has_newline(tokens[before].raw) {
+            break;
+        }
+    }
+    for token in &tokens[index + 1..] {
+        if has_newline(token.gap) {
+            return true;
+        }
+        if !matches!(token.token, Token::Whitespace(_)) {
+            return false;
+        }
+        if token.line_comment() || has_newline(token.raw) {
+            return true;
+        }
+    }
+    true
 }
 
 fn newline(output: &mut String, count: usize) {
@@ -274,10 +317,12 @@ fn separator(previous: &Lexeme<'_>, token: &Lexeme<'_>) -> &'static str {
     if previous.is_string() && token.is_string() {
         return if has_newline(token.gap) { "\n" } else { " " };
     }
-    if matches!(
-        token.token,
-        Token::Comma | Token::SemiColon | Token::RParen | Token::Period
-    ) || matches!(previous.token, Token::LParen | Token::Period)
+    // Spaces around a dot can distinguish numeric and operator tokens in a fragment.
+    if matches!(previous.token, Token::Period) || matches!(token.token, Token::Period) {
+        return if token.gap.is_empty() { "" } else { " " };
+    }
+    if matches!(token.token, Token::Comma | Token::SemiColon | Token::RParen)
+        || matches!(previous.token, Token::LParen)
         || (matches!(token.token, Token::LParen)
             && previous.keyword.is_none()
             && token.gap.is_empty())
@@ -301,9 +346,12 @@ fn inline(tokens: &[Lexeme<'_>]) -> String {
 
 struct Parenthesis {
     subquery: bool,
+    // Enclosing query's clause indentation, in four-space levels.
     base: usize,
+    // Enclosing item's indentation, in four-space levels.
     indent: usize,
     clause: Option<&'static str>,
+    // Parenthesis nesting at which commas and clauses belong to the enclosing query.
     item_depth: usize,
 }
 
@@ -328,10 +376,11 @@ fn expanded(tokens: &[Lexeme<'_>]) -> String {
             );
         let join_start = case_depth == 0
             && parentheses.len() == item_depth
-            && matches!(
-                token.keyword,
-                Some("JOIN" | "INNER" | "LEFT" | "RIGHT" | "FULL" | "CROSS")
-            );
+            && (token.word_is("FULL")
+                || matches!(
+                    token.keyword,
+                    Some("JOIN" | "INNER" | "LEFT" | "RIGHT" | "CROSS")
+                ));
         let close_query = matches!(token.token, Token::RParen)
             && parentheses
                 .last()
@@ -351,10 +400,11 @@ fn expanded(tokens: &[Lexeme<'_>]) -> String {
             clause = token.keyword;
         } else if join_start
             && !previous.is_some_and(|prev| {
-                matches!(
-                    prev.keyword,
-                    Some("INNER" | "LEFT" | "RIGHT" | "FULL" | "OUTER" | "CROSS")
-                )
+                prev.word_is("FULL")
+                    || matches!(
+                        prev.keyword,
+                        Some("INNER" | "LEFT" | "RIGHT" | "OUTER" | "CROSS")
+                    )
             })
         {
             indent = base;
@@ -406,14 +456,20 @@ fn expanded(tokens: &[Lexeme<'_>]) -> String {
         if token.keyword == Some("CASE") {
             case_depth += 1;
         }
-        if token.keyword == Some("END") {
+        if token.word_is("END") {
             case_depth = case_depth.saturating_sub(1);
         }
         if matches!(token.token, Token::LParen) {
             let subquery = tokens
                 .get(index + 1)
                 .is_some_and(|next| next.keyword == Some("SELECT"));
-            parentheses.push(Parenthesis { subquery, base, indent, clause, item_depth });
+            parentheses.push(Parenthesis {
+                subquery,
+                base,
+                indent,
+                clause,
+                item_depth,
+            });
             if subquery {
                 base = indent + 1;
                 indent = base;
