@@ -22,19 +22,19 @@ fn text_originals_use_binary_comparison_in_the_mysql_column_charset() {
 }
 
 #[test]
-fn float_originals_are_cast_to_mysql_single_precision() {
+fn double_originals_are_cast_to_mysql_double_precision() {
     let mut result = result(Engine::MySql);
     result.table = vec!["test".into(), "measurements".into()];
     result.columns[1].name = Some("reading".into());
-    result.comparison_types = vec![Some("FLOAT".into()), Some("DOUBLE".into()), None];
+    result.comparison_types = vec![None, Some("DOUBLE".into()), None];
     let script = result
         .script(&[Change::Delete {
-            original: vec![Value::Float(0.1), Value::Float(0.2), Value::Null],
+            original: vec![Value::Integer(1), Value::Float(0.2), Value::Null],
         }])
         .unwrap();
     assert_eq!(
         script.sql(),
-        "DELETE FROM `test`.`measurements` WHERE `id` = CAST(1e-1 AS FLOAT) AND `reading` = CAST(2e-1 AS DOUBLE);\n"
+        "DELETE FROM `test`.`measurements` WHERE `id` = 1 AND `reading` = CAST(2e-1 AS DOUBLE);\n"
     );
 }
 
@@ -646,4 +646,52 @@ fn invalid_numeric_literals_cannot_inject_a_statement() {
         }]),
         Err(Error::Sql(_))
     ));
+}
+
+#[test]
+fn text_keys_keep_indexable_equality_for_mysql() {
+    let mut result = result(Engine::MySql);
+    result.table = vec!["test".into(), "fruit".into()];
+    result.columns[0].name = Some("code".into());
+    result.columns[1].name = Some("name".into());
+    result.comparison_types = vec![Some("CHAR CHARACTER SET latin1".into()), None, None];
+    let script = result
+        .script(&[Change::Delete {
+            original: vec![
+                Value::Text("a".into()),
+                Value::Text("old".into()),
+                Value::Null,
+            ],
+        }])
+        .unwrap();
+    assert_eq!(
+        script.sql(),
+        "DELETE FROM `test`.`fruit` WHERE `code` = CAST(CONVERT(X'61' USING utf8mb4) AS CHAR CHARACTER SET latin1) AND CAST(`code` AS BINARY) = CAST(CAST(CONVERT(X'61' USING utf8mb4) AS CHAR CHARACTER SET latin1) AS BINARY) AND CAST(`name` AS BINARY) = CAST(CONVERT(X'6f6c64' USING utf8mb4) AS BINARY);\n"
+    );
+}
+
+#[test]
+fn text_keys_keep_indexable_equality_for_sql_server() {
+    let mut result = result(Engine::SqlServer);
+    result.table = vec!["dbo".into(), "fruit".into()];
+    result.columns[0].name = Some("code".into());
+    result.columns[1].name = Some("name".into());
+    result.comparison_types = vec![Some("varchar(40)".into()), None, None];
+    let script = result
+        .script(&[Change::Update {
+            original: vec![
+                Value::Text("a".into()),
+                Value::Text("old".into()),
+                Value::Null,
+            ],
+            cells: vec![Cell {
+                column: 1,
+                value: Value::Text("new".into()),
+            }],
+        }])
+        .unwrap();
+    assert_eq!(
+        script.sql(),
+        "UPDATE [dbo].[fruit] SET [name] = N'new' WHERE [code] = CONVERT(varchar(40), N'a') AND CAST([code] AS varbinary(max)) = CAST(CONVERT(varchar(40), N'a') AS varbinary(max)) AND CAST([name] AS varbinary(max)) = CAST(N'old' AS varbinary(max));\n"
+    );
 }

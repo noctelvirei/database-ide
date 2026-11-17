@@ -409,7 +409,7 @@ async fn mysql_table_without_key_is_read_only_with_reason() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn mysql_float_original_point_one_does_not_cause_false_conflict() {
+async fn mysql_float_edits_are_refused_without_an_exact_original() {
     let (_database, mut session) = fixture().await;
     query(&mut session, "CREATE TABLE measurement (id int PRIMARY KEY, reading float); INSERT INTO measurement VALUES (1,0.1)").await;
     let result = query(&mut session, "SELECT id, reading FROM measurement").await;
@@ -421,16 +421,19 @@ async fn mysql_float_original_point_one_does_not_cause_false_conflict() {
                 column: 1,
                 value: Value::Float(0.5),
             }],
-        }])
-        .unwrap();
-    let report = session.save(script).await.unwrap();
-    assert_eq!(report.conflict, None);
-    assert_eq!(report.rows.updated, 1);
+        }]);
+    assert!(
+        matches!(script, Err(grid_edit::Error::InvalidChange(reason))
+        if reason == "edited column has no equality comparison")
+    );
     assert_eq!(
-        query(&mut session, "SELECT reading FROM measurement")
-            .await
-            .rows,
-        vec![vec![Value::Float(0.5)]]
+        query(
+            &mut session,
+            "SELECT reading = CAST(0.1 AS FLOAT) FROM measurement"
+        )
+        .await
+        .rows,
+        vec![vec![Value::Integer(1)]]
     );
 }
 
@@ -638,4 +641,135 @@ async fn mysql_conflict_preserves_earlier_work_in_a_user_transaction() {
         ]
     );
     query(&mut session, "ROLLBACK").await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mysql_rounded_float_original_does_not_conflict_when_updating_another_column() {
+    let (_database, mut session) = fixture().await;
+    query(
+        &mut session,
+        "ALTER TABLE fruit ADD reading FLOAT; UPDATE fruit SET reading = 1.23456789 WHERE id = 1",
+    )
+    .await;
+    let result = query(
+        &mut session,
+        "SELECT id, name, reading FROM fruit WHERE id = 1",
+    )
+    .await;
+    let script = editable(&mut session, &result)
+        .await
+        .script(&[Change::Update {
+            original: result.rows[0].clone(),
+            cells: vec![name("orange")],
+        }])
+        .unwrap();
+    let report = session.save(script).await.unwrap();
+    assert_eq!(report.conflict, None);
+    assert_eq!(report.rows.updated, 1);
+    assert_eq!(
+        query(&mut session, "SELECT name FROM fruit WHERE id = 1")
+            .await
+            .rows,
+        vec![vec![Value::Text("orange".into())]]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mysql_rounded_float_original_does_not_conflict_with_delete() {
+    let (_database, mut session) = fixture().await;
+    query(
+        &mut session,
+        "ALTER TABLE fruit ADD reading FLOAT; UPDATE fruit SET reading = 1.23456789 WHERE id = 1",
+    )
+    .await;
+    let result = query(
+        &mut session,
+        "SELECT id, name, reading FROM fruit WHERE id = 1",
+    )
+    .await;
+    let script = editable(&mut session, &result)
+        .await
+        .script(&[Change::Delete {
+            original: result.rows[0].clone(),
+        }])
+        .unwrap();
+    let report = session.save(script).await.unwrap();
+    assert_eq!(report.conflict, None);
+    assert_eq!(report.rows.deleted, 1);
+    assert_eq!(
+        query(&mut session, "SELECT COUNT(*) FROM fruit WHERE id = 1")
+            .await
+            .rows,
+        vec![vec![Value::Integer(0)]]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mysql_float_only_key_is_read_only() {
+    let (_database, mut session) = fixture().await;
+    query(
+        &mut session,
+        "CREATE TABLE approximate_key (id FLOAT PRIMARY KEY, name varchar(40))",
+    )
+    .await;
+    let result = query(&mut session, "SELECT id, name FROM approximate_key").await;
+    assert!(matches!(inspect(&mut session, &result).await,
+        Editability::ReadOnly(reason) if reason == "no key column in result"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mysql_exact_unique_key_is_used_instead_of_float_primary_key() {
+    let (_database, mut session) = fixture().await;
+    query(
+        &mut session,
+        "CREATE TABLE alternate_key (id FLOAT PRIMARY KEY, code int NOT NULL UNIQUE)",
+    )
+    .await;
+    let result = query(&mut session, "SELECT id, code FROM alternate_key").await;
+    assert_eq!(editable(&mut session, &result).await.key_columns(), &[1]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mysql_text_key_save_does_not_wait_for_an_unrelated_row_lock() {
+    let (database, mut session) = fixture().await;
+    query(&mut session, "CREATE TABLE text_key (code varchar(40) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci PRIMARY KEY, name varchar(40)) ENGINE=InnoDB; INSERT INTO text_key VALUES ('a', 'apple'), ('z', 'pear')").await;
+    let result = query(
+        &mut session,
+        "SELECT code, name FROM text_key WHERE code = 'z'",
+    )
+    .await;
+    let script = editable(&mut session, &result)
+        .await
+        .script(&[Change::Update {
+            original: result.rows[0].clone(),
+            cells: vec![name("orange")],
+        }])
+        .unwrap();
+    let mut other = open(&database).await;
+    // Lock the first index entry: a scan for 'z' would block before reaching its row.
+    query(
+        &mut other,
+        "START TRANSACTION; SELECT code FROM text_key WHERE code = 'a' FOR UPDATE",
+    )
+    .await;
+    let saved = tokio::time::timeout(Duration::from_secs(3), session.save(script)).await;
+    // Release before asserting so a regression cannot leave a blocked worker in teardown.
+    query(&mut other, "ROLLBACK").await;
+    let report = saved
+        .expect("Save scanned an unrelated locked row")
+        .unwrap();
+    assert_eq!(report.conflict, None);
+    assert_eq!(report.rows.updated, 1);
+    assert_eq!(
+        query(
+            &mut session,
+            "SELECT code, name FROM text_key ORDER BY code"
+        )
+        .await
+        .rows,
+        vec![
+            vec![Value::Text("a".into()), Value::Text("apple".into())],
+            vec![Value::Text("z".into()), Value::Text("orange".into())]
+        ]
+    );
 }

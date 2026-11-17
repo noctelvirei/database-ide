@@ -115,7 +115,6 @@ pub(super) async fn inspect(
             return Err(Error::Catalog("invalid column description".into()));
         };
         let comparison = match (ty.as_str(), charset) {
-            ("float", _) => Some("FLOAT".into()),
             ("double", _) => Some("DOUBLE".into()),
             (_, Value::Text(charset)) => {
                 if charset.is_empty()
@@ -130,7 +129,8 @@ pub(super) async fn inspect(
             }
             _ => None,
         };
-        let comparable = !matches!(ty.as_str(), "json" | "geometry" | "vector");
+        // Text-protocol FLOAT originals lose digits; omit them rather than report false conflicts.
+        let comparable = !matches!(ty.as_str(), "float" | "json" | "geometry" | "vector");
         policy.push(EditColumn {
             name: Some(name.clone()),
             read_only: extra.contains("auto_increment")

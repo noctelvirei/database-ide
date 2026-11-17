@@ -385,6 +385,16 @@ impl EditableResult {
                         continue;
                     }
                     let column = name(index)?;
+                    // Keep key equality indexable; the byte comparison below still checks exact text.
+                    if self.key.contains(&index)
+                        && matches!(self.engine, Engine::SqlServer | Engine::MySql)
+                        && matches!(original[index], Value::Text(_))
+                    {
+                        predicates.push(format!(
+                            "{column} = {}",
+                            self.original(index, &original[index])?
+                        ));
+                    }
                     predicates.push(if original[index] == Value::Null {
                         format!("{column} IS NULL")
                     } else if self.engine == Engine::SqlServer
