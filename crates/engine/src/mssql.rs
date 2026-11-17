@@ -18,7 +18,7 @@ use crate::connections::{Connection, SignInMethod, TlsMode};
 use crate::danger::Engine;
 use crate::session::{Event, PlanMode, Run, Session};
 
-mod batches;
+pub(crate) mod batches;
 mod execution;
 mod grid_edit;
 mod plans;

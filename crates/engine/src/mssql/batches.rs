@@ -2,7 +2,7 @@
 
 /// A nonempty SQL batch; repeat count does not duplicate its source text.
 #[derive(Debug, PartialEq, Eq)]
-pub(super) struct Batch<'a> {
+pub(crate) struct Batch<'a> {
     /// Original text, including leading whitespace and trailing newline.
     pub sql: &'a str,
     /// Lines preceding this batch in the original script.
@@ -14,10 +14,10 @@ pub(super) struct Batch<'a> {
 /// Invalid GO repeat counts fail before any SQL is sent.
 #[derive(Debug, thiserror::Error)]
 #[error("GO repeat count must be a positive 32-bit integer at line {0}")]
-pub(super) struct Error(u64);
+pub(crate) struct Error(u64);
 
 /// Splits only standalone GO lines outside quoted text, identifiers and nested comments.
-pub(super) fn split(script: &str) -> Result<Vec<Batch<'_>>, Error> {
+pub(crate) fn split(script: &str) -> Result<Vec<Batch<'_>>, Error> {
     let script = script.strip_prefix('\u{feff}').unwrap_or(script);
     let mut result = Vec::new();
     let mut start = 0;
