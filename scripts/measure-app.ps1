@@ -70,7 +70,7 @@ try {
     $warm = @($rows | Select-Object -Skip 1 | ForEach-Object StartupMs | Sort-Object)
     $warmMedian = if ($warm.Count) { $warm[[int][math]::Floor(($warm.Count - 1) / 2)] } else { $rows[0].StartupMs }
     $maxPrivate = ($rows | Measure-Object PrivateMb -Maximum).Maximum
-    $failed = ($rows | Where-Object StartupMs -lt 0).Count -gt 0
+    $failed = @($rows | Where-Object StartupMs -lt 0).Count -gt 0
     $pass = { param($ok) if ($ok) { 'pass' } else { 'FAIL' } }
     ''
     'measure,value,target,result'
