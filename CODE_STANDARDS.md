@@ -1,6 +1,6 @@
 # Database IDE engineering standards
 
-<!-- agent-standards: {"version":1,"technologies":["rust","tokio","mssql-tds","tokio-postgres","mysql_async"]} -->
+<!-- agent-standards: {"version":1,"technologies":["rust","tokio","mssql-tds","tokio-postgres","mysql_async","gpui"]} -->
 
 The product decisions are in [docs/spec.md](docs/spec.md) and the vocabulary in [CONTEXT.md](CONTEXT.md). Codex and Claude read this file before any change, on top of their own global coding, design and testing rules.
 
@@ -13,14 +13,14 @@ The product decisions are in [docs/spec.md](docs/spec.md) and the vocabulary in 
   - our fork of `tokio-postgres` at https://github.com/noctelvirei/rust-postgres, through `[patch.crates-io]` ([ADR 0001](docs/adr/0001-own-tokio-postgres-fork.md))
   - `mysql_async`
 - TLS for PostgreSQL and MySQL: `native-tls` (SChannel on Windows).
-- Other crates to use before writing anything by hand: `sqlparser` (danger check), `quick-xml` (showplan), `serde` / `serde_json` (EXPLAIN JSON, plan trees), `toml` (connections file), `keyring` (passwords), `csv`, `rust_xlsxwriter` (constant-memory mode), `thiserror` (error types), `tracing` (logging), `tempfile` (spill files and test servers), `clap` (CLI), `futures`, `tokio-util`, `bytes`, `postgres-native-tls`, `rand` (test database names), `memmap2` (reading the spill file). Adding any other dependency needs the owner's yes. Overnight, a ticket that needs one is parked with the question on it, and work moves to the next independent ticket.
+- Other crates to use before writing anything by hand: `sqlparser` (danger check), `quick-xml` (showplan), `serde` / `serde_json` (EXPLAIN JSON, plan trees), `toml` (connections file), `keyring` (passwords), `csv`, `rust_xlsxwriter` (constant-memory mode), `thiserror` (error types), `tracing` (logging), `tempfile` (spill files and test servers), `clap` (CLI), `futures`, `tokio-util`, `bytes`, `postgres-native-tls`, `rand` (test database names), `memmap2` (reading the spill file). UI, approved 2026-11-17: `gpui-component` 0.10.0 from our public fork https://github.com/noctelvirei/gpui-kit (upstream longbridge/gpui-kit) through `[patch.crates-io]`, pinned to a commit that adds the find panel's Replace keys, with `gpui-pre` and `gpui-pre-platform` `=0.3.12` as it pins them; `ureq` with `native-tls` for the update check; `cargo-wix` and the WiX toolset to build the MSI (build tools, not shipped). Adding any other dependency needs the owner's yes. Overnight, a ticket that needs one is parked with the question on it, and work moves to the next independent ticket.
 - Pinned versions upgrade only on purpose, in a change of their own.
 
 ## Structure
 
 - `crates/engine`: the library; everything below the UI. No UI dependency, ever.
 - `crates/dbide-cli`: the E2E harness binary; uses only the engine's public API.
-- `crates/app`: the gpui UI, added later.
+- `crates/app`: the gpui UI. It calls only the engine's public API and holds no SQL or driver code.
 - Inside the engine, one module per piece of knowledge, split by feature, not by layer: `session` (the common run/event/cancel interface), `spill` (the row file and its index), `mssql`, `postgres`, `mysql` (one per engine, each the only place its driver is used), `plan` (the shared operator tree; showplan and EXPLAIN parsing live in their engine modules or `plan`'s submodules), `export`, `connections`, `danger`, `grid_edit`, `objects`.
 - A driver type never appears in another module's signature. Engine modules convert to the engine's own types at their boundary.
 - Module files sit as `foo.rs` beside `foo/`, never `foo/mod.rs`. No source file above 1000 lines. No re-exports (`pub use`), no `#[path]`, no `include!`.
@@ -63,6 +63,16 @@ Real servers are the test ([testing decision](https://github.com/noctelvirei/dat
 - Tests that touch Windows Credential Manager use the service name `database-ide-test` and delete their entries afterwards.
 - `mssql-mock-tds` only for failures a real server won't produce on demand.
 - Test data is invented, from scripts in the repo.
+
+### UI E2E harness
+
+The app is tested as a user drives it, in a real window, against the same real servers. The gpui spike ([prototype/gpui-spike](https://github.com/noctelvirei/database-ide/tree/prototype/gpui-spike/prototypes/gpui-spike)) proved the method; U1 builds it into `crates/app`:
+
+- A test mode, `--ui-script <file>`, runs a script of steps inside the app. Keys go through gpui's `Window::dispatch_keystroke`, the path a real key takes after Windows' message translation: the keymap, the focused element's actions and text input. Synthetic OS input (SendInput) is not used, because it lands in whatever window has focus.
+- After each step the app appends its visible state as one JSON line (focused pane, tab titles, editor text and selection, messages, grid row counts, dialog contents). Tests assert on those lines.
+- A step can name a screenshot; a PowerShell script captures the app's window into the test's artifact folder. Screenshots are the proof a rerun reproduces, not the assertion.
+- Startup time, idle private working set and the zipped release size are measured on every UI ticket, against the targets in the spec.
+- Windows UI Automation can't drive the app: gpui's Windows accessibility is incomplete.
 
 ## Sources
 

@@ -34,6 +34,26 @@ _Avoid_: Window, document, session
 Sending the query tab's SQL (or the selected part of it) to the server and receiving its results.
 _Avoid_: Execute, submit
 
+**Result set**:
+One table of columns and rows within a run; a run can return several.
+_Avoid_: Recordset, rowset
+
+**Messages**:
+What a run reports besides rows, in order: printed text and notices, row counts and errors with their line numbers.
+_Avoid_: Output, log
+
+**Format**:
+Rewriting a query tab's SQL layout and keyword case without changing anything else in it.
+_Avoid_: Beautify, prettify, pretty-print
+
+**Autocomplete**:
+Suggestions of keywords and the current database's object and column names while typing.
+_Avoid_: IntelliSense, completion
+
+**Query history**:
+The searchable record of past runs: their SQL, connection, database, time and outcome.
+_Avoid_: Log, journal
+
 **Results grid**:
 The table of rows a run returns, shown under the editor, where rows can be read, copied and edited.
 _Avoid_: Data view, output

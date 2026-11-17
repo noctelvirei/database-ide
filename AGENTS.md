@@ -9,7 +9,7 @@ Read before any change:
 
 ## State
 
-Building the engine. Codex builds it from Linear tickets; Claude orchestrates, reviews and merges. The UI (gpui) follows in a Claude session on the engine's interface. The planning map stays on GitHub as the issue labelled `wayfinder:map`.
+The engine is built (Linear project "Engine v1", all done). Building the UI (gpui) on the engine's interface from Linear project "UI v1": Claude writes the UI tickets and Codex reviews them; engine additions the UI needs go to Codex as engine tickets, reviewed by Claude. The planning map stays on GitHub as the issue labelled `wayfinder:map`.
 
 ## Public repository
 
@@ -21,11 +21,11 @@ Each ticket runs the factory loop (start, plan, build, verify, review, record, m
 
 | Parameter | Value |
 |---|---|
-| Tracker | Linear, team "Database-ide" (key `DAT`), project "Engine v1" (implementation tickets). GitHub Issues hold the planning map only. |
+| Tracker | Linear, team "Database-ide" (key `DAT`), projects "Engine v1" and "UI v1" (implementation tickets). GitHub Issues hold the planning map only. |
 | Merge | Claude, the orchestrator, merges once the checks, the E2E harness and review pass. |
-| Writer and reviewer | Codex writes each engine ticket; Claude reviews the branch against `main`. |
+| Writer and reviewer | Engine tickets: Codex writes, Claude reviews. UI tickets: Claude writes, Codex reviews. Each review is of the branch against `main`. |
 | Checks | The commands in [CODE_STANDARDS.md](CODE_STANDARDS.md#verification). |
-| E2E harness | Named in [CODE_STANDARDS.md](CODE_STANDARDS.md#e2e-harness). |
+| E2E harness | Named in [CODE_STANDARDS.md](CODE_STANDARDS.md#e2e-harness); the UI's in [CODE_STANDARDS.md](CODE_STANDARDS.md#ui-e2e-harness). |
 | Scenarios | `scenarios/`. None written yet; each record says "no scenarios". |
 | CI | None. |
 | Extra escalations | Adding a dependency or changing a pinned version; changing the engine's run/event interface once a second engine uses it; anything that writes to a server outside a test database. |
