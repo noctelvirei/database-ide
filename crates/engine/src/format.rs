@@ -159,8 +159,6 @@ const KEYWORDS: &[&str] = &[
     "NULL",
     "NOT",
     "LIKE",
-    "BETWEEN",
-    "EXISTS",
     "CASE",
     "WHEN",
     "THEN",

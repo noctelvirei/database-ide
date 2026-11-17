@@ -275,3 +275,11 @@ fn block_comments_after_go_keep_the_batch_boundary() {
 fn spaces_that_separate_numeric_tokens_are_not_removed() {
     assert_all_engines("1 . 2", "1 . 2");
 }
+
+#[test]
+fn nonreserved_between_and_exists_keep_identifier_case() {
+    assert_eq!(
+        format("select between,exists from things", Engine::PostgreSql).unwrap(),
+        "SELECT between, exists FROM things"
+    );
+}
