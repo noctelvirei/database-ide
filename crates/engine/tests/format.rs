@@ -376,3 +376,11 @@ fn sql_server_money_literals_stay_joined() {
         "SELECT $-2.5, £3, €4 FROM t"
     );
 }
+
+#[test]
+fn mysql_double_minus_arithmetic_is_not_turned_into_a_comment() {
+    assert_eq!(
+        format("select 1--2", Engine::MySql).unwrap(),
+        "SELECT 1 --2"
+    );
+}

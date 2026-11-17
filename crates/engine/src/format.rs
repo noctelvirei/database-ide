@@ -420,6 +420,10 @@ fn separator(tokens: &[Lexeme<'_>], index: usize) -> &'static str {
     if matches!(previous.token, Token::Period) || matches!(token.token, Token::Period) {
         return if token.gap.is_empty() { "" } else { " " };
     }
+    // `1--2` is arithmetic; a space after the `--` would start a MySQL comment.
+    if token.gap.is_empty() && matches!(previous.token, Token::Minus) && joined(tokens, index - 1) {
+        return "";
+    }
     if matches!(token.token, Token::Comma | Token::SemiColon | Token::RParen)
         || matches!(previous.token, Token::LParen)
         || (matches!(token.token, Token::LParen)
