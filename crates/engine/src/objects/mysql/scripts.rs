@@ -182,25 +182,44 @@ fn routine_charsets(
     let mut sql = String::new();
     let mut copied = 0;
     for start in starts {
-        if let Some((end, collate)) = inherited_string_type(&tokens, start)? {
-            let offset = byte_offset(definition, tokens[end - 1].span.end);
+        if let Some(string_type) = inherited_string_type(&tokens, start)? {
+            let offset = byte_offset(definition, tokens[string_type.end - 1].span.end);
             sql.push_str(&definition[copied..offset]);
             sql.push_str(&charset_clause);
-            if collate {
-                sql.push_str(&collation_clause);
-            }
             copied = offset;
+            if string_type.collate {
+                sql.push_str(&collation_clause);
+                // MySQL ignores BINARY on a string type without a charset, but honours it
+                // once a charset is written, so the attribute is dropped to keep the
+                // source's collation.
+                if let Some(binary) = string_type.binary {
+                    let binary_start = byte_offset(definition, tokens[binary].span.start);
+                    if definition[offset..binary_start].trim().is_empty() {
+                        copied = byte_offset(definition, tokens[binary].span.end);
+                    }
+                }
+            }
         }
     }
     sql.push_str(&definition[copied..]);
     Ok(sql)
 }
 
-/// Finds the end of a string type and whether its collation is also inherited.
+/// A string type whose charset comes from the database default.
+struct InheritedStringType {
+    /// Index one past the type's last token (its name or closing parenthesis).
+    end: usize,
+    /// The collation is inherited too: the type has no COLLATE clause.
+    collate: bool,
+    /// Index of a BINARY attribute token, if the type has one.
+    binary: Option<usize>,
+}
+
+/// Finds a string type at `start` that inherits the database charset, if there is one.
 fn inherited_string_type(
     tokens: &[TokenWithSpan],
     start: usize,
-) -> Result<Option<(usize, bool)>, Error> {
+) -> Result<Option<InheritedStringType>, Error> {
     let Some(token) = tokens.get(start) else {
         return Ok(None);
     };
@@ -251,6 +270,7 @@ fn inherited_string_type(
     }
     let mut attribute = end;
     let mut collate = true;
+    let mut binary = None;
     while let Some(token) = tokens.get(attribute) {
         if word_is(token, &["CHARSET", "ASCII", "UNICODE", "BYTE"])
             || (word_is(token, &["CHAR", "CHARACTER"])
@@ -261,7 +281,7 @@ fn inherited_string_type(
             return Ok(None);
         }
         if word_is(token, &["BINARY"]) {
-            collate = false;
+            binary = Some(attribute);
             attribute += 1;
         } else if word_is(token, &["COLLATE"]) {
             collate = false;
@@ -270,7 +290,11 @@ fn inherited_string_type(
             break;
         }
     }
-    Ok(Some((end, collate)))
+    Ok(Some(InheritedStringType {
+        end,
+        collate,
+        binary,
+    }))
 }
 
 /// Skips a parenthesized type length, value list or routine parameter list.
@@ -452,7 +476,7 @@ mod tests {
     }
 
     #[test]
-    fn binary_and_collate_attributes_receive_only_the_charset() {
+    fn binary_is_replaced_by_the_database_collation_and_collate_keeps_its_own() {
         assert_eq!(
             routine_charsets(
                 "CREATE PROCEDURE p(a CHAR(5) BINARY, b VARCHAR(10) COLLATE latin1_bin) SELECT 1",
@@ -461,7 +485,7 @@ mod tests {
                 "latin1_swedish_ci"
             )
             .unwrap(),
-            "CREATE PROCEDURE p(a CHAR(5) CHARACTER SET `latin1` BINARY, b VARCHAR(10) CHARACTER SET `latin1` COLLATE latin1_bin) SELECT 1",
+            "CREATE PROCEDURE p(a CHAR(5) CHARACTER SET `latin1` COLLATE `latin1_swedish_ci`, b VARCHAR(10) CHARACTER SET `latin1` COLLATE latin1_bin) SELECT 1",
         );
     }
 

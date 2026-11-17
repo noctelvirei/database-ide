@@ -202,7 +202,7 @@ async fn mysql_routine_strings_comments_and_quoted_identifiers_are_copied_unchan
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn mysql_binary_string_attribute_keeps_the_source_binary_collation() {
+async fn mysql_binary_string_types_run_with_the_source_collation() {
     let source = database().await;
     let target = database().await;
     let mut session = open(&source).await;
@@ -210,7 +210,8 @@ async fn mysql_binary_string_attribute_keeps_the_source_binary_collation() {
     run(
         &mut session,
         "ALTER DATABASE CHARACTER SET latin1 COLLATE latin1_swedish_ci;
-        CREATE PROCEDURE pear_binary(IN fruit_name CHAR(5) BINARY) SELECT fruit_name",
+        CREATE PROCEDURE pear_binary(IN fruit_name CHAR(5) BINARY)
+        BEGIN DECLARE pip CHAR(5) BINARY DEFAULT 'x'; SELECT COLLATION(fruit_name), COLLATION(pip); END",
     )
     .await;
     run(
@@ -222,23 +223,23 @@ async fn mysql_binary_string_attribute_keeps_the_source_binary_collation() {
     let sql = objects::script(&mut session, &procedure, Script::Create)
         .await
         .unwrap();
-    assert!(
-        sql.contains("CHAR(5) CHARACTER SET `latin1` BINARY"),
-        "{sql}"
-    );
-    assert!(!sql.contains("COLLATE `latin1_swedish_ci`"), "{sql}");
+    assert!(!sql.contains("BINARY"), "{sql}");
     run(&mut destination, &sql).await;
+    // MySQL 8.4 ignores BINARY on a routine string type without a charset: the source
+    // runs with the database collation, and the scripted copy must match it.
     assert_eq!(
-        parameters(&mut session).await,
+        run(&mut session, "CALL pear_binary('x')").await,
         vec![vec![
-            Value::Text("fruit_name".into()),
-            Value::Text("latin1".into()),
-            Value::Text("latin1_bin".into())
+            Value::Text("latin1_swedish_ci".into()),
+            Value::Text("latin1_swedish_ci".into())
         ]]
     );
     assert_eq!(
-        parameters(&mut destination).await,
-        parameters(&mut session).await
+        run(&mut destination, "CALL pear_binary('x')").await,
+        vec![vec![
+            Value::Text("latin1_swedish_ci".into()),
+            Value::Text("latin1_swedish_ci".into())
+        ]]
     );
 }
 
