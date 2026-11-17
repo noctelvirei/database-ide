@@ -431,7 +431,7 @@ async fn mssql_view_is_read_only_even_when_browse_metadata_names_a_base_table() 
 #[tokio::test(flavor = "multi_thread")]
 async fn mssql_delete_compares_native_values_and_omits_legacy_lob_and_xml() {
     let (_database, mut session) = fixture().await;
-    query(&mut session, "CREATE TABLE native_values (id uniqueidentifier PRIMARY KEY, single_value real, double_value float, clock datetime, cash money, bytes varbinary(8), legacy text, national ntext, picture image, document xml); INSERT INTO native_values VALUES ('00112233-4455-6677-8899-aabbccddeeff',0.1,0.1,'2024-02-29T12:34:56.003',12.3400,0x00ff,'old',N'old',0x00,N'<a/>')").await;
+    query(&mut session, "CREATE TABLE native_values (id uniqueidentifier PRIMARY KEY, single_value real, double_value float, clock datetime, cash money, bytes varbinary(8), legacy text, unicode_legacy ntext, picture image, document xml); INSERT INTO native_values VALUES ('00112233-4455-6677-8899-aabbccddeeff',0.1,0.1,'2024-02-29T12:34:56.003',12.3400,0x00ff,'old',N'old',0x00,N'<a/>')").await;
     let result = query(&mut session, "SELECT * FROM native_values").await;
     let policy = editable(&mut session, &result).await;
     assert!(!policy.columns()[6].comparable);

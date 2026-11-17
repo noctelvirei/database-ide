@@ -420,7 +420,17 @@ impl EditableResult {
     fn original(&self, index: usize, value: &Value) -> Result<String, Error> {
         let mut value = crate::sql::original_literal(value, self.engine)?;
         if let Some(Some(collation)) = self.comparison_collations.get(index) {
-            value = format!("{value} COLLATE {}", identifier(collation, self.engine)?);
+            // SQL Server's COLLATE takes a bare name; a bracketed one is a syntax error.
+            if collation.is_empty()
+                || !collation
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_')
+            {
+                return Err(Error::Catalog(format!(
+                    "unexpected collation name {collation:?}"
+                )));
+            }
+            value = format!("{value} COLLATE {collation}");
         }
         Ok(
             match self.comparison_types.get(index).and_then(Option::as_ref) {
