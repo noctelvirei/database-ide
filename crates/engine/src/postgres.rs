@@ -1,5 +1,6 @@
 //! PostgreSQL simple-query sessions, ordered notices, cancellation and execution plans.
 
+use std::error::Error as _;
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -27,9 +28,6 @@ pub enum Error {
     /// The saved details name another engine or omit a database login.
     #[error("PostgreSQL requires a PostgreSQL connection and a user name")]
     InvalidConnection,
-    /// Domain sign-in is reserved for DAT-8.
-    #[error("PostgreSQL Windows sign-in is not supported yet")]
-    WindowsSignIn,
     /// Native certificate-store setup failed.
     #[error("PostgreSQL TLS: {0}")]
     Tls(#[from] native_tls::Error),
@@ -58,15 +56,18 @@ pub enum Error {
 
 impl From<tokio_postgres::Error> for Error {
     fn from(error: tokio_postgres::Error) -> Self {
-        Self::Server(
-            error
-                .as_db_error()
-                .map_or_else(|| error.to_string(), |e| e.message().into()),
-        )
+        Self::Server(error.as_db_error().map_or_else(
+            || {
+                error
+                    .source()
+                    .map_or_else(|| error.to_string(), ToString::to_string)
+            },
+            |e| e.message().into(),
+        ))
     }
 }
 
-/// One password-authenticated session. Runs are serialized through protocol cleanup,
+/// One authenticated session. Runs are serialized through protocol cleanup,
 /// including when a consumer drops a Run. Debug never includes credentials.
 pub struct Postgres {
     database: String,
@@ -114,13 +115,17 @@ impl Drop for ConnectionTask {
 
 /// Connect using saved, password-free details and a separately supplied password.
 /// Uses the native certificate store; Optional TLS permits plaintext fallback.
+/// Windows sign-in uses the current logon session and ignores the supplied password.
 pub async fn connect(details: &Connection, password: Option<&str>) -> Result<Postgres, Error> {
-    if details.sign_in == SignInMethod::Windows {
-        return Err(Error::WindowsSignIn);
-    }
+    let windows_sign_in = details.sign_in == SignInMethod::Windows;
+    // shortcut: USERNAME assumes an unchanged Windows environment; use the account API if needed.
+    let windows_user = windows_sign_in
+        .then(|| std::env::var("USERNAME").ok())
+        .flatten();
     let user = details
         .user
         .as_deref()
+        .or(windows_user.as_deref())
         .filter(|name| !name.is_empty())
         .ok_or(Error::InvalidConnection)?;
     if details.engine != Engine::PostgreSql {
@@ -141,7 +146,7 @@ pub async fn connect(details: &Connection, password: Option<&str>) -> Result<Pos
     if details.connect_timeout != 0 {
         config.connect_timeout(Duration::from_secs(details.connect_timeout.into()));
     }
-    if let Some(password) = password {
+    if let Some(password) = password.filter(|_| !windows_sign_in) {
         config.password(password);
     }
     let mut builder = native_tls::TlsConnector::builder();
@@ -150,24 +155,49 @@ pub async fn connect(details: &Connection, password: Option<&str>) -> Result<Pos
         .danger_accept_invalid_hostnames(details.trust_server_certificate);
     let tls = builder.build()?;
     let establish = async {
-        let socket =
-            tokio::net::TcpStream::connect((details.host.as_str(), details.port.unwrap_or(5432)))
-                .await?;
-        let address = socket.peer_addr()?;
-        let connector = postgres_native_tls::TlsConnector::new(tls.clone(), &details.host);
-        let (client, connection) = config.connect_raw(socket, connector).await?;
-        Ok::<_, Error>((client, connection, address))
+        let addresses =
+            tokio::net::lookup_host((details.host.as_str(), details.port.unwrap_or(5432))).await?;
+        let mut error = Error::Io(std::io::Error::new(
+            std::io::ErrorKind::AddrNotAvailable,
+            "host resolved to no addresses",
+        ));
+        for address in addresses {
+            // connect_raw discards the host; hostaddr pins cancellation without changing the SPN.
+            let mut attempt = config.clone();
+            attempt.hostaddr(address.ip());
+            match attempt
+                .connect(postgres_native_tls::MakeTlsConnector::new(tls.clone()))
+                .await
+            {
+                Ok((client, connection)) => return Ok((client, connection, address)),
+                Err(cause)
+                    if cause
+                        .source()
+                        .is_some_and(|source| source.is::<std::io::Error>()) =>
+                {
+                    error = cause.into();
+                }
+                Err(cause) => return Err(cause.into()),
+            }
+        }
+        Err(error)
     };
     let (client, mut connection, address) = if details.connect_timeout == 0 {
-        establish.await?
+        establish.await
     } else {
         tokio::time::timeout(
             Duration::from_secs(details.connect_timeout.into()),
             establish,
         )
         .await
-        .map_err(|_| Error::ConnectTimeout)??
-    };
+        .map_err(|_| Error::ConnectTimeout)?
+    }
+    .map_err(|error| match error {
+        Error::Server(text) if windows_sign_in => {
+            Error::Server(format!("Windows sign-in failed: {text}"))
+        }
+        error => error,
+    })?;
     let cancellation =
         cancel::Cancellation::new(&client, address, details.host.clone(), tls.clone());
     let (notices_tx, mut notices) = mpsc::channel(1);
