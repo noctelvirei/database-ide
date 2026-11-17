@@ -10,6 +10,7 @@ use crate::danger::Engine;
 use crate::session::{Column, Session, Value};
 use crate::sql::{identifier, literal};
 
+mod mssql;
 mod postgres;
 
 /// Invalid pending changes, catalog failures and Save failures, ready for display.
@@ -78,6 +79,8 @@ pub struct EditableResult {
     table: Vec<String>,
     columns: Vec<EditColumn>,
     key: Vec<usize>,
+    comparison_types: Vec<Option<String>>,
+    comparison_collations: Vec<Option<String>>,
 }
 
 /// One explicitly filled cell; omitted cells in an INSERT use server defaults.
@@ -194,7 +197,7 @@ pub struct SaveReport {
 }
 
 /// Looks up keys and column policy on the tab's session. Expressions alongside base
-/// columns stay read-only. SQL Server and MySQL catalog adapters are not implemented yet.
+/// columns stay read-only. MySQL catalog lookup is not implemented yet.
 /// Supply the single statement that produced these columns; ambiguous sources are read-only.
 pub async fn inspect(
     session: &mut dyn Session,
@@ -202,6 +205,12 @@ pub async fn inspect(
     statement: &str,
     columns: &[Column],
 ) -> Result<Editability, Error> {
+    if engine == Engine::SqlServer {
+        if !single_table_query(statement, engine) {
+            return Ok(Editability::ReadOnly("joins aren't editable".into()));
+        }
+        return mssql::inspect(session, statement, columns).await;
+    }
     let mut tables = BTreeSet::new();
     for column in columns.iter().filter(|column| column.base_column.is_some()) {
         let Some(table) = &column.base_table else {
@@ -376,11 +385,16 @@ impl EditableResult {
                     let column = name(index)?;
                     predicates.push(if original[index] == Value::Null {
                         format!("{column} IS NULL")
-                    } else {
+                    } else if self.engine == Engine::SqlServer
+                        && matches!(original[index], Value::Text(_))
+                    {
+                        // Text equality must detect collation equivalence and trailing-space changes.
                         format!(
-                            "{column} = {}",
-                            crate::sql::original_literal(&original[index], self.engine)?
+                            "CAST({column} AS varbinary(max)) = CAST({} AS varbinary(max))",
+                            self.original(index, &original[index])?
                         )
+                    } else {
+                        format!("{column} = {}", self.original(index, &original[index])?)
                     });
                 }
                 let predicate = predicates.join(" AND ");
@@ -409,6 +423,46 @@ impl EditableResult {
             }
         };
         Ok(Statement { kind, sql })
+    }
+
+    fn original(&self, index: usize, value: &Value) -> Result<String, Error> {
+        let mut value = crate::sql::original_literal(value, self.engine)?;
+        if let Some(Some(collation)) = self.comparison_collations.get(index) {
+            // SQL Server's COLLATE takes a bare name; a bracketed one is a syntax error.
+            if collation.is_empty()
+                || !collation
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_')
+            {
+                return Err(Error::Catalog(format!(
+                    "unexpected collation name {collation:?}"
+                )));
+            }
+            value = format!("{value} COLLATE {collation}");
+        }
+        Ok(
+            match self.comparison_types.get(index).and_then(Option::as_ref) {
+                Some(ty) => {
+                    let style = if matches!(
+                        ty.split('(').next(),
+                        Some(
+                            "date"
+                                | "time"
+                                | "datetime"
+                                | "smalldatetime"
+                                | "datetime2"
+                                | "datetimeoffset"
+                        )
+                    ) {
+                        ", 126"
+                    } else {
+                        ""
+                    };
+                    format!("CONVERT({ty}, {value}{style})")
+                }
+                None => value,
+            },
+        )
     }
 }
 
