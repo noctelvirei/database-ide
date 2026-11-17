@@ -9,6 +9,7 @@ pub(super) fn column(source: &mysql_async::Column) -> Column {
     let table = source.org_table_str();
     let name = source.org_name_str();
     let schema = source.schema_str();
+    let quote = |name: &str| format!("`{}`", name.replace('`', "``"));
     let (type_name, category) = kind(source);
     Column {
         name: source.name_str().into_owned(),
@@ -17,9 +18,9 @@ pub(super) fn column(source: &mysql_async::Column) -> Column {
         nullable: Some(!source.flags().contains(ColumnFlags::NOT_NULL_FLAG)),
         base_table: (!table.is_empty() && !name.is_empty()).then(|| {
             if schema.is_empty() {
-                table.into_owned()
+                quote(&table)
             } else {
-                format!("{schema}.{table}")
+                format!("{}.{}", quote(&schema), quote(&table))
             }
         }),
         base_column: (!name.is_empty()).then(|| name.into_owned()),

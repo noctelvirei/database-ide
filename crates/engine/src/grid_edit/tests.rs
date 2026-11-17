@@ -1,6 +1,65 @@
 use super::*;
 
 #[test]
+fn text_originals_use_binary_comparison_in_the_mysql_column_charset() {
+    let mut result = result(Engine::MySql);
+    result.table = vec!["test".into(), "fruit".into()];
+    result.columns[1].name = Some("name".into());
+    result.comparison_types = vec![None, Some("CHAR CHARACTER SET latin1".into()), None];
+    let script = result
+        .script(&[Change::Update {
+            original: vec![Value::Integer(1), Value::Text("é ".into()), Value::Null],
+            cells: vec![Cell {
+                column: 1,
+                value: Value::Text("pear".into()),
+            }],
+        }])
+        .unwrap();
+    assert_eq!(
+        script.sql(),
+        "UPDATE `test`.`fruit` SET `name` = CONVERT(X'70656172' USING utf8mb4) WHERE `id` = 1 AND CAST(`name` AS BINARY) = CAST(CAST(CONVERT(X'c3a920' USING utf8mb4) AS CHAR CHARACTER SET latin1) AS BINARY);\n"
+    );
+}
+
+#[test]
+fn float_originals_are_cast_to_mysql_single_precision() {
+    let mut result = result(Engine::MySql);
+    result.table = vec!["test".into(), "measurements".into()];
+    result.columns[1].name = Some("reading".into());
+    result.comparison_types = vec![Some("FLOAT".into()), Some("DOUBLE".into()), None];
+    let script = result
+        .script(&[Change::Delete {
+            original: vec![Value::Float(0.1), Value::Float(0.2), Value::Null],
+        }])
+        .unwrap();
+    assert_eq!(
+        script.sql(),
+        "DELETE FROM `test`.`measurements` WHERE `id` = CAST(1e-1 AS FLOAT) AND `reading` = CAST(2e-1 AS DOUBLE);\n"
+    );
+}
+
+#[test]
+fn delete_compares_mysql_binary_originals_and_omits_noncomparable_json() {
+    let mut result = result(Engine::MySql);
+    result.table = vec!["test".into(), "fruit".into()];
+    result.columns[1].name = Some("payload".into());
+    result.columns[1].read_only = true;
+    let script = result
+        .script(&[Change::Delete {
+            original: vec![
+                Value::Integer(1),
+                Value::Bytes(vec![0, 255]),
+                Value::Json("{}".into()),
+            ],
+        }])
+        .unwrap();
+    assert_eq!(
+        script.sql(),
+        "DELETE FROM `test`.`fruit` WHERE `id` = 1 AND `payload` = _binary X'00ff';\n"
+    );
+}
+
+#[test]
 fn self_join_is_not_a_single_table_query() {
     assert!(!single_table_query(
         "SELECT a.id, b.name FROM fruit a JOIN fruit b ON b.id = a.id + 1",

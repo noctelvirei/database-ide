@@ -11,6 +11,7 @@ use crate::session::{Column, Session, Value};
 use crate::sql::{identifier, literal};
 
 mod mssql;
+mod mysql;
 mod postgres;
 
 /// Invalid pending changes, catalog failures and Save failures, ready for display.
@@ -197,7 +198,7 @@ pub struct SaveReport {
 }
 
 /// Looks up keys and column policy on the tab's session. Expressions alongside base
-/// columns stay read-only. MySQL catalog lookup is not implemented yet.
+/// columns stay read-only.
 /// Supply the single statement that produced these columns; ambiguous sources are read-only.
 pub async fn inspect(
     session: &mut dyn Session,
@@ -234,7 +235,8 @@ pub async fn inspect(
     let table = tables.first().expect("one base table remains");
     match engine {
         Engine::PostgreSql => postgres::inspect(session, table, columns).await,
-        Engine::SqlServer | Engine::MySql => Err(Error::Unsupported(engine)),
+        Engine::MySql => mysql::inspect(session, statement, table, columns).await,
+        Engine::SqlServer => Err(Error::Unsupported(engine)),
     }
 }
 
@@ -393,6 +395,13 @@ impl EditableResult {
                             "CAST({column} AS varbinary(max)) = CAST({} AS varbinary(max))",
                             self.original(index, &original[index])?
                         )
+                    } else if self.engine == Engine::MySql
+                        && matches!(original[index], Value::Text(_))
+                    {
+                        format!(
+                            "CAST({column} AS BINARY) = CAST({} AS BINARY)",
+                            self.original(index, &original[index])?
+                        )
                     } else {
                         format!("{column} = {}", self.original(index, &original[index])?)
                     });
@@ -427,6 +436,14 @@ impl EditableResult {
 
     fn original(&self, index: usize, value: &Value) -> Result<String, Error> {
         let mut value = crate::sql::original_literal(value, self.engine)?;
+        if self.engine == Engine::MySql {
+            return Ok(
+                match self.comparison_types.get(index).and_then(Option::as_ref) {
+                    Some(ty) => format!("CAST({value} AS {ty})"),
+                    None => value,
+                },
+            );
+        }
         if let Some(Some(collation)) = self.comparison_collations.get(index) {
             // SQL Server's COLLATE takes a bare name; a bracketed one is a syntax error.
             if collation.is_empty()

@@ -51,7 +51,7 @@ impl Writer {
                 {
                     return Err(Error::MissingTable);
                 }
-                inferred = base.split('.').map(str::to_owned).collect::<Vec<_>>();
+                inferred = crate::sql::qualified_identifier(base)?;
                 &inferred
             }
         };
