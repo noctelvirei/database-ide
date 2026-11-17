@@ -283,3 +283,31 @@ fn nonreserved_between_and_exists_keep_identifier_case() {
         "SELECT between, exists FROM things"
     );
 }
+
+#[test]
+fn a_go_repeat_count_keeps_the_batch_boundary() {
+    assert_eq!(
+        format("select 1\nGO 2\nselect 2", Engine::SqlServer).unwrap(),
+        "SELECT 1\nGO 2\n\nSELECT 2"
+    );
+}
+
+#[test]
+fn literals_continued_across_a_comment_keep_their_line_break() {
+    assert_eq!(
+        format("select 'a' /* c */\n'b'", Engine::PostgreSql).unwrap(),
+        "SELECT\n    'a' /* c */\n    'b'"
+    );
+}
+
+#[test]
+fn adjacent_operator_characters_stay_together() {
+    assert_eq!(
+        format(
+            "select 1 === 2, 3 OPERATOR(public.===) 4",
+            Engine::PostgreSql
+        )
+        .unwrap(),
+        "SELECT 1 === 2, 3 OPERATOR(public.===) 4"
+    );
+}

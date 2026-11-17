@@ -11,7 +11,8 @@ pub enum Error {
     /// Input or generated SQL cannot be tokenized; includes the source line and column.
     #[error("cannot tokenize SQL: {0}")]
     Tokenize(#[from] TokenizerError),
-    /// Formatting changed a token or the newline separating adjacent string literals.
+    /// Formatting changed a token, the line break between continued string literals, or
+    /// the spacing inside an operator.
     #[error("formatting would change SQL tokens; keep the original text")]
     ChangedTokens,
 }
@@ -40,6 +41,11 @@ pub fn format(text: &str, engine: Engine) -> Result<String, Error> {
             newline(&mut output, 1);
             output.push_str(token.raw);
             start = index + 1;
+            if let Some(count) = repeat_count(&tokens, index) {
+                output.push(' ');
+                output.push_str(count.raw);
+                start += 1;
+            }
             while let Some(comment) = tokens.get(start)
                 && matches!(comment.token, Token::Whitespace(_))
                 && !has_newline(comment.gap)
@@ -71,8 +77,10 @@ pub fn format(text: &str, engine: Engine) -> Result<String, Error> {
             a.printed() != b.printed()
                 || std::mem::discriminant(&a.token) != std::mem::discriminant(&b.token)
         })
-        || tokens.windows(2).zip(checked.windows(2)).any(|(a, b)| {
-            a[0].is_string() && a[1].is_string() && has_newline(a[1].gap) != has_newline(b[1].gap)
+        || (0..tokens.len()).any(|index| {
+            literal_continues_on_new_line(&tokens, index)
+                != literal_continues_on_new_line(&checked, index)
+                || (joined_operator(&tokens, index) && !checked[index].gap.is_empty())
         })
     {
         return Err(Error::ChangedTokens);
@@ -106,6 +114,28 @@ impl Lexeme<'_> {
                 | Token::SingleQuotedByteStringLiteral(_)
                 | Token::DoubleQuotedByteStringLiteral(_)
         )
+    }
+
+    /// Punctuation that isn't a bracket, separator or dot: the pieces of an operator.
+    fn is_operator(&self) -> bool {
+        !self.is_string()
+            && !matches!(
+                self.token,
+                Token::Word(_)
+                    | Token::Number(..)
+                    | Token::Whitespace(_)
+                    | Token::LParen
+                    | Token::RParen
+                    | Token::LBracket
+                    | Token::RBracket
+                    | Token::LBrace
+                    | Token::RBrace
+                    | Token::Comma
+                    | Token::SemiColon
+                    | Token::Period
+                    | Token::Placeholder(_)
+                    | Token::Char(_)
+            )
     }
 
     fn line_comment(&self) -> bool {
@@ -256,7 +286,8 @@ fn is_go(tokens: &[Lexeme<'_>], index: usize, engine: Engine) -> bool {
             break;
         }
     }
-    for token in &tokens[index + 1..] {
+    let after = index + 1 + usize::from(repeat_count(tokens, index).is_some());
+    for token in &tokens[after..] {
         if has_newline(token.gap) {
             return true;
         }
@@ -268,6 +299,44 @@ fn is_go(tokens: &[Lexeme<'_>], index: usize, engine: Engine) -> bool {
         }
     }
     true
+}
+
+/// The `GO <count>` repeat count on the same line as the `GO` at `index`, if any.
+fn repeat_count<'t, 'a>(tokens: &'t [Lexeme<'a>], index: usize) -> Option<&'t Lexeme<'a>> {
+    tokens
+        .get(index + 1)
+        .filter(|next| matches!(next.token, Token::Number(..)) && !has_newline(next.gap))
+}
+
+/// For a string literal that follows another one with only comments between them, whether
+/// a line break separates the two. PostgreSQL joins such literals only across a line break,
+/// so this must survive formatting. `None` when `index` doesn't continue a literal.
+fn literal_continues_on_new_line(tokens: &[Lexeme<'_>], index: usize) -> Option<bool> {
+    if !tokens[index].is_string() {
+        return None;
+    }
+    let mut line_break = has_newline(tokens[index].gap);
+    for before in (0..index).rev() {
+        let token = &tokens[before];
+        if token.is_string() {
+            return Some(line_break);
+        }
+        if !matches!(token.token, Token::Whitespace(_)) {
+            return None;
+        }
+        line_break |= has_newline(token.raw) || has_newline(token.gap);
+    }
+    None
+}
+
+/// Whether the tokens at `index - 1` and `index` are operator characters written with no
+/// space between them. PostgreSQL user-defined operators such as `===` tokenize as several
+/// operators, and a space between them names a different operator.
+fn joined_operator(tokens: &[Lexeme<'_>], index: usize) -> bool {
+    index > 0
+        && tokens[index].gap.is_empty()
+        && tokens[index - 1].is_operator()
+        && tokens[index].is_operator()
 }
 
 fn newline(output: &mut String, count: usize) {
@@ -308,12 +377,17 @@ fn append_statement(output: &mut String, tokens: &[Lexeme<'_>]) {
     }
 }
 
-fn separator(previous: &Lexeme<'_>, token: &Lexeme<'_>) -> &'static str {
+/// The whitespace to put before `tokens[index]` when nothing forces a line break.
+fn separator(tokens: &[Lexeme<'_>], index: usize) -> &'static str {
+    let (previous, token) = (&tokens[index - 1], &tokens[index]);
     if previous.line_comment() {
         return "\n";
     }
-    if previous.is_string() && token.is_string() {
-        return if has_newline(token.gap) { "\n" } else { " " };
+    if let Some(line_break) = literal_continues_on_new_line(tokens, index) {
+        return if line_break { "\n" } else { " " };
+    }
+    if joined_operator(tokens, index) {
+        return "";
     }
     // Spaces around a dot can distinguish numeric and operator tokens in a fragment.
     if matches!(previous.token, Token::Period) || matches!(token.token, Token::Period) {
@@ -335,7 +409,7 @@ fn inline(tokens: &[Lexeme<'_>]) -> String {
     let mut output = String::new();
     for (index, token) in tokens.iter().enumerate() {
         if index > 0 {
-            output.push_str(separator(&tokens[index - 1], token));
+            output.push_str(separator(tokens, index));
         }
         output.push_str(token.printed());
     }
@@ -426,13 +500,13 @@ fn expanded(tokens: &[Lexeme<'_>]) -> String {
             if previous.line_comment() {
                 break_line = true;
             }
-            if previous.is_string() && token.is_string() {
-                break_line = has_newline(token.gap);
+            if let Some(line_break) = literal_continues_on_new_line(tokens, index) {
+                break_line = line_break;
             }
             if break_line {
                 newline(&mut output, 1);
             } else if !output.ends_with('\n') {
-                output.push_str(separator(previous, token));
+                output.push_str(separator(tokens, index));
             }
         }
         if output.is_empty() || output.ends_with('\n') {
