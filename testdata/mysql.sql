@@ -1,7 +1,5 @@
 ﻿-- MySQL 8.4: run with the mysql client, once, on a throwaway server.
--- A MySQL schema is a database; this script creates only shop.
-CREATE DATABASE shop CHARACTER SET utf8mb4;
-USE shop;
+-- Uses the fresh database selected by the test harness.
 SET NAMES utf8mb4;
 SET time_zone = '+00:00';
 CREATE TABLE customers (

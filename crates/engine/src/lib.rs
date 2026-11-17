@@ -4,6 +4,7 @@
 pub mod connections;
 pub mod danger;
 pub mod export;
+pub mod mysql;
 pub mod objects;
 pub mod plan;
 pub mod postgres;
