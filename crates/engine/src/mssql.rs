@@ -211,11 +211,11 @@ async fn worker(
 ) {
     while let Some(request) = requests.recv().await {
         let request = match request {
-            Work::Save { script, reply } => {
+            Work::Save { script, mut reply } => {
                 if reply.is_closed() {
                     continue;
                 }
-                let result = grid_edit::save(&mut client, &script, &reply, timeout).await;
+                let result = grid_edit::save(&mut client, &script, &mut reply, timeout).await;
                 let failed = client.is_connection_dead()
                     || matches!(&result, Err(crate::grid_edit::Error::Recovery { .. }));
                 let _ = reply.send(result);

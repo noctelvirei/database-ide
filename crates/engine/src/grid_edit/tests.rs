@@ -233,7 +233,7 @@ fn sql_server_varchar_predicate_preserves_the_column_code_page_before_conversion
         .unwrap();
     assert_eq!(
         script.sql(),
-        "UPDATE [dbo].[fruit] SET [name] = N'pear' WHERE [id] = CONVERT(int, 1) AND [name] = CONVERT(varchar(40), N'雪' COLLATE Latin1_General_100_CI_AS_SC_UTF8);\n"
+        "UPDATE [dbo].[fruit] SET [name] = N'pear' WHERE [id] = CONVERT(int, 1) AND CAST([name] AS varbinary(max)) = CAST(CONVERT(varchar(40), N'雪' COLLATE Latin1_General_100_CI_AS_SC_UTF8) AS varbinary(max));\n"
     );
 }
 

@@ -1,6 +1,7 @@
 //! Worker-owned grid Save; DONE counts and trigger results never determine conflicts.
 
 use mssql_tds::connection::tds_client::{ExecuteOptions, ResultSet, StatementResult, TdsClient};
+use mssql_tds::core::CancelHandle;
 use tokio::sync::oneshot;
 
 use crate::grid_edit::{Conflict, Counts, Error, Kind, SaveReport, Script};
@@ -34,7 +35,7 @@ fn server(error: mssql_tds::error::Error) -> Error {
 pub(super) async fn save(
     client: &mut TdsClient,
     script: &Script,
-    reply: &oneshot::Sender<Result<SaveReport, Error>>,
+    reply: &mut oneshot::Sender<Result<SaveReport, Error>>,
     timeout: u32,
 ) -> Result<SaveReport, Error> {
     let marker = format!("dbide_{:016x}", rand::random::<u64>());
@@ -44,6 +45,7 @@ pub(super) async fn save(
         &format!("SELECT @@TRANCOUNT AS [{marker}]"),
         &marker,
         timeout,
+        reply,
     )
     .await?
         > 0;
@@ -92,7 +94,7 @@ pub(super) async fn save(
 async fn statements(
     client: &mut TdsClient,
     script: &Script,
-    reply: &oneshot::Sender<Result<SaveReport, Error>>,
+    reply: &mut oneshot::Sender<Result<SaveReport, Error>>,
     marker: &str,
     timeout: u32,
     user_transaction_open: bool,
@@ -109,17 +111,16 @@ async fn statements(
             "{}\nSELECT CONVERT(bigint, @@ROWCOUNT) AS [{marker}];",
             statement.sql()
         );
-        let affected =
-            scalar(client, &sql, marker, timeout)
-                .await
-                .map_err(|error| match error {
-                    Error::Server { text, code, .. } => Error::Server {
-                        text,
-                        code,
-                        change: Some(index),
-                    },
-                    error => error,
-                })?;
+        let affected = scalar(client, &sql, marker, timeout, reply)
+            .await
+            .map_err(|error| match error {
+                Error::Server { text, code, .. } => Error::Server {
+                    text,
+                    code,
+                    change: Some(index),
+                },
+                error => error,
+            })?;
         if affected != 1 {
             report.rows = Counts::default();
             report.conflict = Some(Conflict {
@@ -149,8 +150,23 @@ async fn scalar(
     sql: &str,
     marker: &str,
     timeout: u32,
+    reply: &mut oneshot::Sender<Result<SaveReport, Error>>,
 ) -> Result<u64, Error> {
-    let result = read_scalar(client, sql, marker, timeout).await;
+    let mut cancel = CancelHandle::new();
+    cancel.set_cancel_timeout_secs(3);
+    let result = {
+        let read = read_scalar(client, sql, marker, timeout, &cancel);
+        tokio::pin!(read);
+        tokio::select! {
+            result = &mut read => result,
+            _ = reply.closed() => {
+                // Keep polling the driver so ATTENTION settles before rollback and reuse.
+                cancel.cancel();
+                let _ = read.await;
+                Err(Error::Cancelled)
+            }
+        }
+    };
     let cleanup = client.close_query().await.map_err(server);
     client.take_info_messages();
     match cleanup {
@@ -171,9 +187,13 @@ async fn read_scalar(
     sql: &str,
     marker: &str,
     timeout: u32,
+    cancel: &CancelHandle,
 ) -> Result<u64, Error> {
     let mut boundary = client
-        .execute(sql.into(), ExecuteOptions::new().timeout_secs(timeout))
+        .execute(
+            sql.into(),
+            ExecuteOptions::new().cancel(cancel).timeout_secs(timeout),
+        )
         .await
         .map_err(server)?;
     let mut found = None;

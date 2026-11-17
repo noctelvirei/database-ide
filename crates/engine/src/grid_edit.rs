@@ -385,6 +385,14 @@ impl EditableResult {
                     let column = name(index)?;
                     predicates.push(if original[index] == Value::Null {
                         format!("{column} IS NULL")
+                    } else if self.engine == Engine::SqlServer
+                        && matches!(original[index], Value::Text(_))
+                    {
+                        // Text equality must detect collation equivalence and trailing-space changes.
+                        format!(
+                            "CAST({column} AS varbinary(max)) = CAST({} AS varbinary(max))",
+                            self.original(index, &original[index])?
+                        )
                     } else {
                         format!("{column} = {}", self.original(index, &original[index])?)
                     });

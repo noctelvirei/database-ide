@@ -5,6 +5,7 @@ use dbide_engine::mssql::{self, Mssql};
 use dbide_engine::session::{Column, Event, Session, Value};
 use dbide_test_servers::mssql::Mssql as Database;
 use futures::StreamExt;
+use std::time::Duration;
 
 async fn open(database: &Database) -> Mssql {
     let mut details = Connection::new(Engine::SqlServer, database.host());
@@ -220,6 +221,131 @@ async fn mssql_conflict_rolls_back_earlier_changes_and_preserves_other_session()
             vec![Value::Integer(1), Value::Text("apple".into())],
             vec![Value::Integer(2), Value::Text("banana".into())],
         ]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mssql_case_only_change_conflicts_with_save() {
+    let (database, mut session) = fixture().await;
+    query(
+        &mut session,
+        "ALTER TABLE fruit ALTER COLUMN name nvarchar(40) COLLATE Latin1_General_CI_AS",
+    )
+    .await;
+    let result = query(&mut session, "SELECT id, name FROM fruit WHERE id = 1").await;
+    let script = editable(&mut session, &result)
+        .await
+        .script(&[Change::Update {
+            original: result.rows[0].clone(),
+            cells: vec![name("orange")],
+        }])
+        .unwrap();
+    let mut other = open(&database).await;
+    query(&mut other, "UPDATE fruit SET name = N'APPLE' WHERE id = 1").await;
+    let report = session.save(script).await.unwrap();
+    assert_eq!(
+        report.conflict,
+        Some(Conflict {
+            change: 0,
+            affected: 0
+        })
+    );
+    assert_eq!(
+        report.rows,
+        Counts {
+            updated: 0,
+            inserted: 0,
+            deleted: 0
+        }
+    );
+    assert_eq!(
+        query(&mut session, "SELECT name FROM fruit WHERE id = 1")
+            .await
+            .rows,
+        vec![vec![Value::Text("APPLE".into())]]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mssql_trailing_space_change_conflicts_with_delete() {
+    let (database, mut session) = fixture().await;
+    query(&mut session, "ALTER TABLE fruit ALTER COLUMN name nvarchar(40) COLLATE Latin1_General_CI_AS; UPDATE fruit SET name = N'a' WHERE id = 1").await;
+    let result = query(&mut session, "SELECT id, name FROM fruit WHERE id = 1").await;
+    let script = editable(&mut session, &result)
+        .await
+        .script(&[Change::Delete {
+            original: result.rows[0].clone(),
+        }])
+        .unwrap();
+    let mut other = open(&database).await;
+    query(&mut other, "UPDATE fruit SET name = N'a ' WHERE id = 1").await;
+    let report = session.save(script).await.unwrap();
+    assert_eq!(
+        report.conflict,
+        Some(Conflict {
+            change: 0,
+            affected: 0
+        })
+    );
+    assert_eq!(
+        report.rows,
+        Counts {
+            updated: 0,
+            inserted: 0,
+            deleted: 0
+        }
+    );
+    assert_eq!(
+        query(&mut session, "SELECT name FROM fruit WHERE id = 1")
+            .await
+            .rows,
+        vec![vec![Value::Text("a ".into())]]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mssql_dropping_blocked_save_restores_session_usability() {
+    let (database, mut session) = fixture().await;
+    let result = query(&mut session, "SELECT id, name FROM fruit WHERE id = 1").await;
+    let script = editable(&mut session, &result)
+        .await
+        .script(&[Change::Update {
+            original: result.rows[0].clone(),
+            cells: vec![name("orange")],
+        }])
+        .unwrap();
+    let mut other = open(&database).await;
+    query(
+        &mut other,
+        "BEGIN TRANSACTION; UPDATE fruit SET name = N'banana' WHERE id = 1",
+    )
+    .await;
+
+    // timeout drops the polled Save future while the other session still holds its lock.
+    assert!(
+        tokio::time::timeout(Duration::from_secs(1), session.save(script))
+            .await
+            .is_err()
+    );
+    let reused =
+        tokio::time::timeout(Duration::from_secs(5), query(&mut session, "SELECT 1")).await;
+    // Release the lock even when reuse timed out, so a regression cannot hang teardown.
+    query(&mut other, "ROLLBACK TRANSACTION").await;
+    assert_eq!(
+        reused
+            .expect("Save cancellation left the session blocked")
+            .rows,
+        vec![vec![Value::Integer(1)]]
+    );
+    assert_eq!(
+        query(&mut session, "SELECT name FROM fruit WHERE id = 1")
+            .await
+            .rows,
+        vec![vec![Value::Text("apple".into())]]
+    );
+    assert_eq!(
+        query(&mut session, "SELECT @@TRANCOUNT").await.rows,
+        vec![vec![Value::Integer(0)]]
     );
 }
 
