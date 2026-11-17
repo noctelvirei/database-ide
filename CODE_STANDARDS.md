@@ -20,7 +20,7 @@ The product decisions are in [docs/spec.md](docs/spec.md) and the vocabulary in 
 
 - `crates/engine`: the library; everything below the UI. No UI dependency, ever.
 - `crates/dbide-cli`: the E2E harness binary; uses only the engine's public API.
-- `crates/app`: the gpui UI. It calls only the engine's public API and holds no SQL or driver code.
+- `crates/app`: the gpui UI, built as `database-ide.exe`. It calls only the engine's public API and holds no SQL or driver code.
 - Inside the engine, one module per piece of knowledge, split by feature, not by layer: `session` (the common run/event/cancel interface), `spill` (the row file and its index), `mssql`, `postgres`, `mysql` (one per engine, each the only place its driver is used), `plan` (the shared operator tree; showplan and EXPLAIN parsing live in their engine modules or `plan`'s submodules), `export`, `connections`, `danger`, `grid_edit`, `objects`.
 - A driver type never appears in another module's signature. Engine modules convert to the engine's own types at their boundary.
 - Module files sit as `foo.rs` beside `foo/`, never `foo/mod.rs`. No source file above 1000 lines. No re-exports (`pub use`), no `#[path]`, no `include!`.
@@ -66,12 +66,12 @@ Real servers are the test ([testing decision](https://github.com/noctelvirei/dat
 
 ### UI E2E harness
 
-The app is tested as a user drives it, in a real window, against the same real servers. The gpui spike ([prototype/gpui-spike](https://github.com/noctelvirei/database-ide/tree/prototype/gpui-spike/prototypes/gpui-spike)) proved the method; U1 builds it into `crates/app`:
+The app is tested as a user drives it, in a real window, against the same real servers. The gpui spike ([prototype/gpui-spike](https://github.com/noctelvirei/database-ide/tree/prototype/gpui-spike/prototypes/gpui-spike)) proved the method; `crates/app/src/ui_script.rs` holds it:
 
-- A test mode, `--ui-script <file>`, runs a script of steps inside the app. Keys go through gpui's `Window::dispatch_keystroke`, the path a real key takes after Windows' message translation: the keymap, the focused element's actions and text input. Synthetic OS input (SendInput) is not used, because it lands in whatever window has focus.
-- After each step the app appends its visible state as one JSON line (focused pane, tab titles, editor text and selection, messages, grid row counts, dialog contents). Tests assert on those lines.
-- A step can name a screenshot; a PowerShell script captures the app's window into the test's artifact folder. Screenshots are the proof a rerun reproduces, not the assertion.
-- Startup time, idle private working set and the zipped release size are measured on every UI ticket, against the targets in the spec.
+- `database-ide --ui-script <steps.json> --ui-state <state.jsonl>` plays a script of steps inside the app, then quits. Keys go through gpui's `Window::dispatch_keystroke`, the path a real key takes after Windows' message translation: the keymap, the focused element's actions and text input. Synthetic OS input (SendInput) is not used, because it lands in whatever window has focus. A key gpui doesn't translate from Windows (Pause/Break) passes a script but not a real keyboard.
+- After each step the app appends what a user can see as one JSON line (focused pane, the last action, the messages strip, the editor text, and more as tickets add panes). Tests in `crates/app/tests/` run the built exe on scripts in `crates/app/tests/scripts/` and assert on those lines. Their names start with `ui_`; each opens a window for a few seconds.
+- `scripts/ui-run.ps1 -Exe <exe> -Script <steps.json> -OutDir <folder>` runs a script with `--ui-shots`: at each `shot` step it captures the app's window into the folder beside `state.jsonl`. Screenshots are the proof a rerun reproduces, not the assertion.
+- `scripts/measure-app.ps1 -Exe <release exe>` measures startup, idle private working set and the zipped exe against the spec's targets. Run it on every UI ticket and put its summary in the ticket's record.
 - Windows UI Automation can't drive the app: gpui's Windows accessibility is incomplete.
 
 ## Sources
