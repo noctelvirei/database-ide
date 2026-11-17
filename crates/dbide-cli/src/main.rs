@@ -1,7 +1,10 @@
 use clap::{Parser, Subcommand};
 use dbide_engine::connections::connection_string;
+use dbide_engine::danger::Engine;
 use dbide_engine::export;
+use dbide_engine::format;
 use dbide_engine::session::{Event, Session};
+use std::io::{Read, Write};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -15,6 +18,15 @@ struct Cli {
 enum Commands {
     /// Print the package version.
     Version,
+    /// Format SQL from a UTF-8 file or stdin and write it to stdout.
+    Format {
+        /// SQL syntax: sql-server, postgresql or mysql.
+        #[arg(long, value_parser = parse_engine)]
+        engine: Engine,
+        /// Read this UTF-8 file instead of stdin.
+        #[arg(long)]
+        file: Option<PathBuf>,
+    },
     /// Run a SQL Server, PostgreSQL or MySQL batch and export each result as a numbered CSV file.
     Run {
         /// ADO.NET, JDBC, libpq or database URI; password falls back to DBIDE_PASSWORD.
@@ -44,7 +56,9 @@ enum Error {
     MySql(#[from] dbide_engine::mysql::Error),
     #[error(transparent)]
     Export(#[from] export::Error),
-    #[error("Cannot read SQL file: {0}")]
+    #[error(transparent)]
+    Format(#[from] format::Error),
+    #[error("SQL input/output failed: {0}")]
     File(#[from] std::io::Error),
     #[error("Batch failed; see reported server errors")]
     Batch,
@@ -64,6 +78,18 @@ async fn main() -> std::process::ExitCode {
 async fn run() -> Result<(), Error> {
     match Cli::parse().command {
         Commands::Version => println!("{}", env!("CARGO_PKG_VERSION")),
+        Commands::Format { engine, file } => {
+            let text = match file {
+                Some(file) => std::fs::read_to_string(file)?,
+                None => {
+                    let mut text = String::new();
+                    std::io::stdin().read_to_string(&mut text)?;
+                    text
+                }
+            };
+            let output = format::format(&text, engine)?;
+            std::io::stdout().lock().write_all(output.as_bytes())?;
+        }
         Commands::Run {
             connection,
             batch,
@@ -120,4 +146,13 @@ async fn run() -> Result<(), Error> {
         }
     }
     Ok(())
+}
+
+fn parse_engine(value: &str) -> Result<Engine, String> {
+    match value {
+        "sql-server" => Ok(Engine::SqlServer),
+        "postgresql" => Ok(Engine::PostgreSql),
+        "mysql" => Ok(Engine::MySql),
+        _ => Err("expected sql-server, postgresql or mysql".into()),
+    }
 }
