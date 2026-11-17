@@ -1,4 +1,6 @@
-//! Lazy object explorer metadata shared by engines; SQL generation stays engine-specific.
+//! Object explorer and autocomplete metadata shared by engines; SQL stays engine-specific.
+
+use std::collections::HashMap;
 
 use serde::Deserialize;
 
@@ -95,6 +97,58 @@ pub struct Column {
     pub identity: Option<Identity>,
     /// Computation, when this is a generated column.
     pub generated: Option<Generated>,
+}
+
+/// Autocomplete names visible in the current database; refresh after DDL changes.
+/// The two catalog queries are not a transactionally consistent snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutocompleteCatalog {
+    /// Schema nodes in name order, including system namespaces where the engine exposes them.
+    pub schemas: Vec<Object>,
+    /// Tables, views, procedures and functions in explorer order, including routine overloads.
+    pub objects: Vec<AutocompleteObject>,
+}
+
+/// An explorer object paired with the columns offered after its name in the editor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutocompleteObject {
+    /// Unquoted name, schema and engine identity, reusable with the explorer calls.
+    pub object: Object,
+    /// Visible table/view columns in declaration order; empty for routines.
+    pub columns: Vec<Column>,
+}
+
+/// One bulk column row, joined to its object by the engine's opaque catalog key.
+#[derive(Deserialize)]
+struct CatalogColumn {
+    object_key: String,
+    #[serde(flatten)]
+    column: Column,
+}
+
+impl AutocompleteCatalog {
+    /// Groups ordered column rows without issuing per-object catalog calls.
+    fn from_rows(nodes: Vec<Object>, columns: Vec<CatalogColumn>) -> Self {
+        let mut grouped: HashMap<String, Vec<Column>> = HashMap::new();
+        for row in columns {
+            grouped.entry(row.object_key).or_default().push(row.column);
+        }
+        let mut catalog = Self {
+            schemas: Vec::new(),
+            objects: Vec::new(),
+        };
+        for object in nodes {
+            if object.kind == Kind::Schema {
+                catalog.schemas.push(object);
+            } else {
+                catalog.objects.push(AutocompleteObject {
+                    columns: grouped.remove(&object.id.key).unwrap_or_default(),
+                    object,
+                });
+            }
+        }
+        catalog
+    }
 }
 
 /// The rules shown in a table's keys and constraints list.

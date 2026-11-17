@@ -72,6 +72,7 @@ impl From<tokio_postgres::Error> for Error {
 /// including when a consumer drops a Run. Debug never includes credentials.
 pub struct Postgres {
     database: String,
+    details: Connection,
     requests: mpsc::Sender<Work>,
 }
 
@@ -251,7 +252,11 @@ pub async fn connect(details: &Connection, password: Option<&str>) -> Result<Pos
         background,
         metadata::Metadata::new(config, tls),
     ));
-    Ok(Postgres { database, requests })
+    Ok(Postgres {
+        database,
+        details: details.clone(),
+        requests,
+    })
 }
 
 impl Postgres {
@@ -305,6 +310,29 @@ impl Postgres {
 }
 
 impl Session for Postgres {
+    fn switch_database<'a>(
+        &'a mut self,
+        database: &'a str,
+        password: Option<&'a str>,
+    ) -> futures::future::BoxFuture<'a, Result<(), crate::session::Error>> {
+        Box::pin(async move {
+            let failure = |message: String| crate::session::Error::SwitchDatabase {
+                database: database.into(),
+                message,
+            };
+            crate::sql::identifier(database, Engine::PostgreSql)
+                .map_err(|error| failure(error.to_string()))?;
+            let mut details = self.details.clone();
+            // dbname is a protocol value, not SQL: pass the original name without quoting.
+            details.database = Some(database.into());
+            let replacement = connect(&details, password)
+                .await
+                .map_err(|error| failure(error.to_string()))?;
+            *self = replacement;
+            Ok(())
+        })
+    }
+
     fn current_database(&self) -> &str {
         &self.database
     }

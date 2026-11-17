@@ -506,6 +506,8 @@ async fn pg_windows_sign_in_without_a_user_uses_the_current_windows_account() {
             .await
             .expect("SSPI sign-in must complete without hanging")
             .unwrap();
+    session.switch_database("postgres", None).await.unwrap();
+    assert_eq!(session.current_database(), "postgres");
     let events: Vec<_> = session.run("SELECT current_user").collect().await;
     assert_eq!(events[1], Event::Rows(vec![vec![Value::Text(user)]]));
 }

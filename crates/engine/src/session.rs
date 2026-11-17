@@ -178,10 +178,33 @@ pub enum PlanMode {
     Actual,
 }
 
+/// A database switch failed; the diagnostic is ready to display in the UI.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    /// The requested database could not be selected or connected to.
+    #[error("Cannot switch to database {database:?}: {message}")]
+    SwitchDatabase {
+        /// The unquoted name supplied by the caller.
+        database: String,
+        /// The validation, connection or server diagnostic.
+        message: String,
+    },
+}
+
 /// One open connection with a current database; implementations own protocol recovery.
 pub trait Session: fmt::Debug + Send {
     /// The connection's current database name, updated after database-changing batches.
     fn current_database(&self) -> &str;
+
+    /// Switches to an unquoted database name, updating this session only on success.
+    /// PostgreSQL reconnects with the original details and loses connection-local state;
+    /// supply its password again when required. Other engines ignore the password.
+    /// A refused switch returns a displayable error and leaves the old session usable.
+    fn switch_database<'a>(
+        &'a mut self,
+        database: &'a str,
+        password: Option<&'a str>,
+    ) -> BoxFuture<'a, Result<(), Error>>;
 
     /// Starts one batch, borrowing the connection and SQL until the Run is dropped.
     /// All failures, including send failures, are Error events. Implementations must observe
@@ -201,6 +224,28 @@ pub trait Session: fmt::Debug + Send {
     /// Returns one raw plan per statement in batch order. Parse and server failures are
     /// Error events. Actual plans execute SQL and can have nontransactional side effects.
     fn plan<'a>(&'a mut self, batch: &'a str, mode: PlanMode) -> Run<'a>;
+}
+
+pub(crate) async fn use_database(
+    session: &mut dyn Session,
+    database: &str,
+    engine: crate::danger::Engine,
+) -> Result<(), Error> {
+    let failure = |message: String| Error::SwitchDatabase {
+        database: database.into(),
+        message,
+    };
+    let name =
+        crate::sql::identifier(database, engine).map_err(|error| failure(error.to_string()))?;
+    let batch = format!("USE {name}");
+    let mut run = session.run(&batch);
+    let mut error = None;
+    while let Some(event) = run.next().await {
+        if let Event::Error { text, .. } = event {
+            error.get_or_insert_with(|| failure(text));
+        }
+    }
+    error.map_or(Ok(()), Err)
 }
 
 /// An idempotent cancellation request, safe to clone and call from another task.
