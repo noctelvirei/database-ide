@@ -111,6 +111,41 @@ BEGIN
     SELECT * FROM shop.orders WHERE customer_id = @customer ORDER BY id;
 END;
 GO
+SET ANSI_NULLS ON;
+SET QUOTED_IDENTIFIER ON;
+SET ANSI_PADDING ON;
+SET ANSI_WARNINGS ON;
+SET ARITHABORT ON;
+SET CONCAT_NULL_YIELDS_NULL ON;
+SET NUMERIC_ROUNDABORT OFF;
+GO
+CREATE SCHEMA explorer;
+GO
+CREATE TABLE explorer.parents (id int CONSTRAINT parents_pk PRIMARY KEY);
+CREATE TABLE explorer.catalog_items (
+    id bigint IDENTITY(17,3) NOT NULL,
+    code nvarchar(40) NOT NULL CONSTRAINT catalog_items_code_default DEFAULT N'雪]''s',
+    parent_id int NULL,
+    quantity int NOT NULL CONSTRAINT catalog_items_quantity_default DEFAULT (2),
+    doubled AS (quantity * 2) PERSISTED,
+    CONSTRAINT catalog_items_pk PRIMARY KEY NONCLUSTERED (id DESC),
+    CONSTRAINT catalog_items_code_key UNIQUE CLUSTERED (code),
+    CONSTRAINT catalog_items_quantity_check CHECK (quantity > 0),
+    CONSTRAINT catalog_items_parent_fk FOREIGN KEY (parent_id) REFERENCES explorer.parents(id)
+        ON DELETE SET NULL ON UPDATE CASCADE
+);
+CREATE NONCLUSTERED INDEX catalog_items_quantity ON explorer.catalog_items(quantity DESC)
+    INCLUDE (parent_id) WHERE quantity > 1;
+CREATE TABLE explorer.[odd]]果実] ([key]]雪] int NOT NULL CONSTRAINT [odd]]pk] PRIMARY KEY,
+    [value]]text] nvarchar(20) CONSTRAINT [odd]]default] DEFAULT N'雪''s]');
+GO
+CREATE TRIGGER explorer.catalog_items_guard ON explorer.catalog_items AFTER INSERT AS
+BEGIN
+    SET NOCOUNT ON;
+    IF EXISTS (SELECT 1 FROM inserted WHERE quantity = 13)
+        THROW 51001, 'Invented quantity is reserved', 1;
+END;
+GO
 CREATE FUNCTION shop.line_total(@quantity int, @unit_price decimal(12, 2))
 RETURNS decimal(12, 2)
 AS
