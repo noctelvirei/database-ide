@@ -189,6 +189,18 @@ impl Mssql {
 }
 
 impl Session for Mssql {
+    fn switch_database<'a>(
+        &'a mut self,
+        database: &'a str,
+        _password: Option<&'a str>,
+    ) -> futures::future::BoxFuture<'a, Result<(), crate::session::Error>> {
+        Box::pin(crate::session::use_database(
+            self,
+            database,
+            Engine::SqlServer,
+        ))
+    }
+
     fn current_database(&self) -> &str {
         &self.database
     }

@@ -16,6 +16,14 @@ struct ScriptedSession {
 }
 
 impl Session for ScriptedSession {
+    fn switch_database<'a>(
+        &'a mut self,
+        _database: &'a str,
+        _password: Option<&'a str>,
+    ) -> futures::future::BoxFuture<'a, Result<(), dbide_engine::session::Error>> {
+        unimplemented!("scripted sessions only exercise run events")
+    }
+
     fn plan<'a>(&'a mut self, batch: &'a str, _mode: dbide_engine::session::PlanMode) -> Run<'a> {
         self.run(batch)
     }
