@@ -1,359 +1,245 @@
-use dbide_engine::connections::{Connection, TlsMode};
-use dbide_engine::danger::Engine;
-use dbide_engine::mysql::{self, MySql};
 use dbide_engine::objects::mysql as objects;
 use dbide_engine::objects::{
-    Column, Constraint, ConstraintKind, Generated, Identity, Kind, Object, Script, Search,
+    Column, Constraint, ConstraintKind, Generated, Identity, Kind, Script,
 };
-use dbide_engine::session::{Event, Session, Value};
-use dbide_test_servers::mysql::MySql as Database;
-use futures::StreamExt;
+use dbide_engine::session::{Session, Value};
 
-async fn database() -> Database {
-    tokio::task::spawn_blocking(Database::start)
-        .await
-        .unwrap()
-        .unwrap()
-}
+mod mysql_support;
+use mysql_support::*;
 
-async fn fixture() -> Database {
-    let database = database().await;
-    tokio::task::spawn_blocking(move || {
-        database.load_script("../../testdata/mysql.sql").unwrap();
-        database
-    })
-    .await
-    .unwrap()
-}
-
-fn details(database: &Database) -> Connection {
-    let mut details = Connection::new(Engine::MySql, database.host());
-    details.port = Some(database.port());
-    details.user = Some(database.user().into());
-    details.database = Some(database.database().into());
-    details.tls = TlsMode::Off;
-    details
-}
-
-async fn open(database: &Database) -> MySql {
-    mysql::connect(&details(database), Some(database.password()))
-        .await
-        .unwrap()
-}
-
-async fn run(session: &mut dyn Session, sql: &str) -> Vec<Vec<Value>> {
-    let mut run = session.run(sql);
-    let mut rows = Vec::new();
-    while let Some(event) = run.next().await {
-        match event {
-            Event::Error { text, .. } => panic!("{text}"),
-            Event::Rows(batch) => rows.extend(batch),
-            _ => {}
-        }
-    }
-    rows
-}
-
-async fn object(session: &mut dyn Session, name: &str) -> Object {
-    objects::search(
+async fn parameters(session: &mut dyn Session) -> Vec<Vec<Value>> {
+    run(
         session,
-        &Search {
-            name: name.into(),
-            kinds: vec![],
-            limit: 100,
-        },
+        "SELECT PARAMETER_NAME, CHARACTER_SET_NAME, COLLATION_NAME
+        FROM information_schema.PARAMETERS WHERE SPECIFIC_SCHEMA = DATABASE()
+        ORDER BY SPECIFIC_NAME, ORDINAL_POSITION",
     )
     .await
-    .unwrap()
-    .into_iter()
-    .find(|object| object.name == name)
-    .unwrap()
-}
-
-fn artifact(database: &Database, name: &str, contents: &str) {
-    let root = std::env::var_os("CARGO_TARGET_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::PathBuf::from("../../target"));
-    let folder = root.join("test-artifacts").join(database.database());
-    std::fs::create_dir_all(&folder).unwrap();
-    std::fs::write(folder.join(name), contents).unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn mysql_database_listing_excludes_system_databases() {
-    let database = database().await;
-    let mut session = open(&database).await;
-    let databases = objects::databases(&mut session).await.unwrap();
-    assert!(
-        databases
-            .iter()
-            .any(|object| object.name == database.database())
-    );
-    assert!(!databases.iter().any(|object| {
-        ["mysql", "sys", "information_schema", "performance_schema"].contains(&object.name.as_str())
-    }));
-    assert!(
-        databases
-            .iter()
-            .all(|object| object.kind == Kind::Database && !object.system)
-    );
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn mysql_schema_listing_maps_the_current_database_to_one_schema() {
-    let database = database().await;
-    let mut session = open(&database).await;
-    let schemas = objects::schemas(&mut session).await.unwrap();
-    assert_eq!(schemas.len(), 1);
-    assert_eq!(schemas[0].name, database.database());
-    assert_eq!(schemas[0].kind, Kind::Schema);
-    assert_eq!(schemas[0].schema, None);
-    assert!(
-        objects::objects(&mut session, "absent")
-            .await
-            .unwrap()
-            .is_empty()
-    );
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn mysql_object_listing_returns_fixture_tables_views_and_routines() {
-    let database = fixture().await;
-    let mut session = open(&database).await;
-    let children = objects::objects(&mut session, database.database())
-        .await
-        .unwrap();
-    assert_eq!(
-        children
-            .iter()
-            .map(|object| (object.name.as_str(), object.kind))
-            .collect::<Vec<_>>(),
-        vec![
-            ("audit_log", Kind::Table),
-            ("common_types", Kind::Table),
-            ("customer_orders", Kind::Procedure),
-            ("customers", Kind::Table),
-            ("line_total", Kind::Function),
-            ("order_lines", Kind::Table),
-            ("order_summary", Kind::View),
-            ("orders", Kind::Table),
-        ]
-    );
-    assert!(
-        children
-            .iter()
-            .all(|object| object.schema.as_deref() == Some(database.database()) && !object.system)
-    );
-    artifact(&database, "mysql-explorer.txt", &format!("{children:#?}"));
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn mysql_columns_return_fixture_types_nullability_and_auto_increment() {
-    let database = fixture().await;
-    let mut session = open(&database).await;
-    let table = object(&mut session, "customers").await;
-    assert_eq!(
-        objects::columns(&mut session, &table).await.unwrap(),
-        vec![
-            Column {
-                name: "id".into(),
-                type_name: "bigint".into(),
-                nullable: false,
-                default: None,
-                identity: Some(Identity::ByDefault),
-                generated: None
-            },
-            Column {
-                name: "display_name".into(),
-                type_name: "text".into(),
-                nullable: false,
-                default: None,
-                identity: None,
-                generated: None
-            },
-            Column {
-                name: "email".into(),
-                type_name: "text".into(),
-                nullable: true,
-                default: None,
-                identity: None,
-                generated: None
-            },
-            Column {
-                name: "notes".into(),
-                type_name: "text".into(),
-                nullable: true,
-                default: None,
-                identity: None,
-                generated: None
-            },
-        ]
-    );
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn mysql_constraints_return_fixture_primary_and_foreign_keys() {
-    let database = fixture().await;
-    let mut session = open(&database).await;
-    let table = object(&mut session, "order_lines").await;
-    let constraints = objects::constraints(&mut session, &table).await.unwrap();
-    assert_eq!(constraints, vec![
-        Constraint { name: "PRIMARY".into(), kind: ConstraintKind::PrimaryKey, definition: "PRIMARY KEY (`order_id`, `line_number`)".into() },
-        Constraint { name: "order_lines_ibfk_1".into(), kind: ConstraintKind::ForeignKey,
-            definition: "FOREIGN KEY (`order_id`) REFERENCES `orders` (`id`) ON DELETE NO ACTION ON UPDATE NO ACTION".into() },
-    ]);
-    artifact(&database, "mysql-keys.txt", &format!("{constraints:#?}"));
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn mysql_indexes_return_fixture_key_order_and_uniqueness() {
-    let database = fixture().await;
-    let mut session = open(&database).await;
-    let table = object(&mut session, "orders").await;
-    let indexes = objects::indexes(&mut session, &table).await.unwrap();
-    assert_eq!(indexes.len(), 2);
-    assert_eq!(indexes[0].object.name, "PRIMARY");
-    assert_eq!(indexes[0].columns, vec!["`id`"]);
-    assert!(indexes[0].unique);
-    assert!(indexes[0].constraint_backed);
-    assert_eq!(indexes[0].method, "btree");
-    assert_eq!(indexes[1].object.name, "customer_id");
-    assert_eq!(indexes[1].columns, vec!["`customer_id`"]);
-    assert!(!indexes[1].unique);
-    assert!(!indexes[1].constraint_backed);
-    assert_eq!(
-        objects::script(&mut session, &indexes[1].object, Script::Create)
-            .await
-            .unwrap(),
-        format!(
-            "CREATE INDEX `customer_id` ON `{}`.`orders` (`customer_id`) USING BTREE;\n",
-            database.database()
-        )
-    );
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn mysql_search_matches_literal_substrings_and_filters_kinds() {
-    let database = fixture().await;
-    let mut session = open(&database).await;
-    let hits = objects::search(
-        &mut session,
-        &Search {
-            name: "ORDER".into(),
-            kinds: vec![Kind::View, Kind::Procedure],
-            limit: 10,
-        },
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        hits.iter()
-            .map(|object| object.name.as_str())
-            .collect::<Vec<_>>(),
-        vec!["customer_orders", "order_summary"]
-    );
+async fn mysql_procedure_string_parameters_keep_the_source_database_charset() {
+    let source = database().await;
+    let target = database().await;
+    let mut session = open(&source).await;
+    let mut destination = open(&target).await;
     run(
         &mut session,
-        "CREATE TABLE `fruit_%` (id int); CREATE TABLE fruit_pear (id int)",
+        "ALTER DATABASE CHARACTER SET latin1 COLLATE latin1_swedish_ci;
+        CREATE PROCEDURE pear_names(IN fruit_name VARCHAR(10), OUT fruit_kind ENUM('pear','plum'))
+        SET fruit_kind = 'pear'",
     )
     .await;
-    let hits = objects::search(
-        &mut session,
-        &Search {
-            name: "_%".into(),
-            kinds: vec![Kind::Table],
-            limit: 10,
-        },
+    run(
+        &mut destination,
+        "ALTER DATABASE CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci",
     )
-    .await
-    .unwrap();
+    .await;
+    let procedure = object(&mut session, "pear_names").await;
+    let sql = objects::script(&mut session, &procedure, Script::Create)
+        .await
+        .unwrap();
+    run(&mut destination, &sql).await;
     assert_eq!(
-        hits.iter()
-            .map(|object| object.name.as_str())
-            .collect::<Vec<_>>(),
-        vec!["fruit_%"]
+        parameters(&mut session).await,
+        vec![
+            vec![
+                Value::Text("fruit_name".into()),
+                Value::Text("latin1".into()),
+                Value::Text("latin1_swedish_ci".into())
+            ],
+            vec![
+                Value::Text("fruit_kind".into()),
+                Value::Text("latin1".into()),
+                Value::Text("latin1_swedish_ci".into())
+            ],
+        ]
+    );
+    assert_eq!(
+        parameters(&mut destination).await,
+        parameters(&mut session).await
+    );
+    artifact(&source, "mysql-routine-parameters.sql", &sql);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mysql_function_text_return_keeps_the_source_database_charset() {
+    let source = database().await;
+    let target = database().await;
+    let mut session = open(&source).await;
+    let mut destination = open(&target).await;
+    run(
+        &mut session,
+        "ALTER DATABASE CHARACTER SET latin1 COLLATE latin1_swedish_ci;
+        CREATE FUNCTION pear_text() RETURNS TEXT DETERMINISTIC RETURN 'pear'",
+    )
+    .await;
+    run(
+        &mut destination,
+        "ALTER DATABASE CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci",
+    )
+    .await;
+    let function = object(&mut session, "pear_text").await;
+    let sql = objects::script(&mut session, &function, Script::Create)
+        .await
+        .unwrap();
+    run(&mut destination, &sql).await;
+    assert_eq!(
+        parameters(&mut session).await,
+        vec![vec![
+            Value::Null,
+            Value::Text("latin1".into()),
+            Value::Text("latin1_swedish_ci".into())
+        ]]
+    );
+    assert_eq!(
+        parameters(&mut destination).await,
+        parameters(&mut session).await
+    );
+    artifact(&source, "mysql-routine-return.sql", &sql);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mysql_explicit_parameter_charset_is_copied_unchanged() {
+    let source = database().await;
+    let target = database().await;
+    let mut session = open(&source).await;
+    let mut destination = open(&target).await;
+    run(
+        &mut session,
+        "ALTER DATABASE CHARACTER SET latin1 COLLATE latin1_swedish_ci;
+        CREATE PROCEDURE pear_unicode(IN fruit_name VARCHAR(10) CHARACTER SET utf8mb4)
+        SELECT fruit_name",
+    )
+    .await;
+    run(
+        &mut destination,
+        "ALTER DATABASE CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci",
+    )
+    .await;
+    let original = run(&mut session, "SHOW CREATE PROCEDURE pear_unicode").await;
+    let procedure = object(&mut session, "pear_unicode").await;
+    let sql = objects::script(&mut session, &procedure, Script::Create)
+        .await
+        .unwrap();
+    let Value::Text(definition) = &original[0][2] else {
+        panic!("Expected routine definition")
+    };
+    assert!(sql.ends_with(&format!("{definition};\n")), "{sql}");
+    run(&mut destination, &sql).await;
+    assert_eq!(
+        parameters(&mut session).await,
+        vec![vec![
+            Value::Text("fruit_name".into()),
+            Value::Text("utf8mb4".into()),
+            Value::Text("utf8mb4_0900_ai_ci".into())
+        ]]
+    );
+    assert_eq!(
+        parameters(&mut destination).await,
+        parameters(&mut session).await
     );
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn mysql_search_all_returns_hits_from_two_databases_without_switching_the_source() {
-    let first = database().await;
-    let second = database().await;
-    let mut session = open(&first).await;
-    let mut other = open(&second).await;
-    run(&mut session, "CREATE TABLE cross_database_pear (id int)").await;
-    run(&mut other, "CREATE TABLE cross_database_pear (id int)").await;
-    let connection = details(&first);
-    let password = first.password().to_owned();
-    let report = objects::search_all(
-        &mut session,
-        &Search {
-            name: "cross_database_pear".into(),
-            kinds: vec![Kind::Table],
-            limit: 100,
-        },
-        |database| {
-            let mut connection = connection.clone();
-            let password = password.clone();
-            connection.database = Some(database);
-            async move { mysql::connect(&connection, Some(&password)).await }
-        },
+async fn mysql_local_string_variables_keep_the_source_database_charset() {
+    let source = database().await;
+    let target = database().await;
+    let mut session = open(&source).await;
+    let mut destination = open(&target).await;
+    run(&mut session, "ALTER DATABASE CHARACTER SET latin1 COLLATE latin1_swedish_ci;
+        CREATE FUNCTION pear_charset() RETURNS VARCHAR(20) DETERMINISTIC
+        BEGIN DECLARE v, w VARCHAR(10) DEFAULT 'pear'; RETURN CONCAT(CHARSET(v), ':', CHARSET(w)); END").await;
+    run(
+        &mut destination,
+        "ALTER DATABASE CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci",
     )
-    .await
-    .unwrap();
-    artifact(&first, "mysql-search.txt", &format!("{report:#?}"));
-    assert_eq!(report.objects.len(), 2);
-    assert!(report.objects.iter().any(
-        |object| object.id.database == first.database() && object.name == "cross_database_pear"
-    ));
-    assert!(
-        report
-            .objects
-            .iter()
-            .any(|object| object.id.database == second.database()
-                && object.name == "cross_database_pear")
+    .await;
+    let function = object(&mut session, "pear_charset").await;
+    let sql = objects::script(&mut session, &function, Script::Create)
+        .await
+        .unwrap();
+    run(&mut destination, &sql).await;
+    assert_eq!(
+        run(&mut destination, "SELECT pear_charset()").await,
+        vec![vec![Value::Text("latin1:latin1".into())]]
     );
-    // Other tests share this user/server and may drop a database after enumeration.
-    assert!(
-        report.skipped.iter().all(|skipped| {
-            skipped.database != first.database()
-                && skipped.database != second.database()
-                && skipped.reason.contains("1049")
-                && skipped.reason.contains("Unknown database")
-        }),
-        "{report:#?}"
-    );
-    assert_eq!(session.current_database(), first.database());
+    artifact(&source, "mysql-routine-locals.sql", &sql);
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn mysql_search_all_applies_one_global_limit() {
-    let first = database().await;
-    let second = database().await;
-    let mut session = open(&first).await;
-    let mut other = open(&second).await;
-    run(&mut session, "CREATE TABLE limited_pear (id int)").await;
-    run(&mut other, "CREATE TABLE limited_pear (id int)").await;
-    let connection = details(&first);
-    let password = first.password().to_owned();
-    let report = objects::search_all(
+async fn mysql_routine_strings_comments_and_quoted_identifiers_are_copied_unchanged() {
+    let source = database().await;
+    let target = database().await;
+    let mut session = open(&source).await;
+    let mut destination = open(&target).await;
+    run(
         &mut session,
-        &Search {
-            name: "limited_pear".into(),
-            kinds: vec![Kind::Table],
-            limit: 1,
-        },
-        |database| {
-            let mut connection = connection.clone();
-            let password = password.clone();
-            connection.database = Some(database);
-            async move { mysql::connect(&connection, Some(&password)).await }
-        },
+        "ALTER DATABASE CHARACTER SET latin1 COLLATE latin1_swedish_ci;
+        CREATE PROCEDURE pear_body() BEGIN
+        DECLARE `DECLARE VARCHAR(5)` VARCHAR(10);
+        -- DECLARE pretend VARCHAR(5);
+        SELECT 'DECLARE pretend VARCHAR(5)' AS `VARCHAR(5)`;
+        END",
     )
-    .await
-    .unwrap();
-    assert_eq!(report.objects.len(), 1);
-    assert_eq!(report.objects[0].name, "limited_pear");
+    .await;
+    run(
+        &mut destination,
+        "ALTER DATABASE CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci",
+    )
+    .await;
+    let procedure = object(&mut session, "pear_body").await;
+    let sql = objects::script(&mut session, &procedure, Script::Create)
+        .await
+        .unwrap();
+    assert!(sql.contains("DECLARE `DECLARE VARCHAR(5)` VARCHAR(10) CHARACTER SET `latin1` COLLATE `latin1_swedish_ci`;"), "{sql}");
+    assert!(sql.contains("-- DECLARE pretend VARCHAR(5);\n        SELECT 'DECLARE pretend VARCHAR(5)' AS `VARCHAR(5)`;"), "{sql}");
+    run(&mut destination, &sql).await;
+    assert_eq!(
+        run(&mut destination, "CALL pear_body()").await,
+        vec![vec![Value::Text("DECLARE pretend VARCHAR(5)".into())]]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mysql_binary_string_attribute_keeps_the_source_binary_collation() {
+    let source = database().await;
+    let target = database().await;
+    let mut session = open(&source).await;
+    let mut destination = open(&target).await;
+    run(
+        &mut session,
+        "ALTER DATABASE CHARACTER SET latin1 COLLATE latin1_swedish_ci;
+        CREATE PROCEDURE pear_binary(IN fruit_name CHAR(5) BINARY) SELECT fruit_name",
+    )
+    .await;
+    run(
+        &mut destination,
+        "ALTER DATABASE CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci",
+    )
+    .await;
+    let procedure = object(&mut session, "pear_binary").await;
+    let sql = objects::script(&mut session, &procedure, Script::Create)
+        .await
+        .unwrap();
+    assert!(
+        sql.contains("CHAR(5) CHARACTER SET `latin1` BINARY"),
+        "{sql}"
+    );
+    assert!(!sql.contains("COLLATE `latin1_swedish_ci`"), "{sql}");
+    run(&mut destination, &sql).await;
+    assert_eq!(
+        parameters(&mut session).await,
+        vec![vec![
+            Value::Text("fruit_name".into()),
+            Value::Text("latin1".into()),
+            Value::Text("latin1_bin".into())
+        ]]
+    );
+    assert_eq!(
+        parameters(&mut destination).await,
+        parameters(&mut session).await
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -729,84 +615,6 @@ async fn mysql_view_create_preserves_unicode_from_a_latin1_creation_context() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn mysql_search_all_reports_a_refused_database_without_losing_other_hits() {
-    let source = database().await;
-    let refused = database().await;
-    let mut session = open(&source).await;
-    run(&mut session, "CREATE TABLE surviving_pear (id int)").await;
-    let connection = details(&source);
-    let password = source.password().to_owned();
-    let refused_name = refused.database().to_owned();
-    let report = objects::search_all(
-        &mut session,
-        &Search {
-            name: "surviving_pear".into(),
-            kinds: vec![Kind::Table],
-            limit: 100,
-        },
-        |database| {
-            let mut connection = connection.clone();
-            let password = if database == refused_name {
-                "incorrect password".to_owned()
-            } else {
-                password.clone()
-            };
-            connection.database = Some(database);
-            async move {
-                mysql::connect(&connection, Some(&password))
-                    .await
-                    .map_err(|error| error.to_string())
-            }
-        },
-    )
-    .await
-    .unwrap();
-    artifact(&source, "mysql-search-refused.txt", &format!("{report:#?}"));
-    assert_eq!(report.objects.len(), 1);
-    assert_eq!(report.objects[0].name, "surviving_pear");
-    let refusal = report
-        .skipped
-        .iter()
-        .find(|skipped| skipped.database == refused.database())
-        .unwrap_or_else(|| panic!("{report:#?}"));
-    assert!(refusal.reason.contains("1045"), "{report:#?}");
-    assert!(refusal.reason.contains("Access denied"), "{report:#?}");
-    assert!(
-        report.skipped.iter().all(|skipped| {
-            skipped.database == refused.database()
-                || (skipped.database != source.database()
-                    && skipped.reason.contains("1049")
-                    && skipped.reason.contains("Unknown database"))
-        }),
-        "{report:#?}"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn mysql_zero_search_limit_never_calls_the_connector() {
-    let source = database().await;
-    let mut session = open(&source).await;
-    let mut called = false;
-    let report = objects::search_all(
-        &mut session,
-        &Search {
-            name: "".into(),
-            kinds: vec![],
-            limit: 0,
-        },
-        |_| {
-            called = true;
-            async { Err::<MySql, &str>("must not connect") }
-        },
-    )
-    .await
-    .unwrap();
-    assert!(report.objects.is_empty());
-    assert!(report.skipped.is_empty());
-    assert!(!called);
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn mysql_select_scripts_omit_invisible_columns() {
     let source = database().await;
     let mut session = open(&source).await;
@@ -908,7 +716,7 @@ async fn mysql_fulltext_index_scripts_preserve_the_parser() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn mysql_procedure_scripts_name_the_creation_database_collation() {
+async fn mysql_procedure_scripts_preserve_the_creation_collation_after_database_alter() {
     let source = database().await;
     let mut session = open(&source).await;
     run(
@@ -922,7 +730,11 @@ async fn mysql_procedure_scripts_name_the_creation_database_collation() {
     let sql = objects::script(&mut session, &procedure, Script::Create)
         .await
         .unwrap();
-    assert!(sql.lines().any(|line| line == "-- Created in a database with collation utf8mb4_bin; string parameters and variables without CHARACTER SET take the destination database's default."), "{sql}");
+    assert!(
+        sql.contains("varchar(20) CHARACTER SET `utf8mb4` COLLATE `utf8mb4_bin`"),
+        "{sql}"
+    );
+    assert!(!sql.contains("-- Created in a database"));
     artifact(&source, "mysql-procedure-collation.sql", &sql);
 }
 
