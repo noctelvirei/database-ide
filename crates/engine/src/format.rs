@@ -81,6 +81,8 @@ pub fn format(text: &str, engine: Engine) -> Result<String, Error> {
             literal_continues_on_new_line(&tokens, index)
                 != literal_continues_on_new_line(&checked, index)
                 || (joined_operator(&tokens, index) && !checked[index].gap.is_empty())
+                // A word alone on its line becomes a SQL Server batch separator.
+                || is_go(&tokens, index, engine) != is_go(&checked, index, engine)
         })
     {
         return Err(Error::ChangedTokens);

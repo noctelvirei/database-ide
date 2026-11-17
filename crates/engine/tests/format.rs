@@ -311,3 +311,9 @@ fn adjacent_operator_characters_stay_together() {
         "SELECT 1 === 2, 3 OPERATOR(public.===) 4"
     );
 }
+
+#[test]
+fn formatting_that_would_make_a_column_named_go_a_batch_separator_is_refused() {
+    let input = "select go from extraordinarily_long_table_name_that_makes_this_statement_exceed_eighty_characters";
+    assert!(format(input, Engine::SqlServer).is_err());
+}
