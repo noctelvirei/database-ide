@@ -446,6 +446,99 @@ async fn mssql_scripted_table_preserves_its_trigger() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn mssql_scripted_trigger_fires_on_its_renamed_parent_table() {
+    let source = database(false).await;
+    let destination = database(false).await;
+    let mut session = open(&source).await;
+    run(&mut session, "CREATE TABLE dbo.trigger_log (message nvarchar(100)); CREATE TABLE dbo.[old]]雪] (id int);\nGO\n/* ON dbo.decoy */ CREATE TRIGGER dbo.[audit]]雪] ON /* parent */ dbo.[old]]雪]
+        AFTER INSERT AS BEGIN SET NOCOUNT ON; INSERT dbo.trigger_log VALUES (N'ON dbo.[old]]雪]'); END;\nGO\nEXEC sys.sp_rename N'dbo.[old]]雪]', N'new]果';").await;
+    let table = object(&mut session, "new]果", Kind::Table).await;
+    let sql = objects::script(&mut session, &table, Script::Create)
+        .await
+        .unwrap();
+    assert!(sql.contains("ON /* parent */ [dbo].[new]]果]"));
+    assert!(sql.contains("AFTER INSERT AS BEGIN SET NOCOUNT ON; INSERT dbo.trigger_log VALUES (N'ON dbo.[old]]雪]'); END;"));
+    artifact(&source, "renamed-trigger.sql", &sql);
+    let mut target = open(&destination).await;
+    run(&mut target, "CREATE TABLE dbo.trigger_log (message nvarchar(100)); CREATE TABLE dbo.[old]]雪] (id int);").await;
+    run(&mut target, &sql).await;
+    assert_eq!(
+        run(
+            &mut target,
+            "INSERT dbo.[new]]果] VALUES (1); SELECT message FROM dbo.trigger_log;"
+        )
+        .await,
+        vec![vec![Value::Text("ON dbo.[old]]雪]".into())]]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mssql_scripted_unique_index_ignores_duplicate_inserts() {
+    let source = database(false).await;
+    let destination = database(false).await;
+    let mut session = open(&source).await;
+    run(&mut session, "CREATE TABLE dbo.unique_items (id int NOT NULL); CREATE UNIQUE INDEX unique_items_id ON dbo.unique_items(id) WITH (IGNORE_DUP_KEY = ON);").await;
+    let table = object(&mut session, "unique_items", Kind::Table).await;
+    let index = object(&mut session, "unique_items_id", Kind::Index).await;
+    let index_sql = objects::script(&mut session, &index, Script::Create)
+        .await
+        .unwrap();
+    assert!(index_sql.contains("CREATE UNIQUE NONCLUSTERED INDEX [unique_items_id] ON [dbo].[unique_items] ([id] ASC) WITH (IGNORE_DUP_KEY = ON);"));
+    let sql = objects::script(&mut session, &table, Script::Create)
+        .await
+        .unwrap();
+    artifact(&source, "ignore-duplicate-index.sql", &sql);
+    let mut target = open(&destination).await;
+    run(&mut target, &sql).await;
+    run(&mut target, "INSERT dbo.unique_items VALUES (1);").await;
+    let events: Vec<_> = target
+        .run("INSERT dbo.unique_items VALUES (1),(2);")
+        .collect()
+        .await;
+    assert!(!events.iter().any(|e| matches!(e, Event::Error { .. })));
+    assert!(
+        events.iter().any(
+            |e| matches!(e, Event::Message { text, .. } if text == "Duplicate key was ignored.")
+        )
+    );
+    assert_eq!(
+        run(&mut target, "SELECT id FROM dbo.unique_items ORDER BY id;").await,
+        vec![vec![Value::Integer(1)], vec![Value::Integer(2)]]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mssql_scripted_unique_constraint_ignores_duplicate_inserts() {
+    let source = database(false).await;
+    let destination = database(false).await;
+    let mut session = open(&source).await;
+    run(&mut session, "CREATE TABLE dbo.unique_items (id int NOT NULL CONSTRAINT unique_items_id UNIQUE NONCLUSTERED WITH (IGNORE_DUP_KEY = ON));").await;
+    let table = object(&mut session, "unique_items", Kind::Table).await;
+    let sql = objects::script(&mut session, &table, Script::Create)
+        .await
+        .unwrap();
+    assert!(sql.contains("ADD CONSTRAINT [unique_items_id] UNIQUE NONCLUSTERED ([id] ASC) WITH (IGNORE_DUP_KEY = ON);"));
+    artifact(&source, "ignore-duplicate-constraint.sql", &sql);
+    let mut target = open(&destination).await;
+    run(&mut target, &sql).await;
+    run(&mut target, "INSERT dbo.unique_items VALUES (1);").await;
+    let events: Vec<_> = target
+        .run("INSERT dbo.unique_items VALUES (1),(2);")
+        .collect()
+        .await;
+    assert!(!events.iter().any(|e| matches!(e, Event::Error { .. })));
+    assert!(
+        events.iter().any(
+            |e| matches!(e, Event::Message { text, .. } if text == "Duplicate key was ignored.")
+        )
+    );
+    assert_eq!(
+        run(&mut target, "SELECT id FROM dbo.unique_items ORDER BY id;").await,
+        vec![vec![Value::Integer(1)], vec![Value::Integer(2)]]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn mssql_scripted_procedure_recreates_and_runs() {
     let database = database(true).await;
     let mut session = open(&database).await;

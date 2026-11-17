@@ -249,7 +249,7 @@ impl Module {
             Error::Catalog("Module definition is encrypted or not visible to this login".into())
         })?;
         let name = format!("{}.{}", quote(&self.schema), quote(&self.name));
-        let body = module_header(definition, &name, form)?;
+        let body = module_header(definition, &name, form, table)?;
         let ansi = self
             .ansi_nulls
             .ok_or_else(|| Error::Catalog("Missing ANSI_NULLS setting".into()))?;
@@ -272,7 +272,12 @@ impl Module {
 }
 
 // Rebuild only the module header: ALTER sources and sp_rename leave stale names in sql_modules.
-fn module_header(sql: &str, name: &str, form: Script) -> Result<String, Error> {
+fn module_header(
+    sql: &str,
+    name: &str,
+    form: Script,
+    table: Option<&str>,
+) -> Result<String, Error> {
     let tokens = Tokenizer::new(&MsSqlDialect {}, sql)
         .with_unescape(false)
         .tokenize_with_location()
@@ -298,27 +303,42 @@ fn module_header(sql: &str, name: &str, form: Script) -> Result<String, Error> {
     {
         return Err(Error::Catalog("Unrecognized module kind".into()));
     }
-    let mut end = kind + 1;
-    if !tokens
-        .get(end)
-        .is_some_and(|t| matches!(t.token, Token::Word(_)))
-    {
-        return Err(Error::Catalog("Missing module name".into()));
-    }
-    if tokens
-        .get(end + 1)
-        .is_some_and(|t| t.token == Token::Period)
-    {
-        end += 2;
+    let name_end = |mut end: usize| -> Result<usize, Error> {
         if !tokens
             .get(end)
             .is_some_and(|t| matches!(t.token, Token::Word(_)))
         {
-            return Err(Error::Catalog("Missing qualified module name".into()));
+            return Err(Error::Catalog("Missing header identifier".into()));
         }
-    }
+        while tokens
+            .get(end + 1)
+            .is_some_and(|t| t.token == Token::Period)
+        {
+            end += 2;
+            if !tokens
+                .get(end)
+                .is_some_and(|t| matches!(t.token, Token::Word(_)))
+            {
+                return Err(Error::Catalog("Missing qualified header identifier".into()));
+            }
+        }
+        Ok(end)
+    };
+    let end = name_end(kind + 1)?;
     let start = offset(sql, tokens[0].span.start)?;
     let tail = offset(sql, tokens[end].span.end)?;
+    let suffix = if let Some(table) = table {
+        if !word(kind, "TRIGGER") || !word(end + 1, "ON") {
+            return Err(Error::Catalog("Missing trigger target".into()));
+        }
+        // sp_rename leaves the old parent in sql_modules; replace only its identifier span.
+        let target_end = name_end(end + 2)?;
+        let target_start = offset(sql, tokens[end + 2].span.start)?;
+        let target_end = offset(sql, tokens[target_end].span.end)?;
+        format!("{}{table}{}", &sql[tail..target_start], &sql[target_end..])
+    } else {
+        sql[tail..].to_owned()
+    };
     Ok(format!(
         "{}{} {} {}{}",
         &sql[..start],
@@ -329,7 +349,7 @@ fn module_header(sql: &str, name: &str, form: Script) -> Result<String, Error> {
         },
         tokens[kind].token,
         name,
-        &sql[tail..]
+        suffix
     ))
 }
 

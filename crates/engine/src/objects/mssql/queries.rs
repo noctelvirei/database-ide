@@ -65,7 +65,8 @@ FROM (
             FROM sys.index_columns ic JOIN sys.columns c
                 ON c.object_id = ic.object_id AND c.column_id = ic.column_id
             WHERE ic.object_id = k.parent_object_id AND ic.index_id = k.unique_index_id
-                AND ic.key_ordinal > 0) + N')' AS definition,
+                AND ic.key_ordinal > 0) + N')'
+        + CASE WHEN i.ignore_dup_key = 1 THEN N' WITH (IGNORE_DUP_KEY = ON)' ELSE N'' END AS definition,
         CAST(0 AS bit) AS disabled, CAST(0 AS bit) AS untrusted
     FROM sys.key_constraints k JOIN sys.indexes i
         ON i.object_id = k.parent_object_id AND i.index_id = k.unique_index_id
@@ -96,7 +97,7 @@ FROM (
 pub(super) const INDEXES: &str = r#"
 SELECT (SELECT i.index_id, i.name, i.type_desc AS method, i.is_unique AS [unique],
     CAST(CASE WHEN i.is_primary_key = 1 OR i.is_unique_constraint = 1 THEN 1 ELSE 0 END AS bit) AS constraint_backed,
-    i.filter_definition AS filter, i.is_disabled AS disabled,
+    i.filter_definition AS filter, i.is_disabled AS disabled, i.ignore_dup_key AS [ignore_dup_key],
     JSON_QUERY((SELECT c.name, ic.is_descending_key AS descending, ic.is_included_column AS included
         FROM sys.index_columns ic JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
         WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id

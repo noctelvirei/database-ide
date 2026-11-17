@@ -415,6 +415,7 @@ struct IndexRow {
     method: String,
     unique: bool,
     constraint_backed: bool,
+    ignore_dup_key: bool,
     filter: Option<String>,
     disabled: bool,
     columns: Vec<IndexColumn>,
@@ -467,6 +468,9 @@ impl IndexRow {
         }
         if let Some(filter) = self.filter {
             definition.push_str(&format!(" WHERE {filter}"));
+        }
+        if self.ignore_dup_key {
+            definition.push_str(" WITH (IGNORE_DUP_KEY = ON)");
         }
         definition.push(';');
         if self.disabled {
