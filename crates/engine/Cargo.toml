@@ -23,6 +23,7 @@ tokio-postgres.workspace = true
 postgres-native-tls.workspace = true
 native-tls.workspace = true
 rand.workspace = true
+mssql-tds.workspace = true
 
 [dev-dependencies]
 dbide-test-servers = { path = "../test-servers" }

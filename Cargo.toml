@@ -26,6 +26,7 @@ tokio-postgres = { version = "0.7.18", features = ["gss"] }
 postgres-native-tls = "0.5.3"
 native-tls = "0.2"
 rand = "0.9"
+mssql-tds = "=0.4.0"
 
 # Our fork: column type OIDs in simple-query results, GSSAPI/SSPI sign-in (ADR 0001).
 [patch.crates-io]
