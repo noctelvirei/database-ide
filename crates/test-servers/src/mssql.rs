@@ -14,13 +14,15 @@ use std::fmt;
 use std::fs;
 use std::path::Path;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use tokio::runtime::Runtime;
 
 const PREFIX: &str = "dbide_test_";
 const ADMIN_DATABASE: &str = "master";
 static SWEPT: Mutex<bool> = Mutex::new(false);
-// Held while this process creates a database; see `create_database`.
-static CREATING: Mutex<()> = Mutex::new(());
+// Separate from the old lifetime lock, which an older test process may still hold.
+const DDL_LOCK: &str = "dbide_test_harness_ddl";
+const RETRY_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// A harness failure; SQL Server errors retain driver diagnostics.
 #[derive(Debug, thiserror::Error)]
@@ -32,7 +34,7 @@ pub enum Error {
     #[error("DBIDE_MSSQL must contain a host and TCP port, for example localhost,1433")]
     InvalidServer,
     /// SQL Server rejected a command or the TDS connection failed.
-    #[error("SQL Server harness failed: {0}")]
+    #[error("SQL Server harness failed: {}", tds_message(.0))]
     Tds(#[from] TdsError),
     /// Reading a SQL script failed.
     #[error("Could not read SQL script: {0}")]
@@ -86,7 +88,10 @@ impl Mssql {
             if !*swept {
                 // Sweep locks belong to a short-lived connection, never to a test handle.
                 let mut sweeper = runtime.block_on(connect(&host, port, ADMIN_DATABASE, None))?;
-                let result = sweep(&runtime, &mut sweeper);
+                let result = (|| {
+                    runtime.block_on(acquire_lock(&mut sweeper, DDL_LOCK, 120_000))?;
+                    sweep(&runtime, &mut sweeper)
+                })();
                 let closed = runtime.block_on(sweeper.close_connection());
                 result?;
                 closed?;
@@ -100,7 +105,10 @@ impl Mssql {
         let user = database.clone();
         let password = random_lowercase(40);
         // Protect both names before either object becomes visible to other processes' sweeps.
-        runtime.block_on(acquire_lock(&mut admin, &database))?;
+        runtime.block_on(acquire_lock(&mut admin, DDL_LOCK, 120_000))?;
+        if runtime.block_on(acquire_lock(&mut admin, &database, 0))? == -1 {
+            return Err(Error::Lock(format!("{database}: name is already owned")));
+        }
         let result = (|| {
             run_admin(
                 &runtime,
@@ -124,7 +132,8 @@ impl Mssql {
             )?;
             Ok(())
         })();
-        if let Err(error) = result {
+        let released = runtime.block_on(release_lock(&mut admin, DDL_LOCK));
+        if let Err(error) = result.and(released) {
             cleanup(&runtime, &mut admin, &database, &user);
             let _ = runtime.block_on(admin.close_connection());
             return Err(error);
@@ -205,14 +214,25 @@ impl Drop for Mssql {
             .client
             .get_mut()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        drop(client.take());
+        let client = client.take();
         if let (Some(runtime), Some(mut admin)) = (self.runtime.take(), self.admin.take()) {
             let database = self.database.clone();
             let user = self.user.clone();
             if std::thread::spawn(move || {
+                if let Some(mut client) = client
+                    && let Err(error) = runtime.block_on(client.close_connection())
+                {
+                    eprintln!(
+                        "Could not close SQL Server harness connection: {}",
+                        tds_message(&error)
+                    );
+                }
                 cleanup(&runtime, &mut admin, &database, &user);
                 if let Err(error) = runtime.block_on(admin.close_connection()) {
-                    eprintln!("Could not close SQL Server harness admin connection: {error}");
+                    eprintln!(
+                        "Could not close SQL Server harness admin connection: {}",
+                        tds_message(&error)
+                    );
                 }
                 drop(admin);
                 drop(runtime);
@@ -274,29 +294,57 @@ async fn connect(
         .await
 }
 
-/// Creates a database, waiting out other creators. CREATE DATABASE copies `model` and
-/// needs an exclusive lock on it, so parallel tests fail with error 1807: creates in this
-/// process take turns, and a clash with another process is retried for up to 30 seconds.
+/// The DDL lock serializes harness creators; other clients may still lock model.
 fn create_database(runtime: &Runtime, client: &mut TdsClient, database: &str) -> Result<(), Error> {
-    const MODEL_LOCKED: u32 = 1807;
-    let _turn = CREATING.lock().map_err(|_| Error::Poisoned)?;
-    let sql = format!("CREATE DATABASE [{database}];");
-    let mut attempts = 0;
+    run_retry(
+        runtime,
+        client,
+        &format!("CREATE DATABASE [{database}];"),
+        &[1807, 1802],
+    )
+}
+
+/// Retries only known transient SQL failures and returns the final server diagnostics.
+fn run_retry(
+    runtime: &Runtime,
+    client: &mut TdsClient,
+    sql: &str,
+    numbers: &[u32],
+) -> Result<(), Error> {
+    let deadline = Instant::now() + RETRY_TIMEOUT;
     loop {
-        match runtime.block_on(query(client, &sql)) {
+        match runtime.block_on(query(client, sql)) {
             Ok(_) => return Ok(()),
             Err(TdsError::SqlServerError { diagnostics })
-                if attempts < 60
+                if Instant::now() < deadline
                     && diagnostics
                         .errors
                         .iter()
-                        .any(|error| error.number == MODEL_LOCKED) =>
+                        .any(|error| error.number == numbers[0])
+                    && diagnostics
+                        .errors
+                        .iter()
+                        .all(|error| numbers.contains(&error.number)) =>
             {
-                attempts += 1;
-                std::thread::sleep(std::time::Duration::from_millis(500));
+                std::thread::sleep(
+                    Duration::from_millis(500)
+                        .min(deadline.saturating_duration_since(Instant::now())),
+                );
             }
             Err(error) => return Err(error.into()),
         }
+    }
+}
+
+fn tds_message(error: &TdsError) -> String {
+    match error {
+        TdsError::SqlServerError { diagnostics } => diagnostics
+            .errors
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("; "),
+        error => error.to_string(),
     }
 }
 
@@ -308,24 +356,32 @@ fn run_admin(runtime: &Runtime, client: &mut TdsClient, sql: &str) -> Result<(),
 }
 
 async fn query(client: &mut TdsClient, sql: &str) -> Result<String, TdsError> {
-    let mut output = String::new();
-    let mut result = client.execute(sql.to_owned(), ()).await?;
-    loop {
-        match result {
-            StatementResult::Rows => {
-                while let Some(row) = client.next_row().await? {
-                    if !output.is_empty() {
-                        output.push('\n');
+    let result: Result<String, TdsError> = async {
+        let mut output = String::new();
+        let mut result = client.execute(sql.to_owned(), ()).await?;
+        loop {
+            match result {
+                StatementResult::Rows => {
+                    while let Some(row) = client.next_row().await? {
+                        if !output.is_empty() {
+                            output.push('\n');
+                        }
+                        output
+                            .push_str(&row.iter().map(format_value).collect::<Vec<_>>().join("\t"));
                     }
-                    output.push_str(&row.iter().map(format_value).collect::<Vec<_>>().join("\t"));
                 }
+                StatementResult::NoRows { .. } => {}
+                StatementResult::End => break,
             }
-            StatementResult::NoRows { .. } => {}
-            StatementResult::End => break,
+            result = client.advance().await?;
         }
-        result = client.advance().await?;
+        Ok(output)
     }
-    client.close_query().await?;
+    .await;
+    // Drain failed batches before retrying or releasing a session-owned lock.
+    let closed = client.close_query().await;
+    let output = result?;
+    closed?;
     Ok(output)
 }
 
@@ -344,122 +400,118 @@ fn format_value(value: &ColumnValues) -> String {
     }
 }
 
-async fn acquire_lock(client: &mut TdsClient, resource: &str) -> Result<(), Error> {
+async fn acquire_lock(
+    client: &mut TdsClient,
+    resource: &str,
+    timeout_ms: u32,
+) -> Result<i32, Error> {
     let sql = format!(
-        "DECLARE @lock_result int; EXEC @lock_result = sys.sp_getapplock @Resource = N'{resource}', @LockMode = 'Exclusive', @LockOwner = 'Session', @LockTimeout = 0; IF @lock_result < 0 THROW 51000, 'Could not acquire test harness application lock', 1;"
+        "USE [master]; DECLARE @lock_result int; EXEC @lock_result = sys.sp_getapplock @Resource = N'{resource}', @LockMode = 'Exclusive', @LockOwner = 'Session', @LockTimeout = {timeout_ms}; SELECT @lock_result;"
     );
-    query(client, &sql)
-        .await
-        .map(|_| ())
-        .map_err(|error| Error::Lock(error.to_string()))
+    let result = query(client, &sql).await?;
+    let code = result
+        .parse::<i32>()
+        .map_err(|_| Error::Lock(format!("{resource}: invalid result {result:?}")))?;
+    if code < 0 && !(code == -1 && timeout_ms == 0) {
+        return Err(Error::Lock(format!(
+            "{resource}: sp_getapplock returned {code} after waiting up to {timeout_ms} ms"
+        )));
+    }
+    Ok(code)
 }
 
 async fn release_lock(client: &mut TdsClient, resource: &str) -> Result<(), Error> {
     query(
         client,
-        &format!("EXEC sys.sp_releaseapplock @Resource = N'{resource}', @LockOwner = 'Session';"),
+        &format!("USE [master]; DECLARE @rc int; EXEC @rc = sys.sp_releaseapplock @Resource = N'{resource}', @LockOwner = 'Session'; IF @rc < 0 THROW 51000, 'Could not release test harness application lock', 1;"),
     )
     .await
     .map(|_| ())
-    .map_err(|error| Error::Lock(error.to_string()))
+    .map_err(Error::from)
 }
 
+/// The caller holds the DDL lock, so candidate names cannot be mid-create or mid-drop.
 fn sweep(runtime: &Runtime, admin: &mut TdsClient) -> Result<(), Error> {
-    let candidates = runtime
-        .block_on(query(admin, "SELECT name FROM sys.databases WHERE name LIKE N'dbide[_]test[_]%' AND name NOT IN (N'master', N'model', N'msdb', N'tempdb');"))?;
-    let mut live_logins = Vec::new();
-    for database in candidates.lines().filter(|name| safe_name(name)) {
-        let lock = runtime.block_on(acquire_lock(admin, database));
-        if lock.is_err() {
-            live_logins.push(database);
-            continue;
-        }
-        let active = runtime.block_on(query(
-            admin,
-            &format!(
-                "USE [master]; IF EXISTS (SELECT 1 FROM sys.sysprocesses WHERE dbid = DB_ID(N'{database}') AND spid <> @@SPID) SELECT N'active';"
-            ),
-        ))?;
-        if !active.is_empty() {
-            live_logins.push(database);
-            runtime.block_on(release_lock(admin, database))?;
-            continue;
-        }
-        let login_active = runtime.block_on(query(
-            admin,
-            &format!(
-                "IF EXISTS (SELECT 1 FROM sys.sysprocesses WHERE loginame = N'{database}' AND spid <> @@SPID) SELECT N'active';"
-            ),
-        ))?;
-        if !login_active.is_empty() {
-            live_logins.push(database);
-        }
-        run_admin(
-            runtime,
-            admin,
-            &format!(
-                "IF DB_ID(N'{database}') IS NOT NULL DROP DATABASE [{database}]; IF NOT EXISTS (SELECT 1 FROM sys.sysprocesses WHERE loginame = N'{database}' AND spid <> @@SPID) AND EXISTS (SELECT 1 FROM sys.server_principals WHERE name = N'{database}') DROP LOGIN [{database}];"
-            ),
-        )?;
-    }
-    let logins = runtime.block_on(query(
-        admin,
-        "SELECT name FROM sys.server_principals WHERE type = 'S' AND name LIKE N'dbide[_]test[_]%';",
+    let candidates = runtime.block_on(query(admin,
+        "SELECT name FROM sys.databases WHERE name LIKE N'dbide[_]test[_]%' UNION SELECT name FROM sys.server_principals WHERE type = 'S' AND name LIKE N'dbide[_]test[_]%';"
     ))?;
-    for login in logins.lines().filter(|name| safe_name(name)) {
-        if live_logins.contains(&login) || runtime.block_on(acquire_lock(admin, login)).is_err() {
+    for name in candidates.lines().filter(|name| safe_name(name)) {
+        if runtime.block_on(acquire_lock(admin, name, 0))? == -1 {
             continue;
         }
-        run_admin(
-            runtime,
-            admin,
-            &format!(
-                "IF NOT EXISTS (SELECT 1 FROM sys.sysprocesses WHERE loginame = N'{login}' AND spid <> @@SPID) AND EXISTS (SELECT 1 FROM sys.server_principals WHERE name = N'{login}') DROP LOGIN [{login}];"
-            ),
-        )?;
+        // Preserve databases used by external sessions, even from an older harness.
+        // A dead owner's SQL login sessions can linger after its admin lock is released.
+        let active = runtime.block_on(query(admin, &format!(
+            "IF EXISTS (SELECT 1 FROM sys.dm_exec_sessions WHERE database_id = DB_ID(N'{name}') AND original_login_name <> N'{name}' AND session_id <> @@SPID) SELECT N'active';"
+        )))?;
+        if active.is_empty() {
+            match remove_objects(runtime, admin, name, name, false) {
+                // An external session can enter after the check, or use a three-part name.
+                Err(Error::Tds(TdsError::SqlServerError { diagnostics }))
+                    if !diagnostics.errors.is_empty()
+                        && diagnostics.errors.iter().all(|error| error.number == 3702) => {}
+                result => result?,
+            }
+        }
+        runtime.block_on(release_lock(admin, name))?;
     }
     Ok(())
 }
 
 fn cleanup(runtime: &Runtime, admin: &mut TdsClient, database: &str, user: &str) {
-    // This handle owns the generated database, including test connections still closing.
-    // The leftover sweep never forces another user's active database closed.
-    if let Err(error) = run_admin(
+    let result = (|| {
+        runtime.block_on(acquire_lock(admin, DDL_LOCK, 120_000))?;
+        let removed = remove_objects(runtime, admin, database, user, true);
+        let released = runtime.block_on(release_lock(admin, DDL_LOCK));
+        removed.and(released)
+    })();
+    if let Err(error) = result {
+        eprintln!("Could not clean up SQL Server harness objects {database}: {error}");
+    }
+}
+
+/// Caller owns the name lock and DDL lock. Only the owning handle may force disconnects.
+fn remove_objects(
+    runtime: &Runtime,
+    admin: &mut TdsClient,
+    database: &str,
+    user: &str,
+    force_disconnect: bool,
+) -> Result<(), Error> {
+    let sessions = runtime.block_on(query(admin, &format!(
+        "SELECT session_id FROM sys.dm_exec_sessions WHERE original_login_name = N'{user}' AND session_id <> @@SPID"
+    )))?;
+    for id in sessions.lines().filter_map(|id| id.parse::<u16>().ok()) {
+        run_admin(
+            runtime,
+            admin,
+            &format!(
+                "BEGIN TRY IF EXISTS (SELECT 1 FROM sys.dm_exec_sessions WHERE session_id = {id} AND original_login_name = N'{user}') KILL {id}; END TRY BEGIN CATCH IF ERROR_NUMBER() <> 6106 THROW; END CATCH"
+            ),
+        )?;
+    }
+    let disconnect = if force_disconnect {
+        format!("ALTER DATABASE [{database}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;")
+    } else {
+        String::new()
+    };
+    // KILL may acknowledge before rollback ends; retain the last error on timeout.
+    run_retry(
         runtime,
         admin,
         &format!(
-            "USE [master]; IF DB_ID(N'{database}') IS NOT NULL BEGIN ALTER DATABASE [{database}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{database}]; END;"
+            "USE [master]; IF DB_ID(N'{database}') IS NOT NULL BEGIN {disconnect} DROP DATABASE [{database}]; END;"
         ),
-    ) {
-        eprintln!("Could not clean up SQL Server test database {database}: {error}");
-    }
-    // A test may have changed its current database. Only this handle's SQL login is retired.
-    let remove_login = async {
-        let sessions = query(admin, &format!("SELECT session_id FROM sys.dm_exec_sessions WHERE original_login_name = N'{user}' AND session_id <> @@SPID")).await?;
-        for id in sessions.lines().filter_map(|id| id.parse::<u16>().ok()) {
-            query(admin, &format!("BEGIN TRY IF EXISTS (SELECT 1 FROM sys.dm_exec_sessions WHERE session_id = {id} AND original_login_name = N'{user}') KILL {id}; END TRY BEGIN CATCH IF ERROR_NUMBER() <> 6106 THROW; END CATCH")).await?;
-        }
-        let sql = format!(
-            "IF EXISTS (SELECT 1 FROM sys.server_principals WHERE name = N'{user}') DROP LOGIN [{user}]"
-        );
-        for attempt in 0..20 {
-            match query(admin, &sql).await {
-                Ok(_) => return Ok(()),
-                Err(TdsError::SqlServerError { diagnostics })
-                    if attempt < 19
-                        && diagnostics.errors.iter().all(|error| error.number == 15434) =>
-                {
-                    // KILL can leave rollback finishing after its acknowledgement.
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                }
-                Err(error) => return Err(error),
-            }
-        }
-        unreachable!("the final attempt returns success or its error")
-    };
-    if let Err(error) = runtime.block_on(remove_login) {
-        eprintln!("Could not remove SQL Server test login {user}: {error}");
-    }
+        &[3702],
+    )?;
+    run_retry(
+        runtime,
+        admin,
+        &format!(
+            "IF EXISTS (SELECT 1 FROM sys.server_principals WHERE name = N'{user}') DROP LOGIN [{user}];"
+        ),
+        &[15434],
+    )
 }
 
 fn safe_name(name: &str) -> bool {
@@ -584,6 +636,42 @@ fn scan_line(line: &str, state: &mut LexState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn server_failures_display_every_error_number_and_message() {
+        use mssql_tds::error::{SqlErrorInfo, SqlServerDiagnostics};
+        let error = Error::from(TdsError::SqlServerError {
+            diagnostics: SqlServerDiagnostics::new(
+                vec![
+                    SqlErrorInfo {
+                        number: 1807,
+                        message: "Could not obtain exclusive lock on model".into(),
+                        state: 1,
+                        class: 16,
+                        server_name: None,
+                        proc_name: None,
+                        line_number: Some(1),
+                    },
+                    SqlErrorInfo {
+                        number: 1802,
+                        message: "CREATE DATABASE failed".into(),
+                        state: 1,
+                        class: 16,
+                        server_name: None,
+                        proc_name: None,
+                        line_number: Some(1),
+                    },
+                ],
+                vec![],
+            ),
+        });
+        let message = error.to_string();
+        assert!(message.contains("1807"));
+        assert!(message.contains("Could not obtain exclusive lock on model"));
+        assert!(message.contains("1802"));
+        assert!(message.contains("CREATE DATABASE failed"));
+        assert!(format!("{error:?}").contains("1807"));
+    }
 
     #[test]
     fn script_go_repeat_keeps_text_and_execution_count() {
