@@ -14,7 +14,8 @@ use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::tokenizer::{Location, Token, Tokenizer};
 
 use crate::objects::{
-    Column, Constraint, Index, Kind, Object, Script, Search, SearchReport, SkippedDatabase,
+    AutocompleteCatalog, CatalogColumn, Column, Constraint, Index, Kind, Object, Script, Search,
+    SearchReport, SkippedDatabase,
 };
 use crate::session::{Event, Session, Value};
 
@@ -82,6 +83,30 @@ pub async fn databases(session: &mut dyn Session) -> Result<Vec<Object>, Error> 
 /// Does not fetch objects in any schema.
 pub async fn schemas(session: &mut dyn Session) -> Result<Vec<Object>, Error> {
     catalog(session, "kind = 'schema'", None).await
+}
+
+/// Returns the current database's schemas, tables, views, procedures and functions.
+/// Uses two catalog queries regardless of object count; names are unquoted and table/view
+/// columns are in declaration order. Visibility matches the explorer; failures are returned
+/// after draining the session. Concurrent DDL can change metadata between the queries.
+pub async fn autocomplete_catalog(session: &mut dyn Session) -> Result<AutocompleteCatalog, Error> {
+    let nodes = catalog(
+        session,
+        "kind IN ('schema','table','view','procedure','function')",
+        None,
+    )
+    .await?;
+    let columns: Vec<CatalogColumn> = query(
+        session,
+        &format!(
+            "{} JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
+            WHERE c.relkind IN ('r','p','v') AND a.attnum > 0 AND NOT a.attisdropped
+            ORDER BY a.attrelid, a.attnum",
+            queries::COLUMNS
+        ),
+    )
+    .await?;
+    Ok(AutocompleteCatalog::from_rows(nodes, columns))
 }
 
 /// Lists a schema's tables, views, materialized views, routines and sequences by name.

@@ -11,7 +11,8 @@ use futures::StreamExt;
 use serde::de::DeserializeOwned;
 
 use crate::objects::{
-    Column, Constraint, Index, Kind, Object, Script, Search, SearchReport, SkippedDatabase,
+    AutocompleteCatalog, CatalogColumn, Column, Constraint, Index, Kind, Object, Script, Search,
+    SearchReport, SkippedDatabase,
 };
 use crate::session::{Event, Session, Value};
 
@@ -76,6 +77,29 @@ pub async fn databases(session: &mut dyn Session) -> Result<Vec<Object>, Error> 
 /// Returns the current user database as its single schema; a system database has no children.
 pub async fn schemas(session: &mut dyn Session) -> Result<Vec<Object>, Error> {
     catalog(session, "kind = 'schema'", None).await
+}
+
+/// Returns the current database's schemas, tables, views, procedures and functions.
+/// Uses two catalog queries regardless of object count; names are unquoted and table/view
+/// columns are in declaration order. Visibility matches the explorer; failures are returned
+/// after draining the session. Concurrent DDL can change metadata between the queries.
+pub async fn autocomplete_catalog(session: &mut dyn Session) -> Result<AutocompleteCatalog, Error> {
+    let nodes = catalog(
+        session,
+        "kind IN ('schema','table','view','procedure','function')",
+        None,
+    )
+    .await?;
+    let columns: Vec<CatalogColumn> = query(
+        session,
+        &format!(
+            "{} WHERE TABLE_SCHEMA = DATABASE() AND EXTRA NOT LIKE '%INVISIBLE%'
+            ORDER BY BINARY TABLE_NAME, ORDINAL_POSITION",
+            queries::COLUMNS
+        ),
+    )
+    .await?;
+    Ok(AutocompleteCatalog::from_rows(nodes, columns))
 }
 
 /// Lists tables, views and routines in the current database's synthetic schema by name.

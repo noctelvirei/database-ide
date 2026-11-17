@@ -20,7 +20,7 @@ SELECT CONCAT('schema:', schema_id), NULL, name, 'schema',
 
 /// Declaration-order columns, including SQL Server details absent from the common column type.
 pub(super) const COLUMNS: &str = r#"
-SELECT (SELECT c.name, CASE WHEN t.is_user_defined = 1 THEN QUOTENAME(SCHEMA_NAME(t.schema_id))
+SELECT (SELECT CONCAT('object:', c.object_id) AS object_key, c.name, CASE WHEN t.is_user_defined = 1 THEN QUOTENAME(SCHEMA_NAME(t.schema_id))
     + N'.' + QUOTENAME(t.name) ELSE t.name + CASE
     WHEN t.name IN ('varchar','char','varbinary','binary','nvarchar','nchar') THEN
         N'(' + CASE WHEN c.max_length = -1 THEN N'max' ELSE CONVERT(nvarchar(10),
@@ -49,7 +49,6 @@ FROM sys.columns c JOIN sys.types t ON t.user_type_id = c.user_type_id
 LEFT JOIN sys.computed_columns cc ON cc.object_id = c.object_id AND cc.column_id = c.column_id
 LEFT JOIN sys.identity_columns ic ON ic.object_id = c.object_id AND ic.column_id = c.column_id
 LEFT JOIN sys.default_constraints d ON d.object_id = c.default_object_id
-WHERE c.object_id = {key} AND c.is_hidden = 0 ORDER BY c.column_id
 "#;
 
 /// Key constraints preserve sort direction and clustering; foreign keys preserve both actions.

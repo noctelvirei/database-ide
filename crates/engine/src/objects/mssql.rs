@@ -9,8 +9,8 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
 use crate::objects::{
-    Column, Constraint, Index, Kind, Object, ObjectId, Script, Search, SearchReport,
-    SkippedDatabase,
+    AutocompleteCatalog, CatalogColumn, Column, Constraint, Index, Kind, Object, ObjectId, Script,
+    Search, SearchReport, SkippedDatabase,
 };
 use crate::session::{Event, Session, Value};
 
@@ -93,6 +93,30 @@ pub async fn schemas(session: &mut dyn Session) -> Result<Vec<Object>, Error> {
     catalog(session, "kind = 'schema'", None).await
 }
 
+/// Returns the current database's schemas, tables, views, procedures and functions.
+/// Uses two catalog queries regardless of object count; names are unquoted and table/view
+/// columns are in declaration order. Visibility matches the explorer; failures are returned
+/// after draining the session. Concurrent DDL can change metadata between the queries.
+pub async fn autocomplete_catalog(session: &mut dyn Session) -> Result<AutocompleteCatalog, Error> {
+    let nodes = catalog(
+        session,
+        "kind IN ('schema','table','view','procedure','function')",
+        None,
+    )
+    .await?;
+    let columns: Vec<CatalogColumn> = query(
+        session,
+        &format!(
+            "{} WHERE c.is_hidden = 0 AND EXISTS (SELECT 1 FROM sys.objects o
+            WHERE o.object_id = c.object_id AND o.type IN ('U','V'))
+            ORDER BY c.object_id, c.column_id",
+            queries::COLUMNS
+        ),
+    )
+    .await?;
+    Ok(AutocompleteCatalog::from_rows(nodes, columns))
+}
+
 /// Lists one schema's tables, views, procedures and functions; indexes load per relation.
 pub async fn objects(session: &mut dyn Session, schema: &str) -> Result<Vec<Object>, Error> {
     catalog(
@@ -121,7 +145,10 @@ pub async fn column_details(
     let key = resolve(session, object).await?;
     query(
         session,
-        &queries::COLUMNS.replace("{key}", &key.to_string()),
+        &format!(
+            "{} WHERE c.object_id = {key} AND c.is_hidden = 0 ORDER BY c.column_id",
+            queries::COLUMNS
+        ),
     )
     .await
 }

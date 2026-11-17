@@ -27,6 +27,7 @@ pub(super) const OBJECT_JSON: &str = r#"pg_catalog.json_build_object(
 
 pub(super) const COLUMNS: &str = r#"
 SELECT pg_catalog.json_build_object(
+    'object_key', 'relation:' || a.attrelid::text,
     'name', a.attname, 'type_name', pg_catalog.format_type(a.atttypid, a.atttypmod),
     'nullable', NOT (a.attnotnull OR t.typnotnull),
     'default', CASE WHEN a.attgenerated = '' AND a.attidentity = ''

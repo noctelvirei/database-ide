@@ -36,7 +36,7 @@ pub(super) const OBJECT_JSON: &str = r#"JSON_OBJECT(
 
 /// Column expressions use server text; ordinary defaults become mode-independent SQL literals.
 pub(super) const COLUMNS: &str = r#"
-SELECT CAST(JSON_OBJECT('name', COLUMN_NAME, 'type_name', COLUMN_TYPE,
+SELECT CAST(JSON_OBJECT('object_key', CONCAT('table:', HEX(TABLE_NAME)), 'name', COLUMN_NAME, 'type_name', COLUMN_TYPE,
     'nullable', CAST(IF(IS_NULLABLE = 'YES', 'true', 'false') AS JSON),
     'default', CASE WHEN EXTRA LIKE '%auto_increment%' OR GENERATION_EXPRESSION <> '' THEN NULL
         WHEN EXTRA LIKE '%DEFAULT_GENERATED%' THEN COLUMN_DEFAULT
@@ -49,10 +49,7 @@ SELECT CAST(JSON_OBJECT('name', COLUMN_NAME, 'type_name', COLUMN_TYPE,
         JSON_OBJECT('expression', GENERATION_EXPRESSION,
             'stored', CAST(IF(EXTRA LIKE '%STORED GENERATED%', 'true', 'false') AS JSON))))
     AS CHAR CHARACTER SET utf8mb4)
-FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE()
-    AND CONVERT(TABLE_NAME USING utf8mb4) COLLATE utf8mb4_bin = {table}
-    AND EXTRA NOT LIKE '%INVISIBLE%'
-ORDER BY ORDINAL_POSITION
+FROM information_schema.COLUMNS
 "#;
 
 /// One row per index key part, retaining order without GROUP_CONCAT's length limit.
