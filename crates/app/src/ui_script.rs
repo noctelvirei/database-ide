@@ -67,7 +67,7 @@ impl UiScript {
             .map_err(|e| format!("{} is not a valid UI script: {e}", script.display()))?;
         std::fs::write(&state_file, "")
             .map_err(|e| format!("can't write {}: {e}", state_file.display()))?;
-        for suffix in ["done", "shot"] {
+        for suffix in ["done", "shot", "shot.partial"] {
             // Leftovers from an earlier run would end a waiting runner early.
             let _ = std::fs::remove_file(with_suffix(&state_file, suffix));
         }
@@ -114,7 +114,10 @@ impl UiScript {
                     Input::Shot(name) if self.take_shots => {
                         pause(300).await;
                         let marker = with_suffix(&self.state_file, "shot");
-                        let _ = std::fs::write(&marker, name);
+                        // Renamed into place, so the runner never reads a half-written marker.
+                        let partial = with_suffix(&self.state_file, "shot.partial");
+                        let _ = std::fs::write(&partial, name)
+                            .and_then(|()| std::fs::rename(&partial, &marker));
                         for _ in 0..200 {
                             if !marker.exists() {
                                 break;

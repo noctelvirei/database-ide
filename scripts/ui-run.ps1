@@ -41,8 +41,13 @@ function Save-WindowShot([IntPtr] $Handle, [string] $Path) {
     $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
     $hdc = $graphics.GetHdc()
     # PW_RENDERFULLCONTENT: needed to capture a GPU-drawn window.
-    [void][UiRunWin]::PrintWindow($Handle, $hdc, 2)
+    $captured = [UiRunWin]::PrintWindow($Handle, $hdc, 2)
     $graphics.ReleaseHdc($hdc)
+    if (-not $captured) {
+        $graphics.Dispose()
+        $bitmap.Dispose()
+        throw "PrintWindow could not capture the app's window for $Path."
+    }
     $bitmap.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
     $graphics.Dispose()
     $bitmap.Dispose()

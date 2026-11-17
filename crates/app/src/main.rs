@@ -55,41 +55,41 @@ fn main() -> ExitCode {
     gpui_platform::application()
         .with_assets(gpui_kit_assets::Assets)
         .run(move |cx: &mut App| {
-        gpui_component::init(cx);
-        keymap::bind(cx);
-        let bounds = Bounds::centered(None, size(px(1400.), px(900.)), cx);
-        let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            titlebar: Some(TitlebarOptions {
-                title: Some("Database IDE".into()),
+            gpui_component::init(cx);
+            keymap::bind(cx);
+            let bounds = Bounds::centered(None, size(px(1400.), px(900.)), cx);
+            let options = WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                titlebar: Some(TitlebarOptions {
+                    title: Some("Database IDE".into()),
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        };
-        let opened = cx.open_window(options, |window, cx| {
-            let workbench = cx.new(|cx| {
-                Workbench::new(
-                    move |window, cx| {
-                        // Next-frame callbacks run once this frame has been drawn and presented.
-                        window.on_next_frame(|_, _| write_first_frame_time());
-                        if let Some(script) = script {
-                            cx.spawn_in(window, async move |this, cx| {
-                                script.play(this, cx.clone()).await
-                            })
-                            .detach();
-                        }
-                    },
-                    window,
-                    cx,
-                )
+            };
+            let opened = cx.open_window(options, |window, cx| {
+                let workbench = cx.new(|cx| {
+                    Workbench::new(
+                        move |window, cx| {
+                            // Next-frame callbacks run once this frame has been drawn and presented.
+                            window.on_next_frame(|_, _| write_first_frame_time());
+                            if let Some(script) = script {
+                                cx.spawn_in(window, async move |this, cx| {
+                                    script.play(this, cx.clone()).await
+                                })
+                                .detach();
+                            }
+                        },
+                        window,
+                        cx,
+                    )
+                });
+                cx.new(|cx| Root::new(workbench, window, cx))
             });
-            cx.new(|cx| Root::new(workbench, window, cx))
+            if opened.is_err() {
+                cx.quit();
+            }
+            cx.activate(true);
         });
-        if opened.is_err() {
-            cx.quit();
-        }
-        cx.activate(true);
-    });
     ExitCode::SUCCESS
 }
 
