@@ -71,9 +71,9 @@ The app is tested as a user drives it, in a real window, against the same real s
 
 - `database-ide --ui-script <steps.json> --ui-state <state.jsonl>` plays a script of steps inside the app, then quits. Keys go through gpui's `Window::dispatch_keystroke`, the path a real key takes after Windows' message translation: the keymap, the focused element's actions and text input. Synthetic OS input (SendInput) is not used, because it lands in whatever window has focus. A key gpui doesn't translate from Windows (Pause/Break) passes a script but not a real keyboard.
 - After each step the app appends what a user can see as one JSON line (focused pane, the last action, the messages strip, the editor text, and more as tickets add panes). Tests in `crates/app/tests/` run the built exe on scripts in `crates/app/tests/scripts/` and assert on those lines. Their names start with `ui_`; each opens a window for a few seconds.
-- The two scripts below run on PowerShell 7.6 (`pwsh -File scripts/<name>.ps1 ...`); install it with `winget install Microsoft.PowerShell`.
-- `scripts/ui-run.ps1 -Exe <exe> -Script <steps.json> -OutDir <folder>` runs a script with `--ui-shots`: at each `shot` step it captures the app's window into the folder beside `state.jsonl`. Screenshots are the proof a rerun reproduces, not the assertion.
-- `scripts/measure-app.ps1 -Exe <release exe>` measures startup, idle private working set and the zipped exe against the spec's targets. Run it on every UI ticket and put its summary in the ticket's record.
+- The two scripts below run on PowerShell 7.6 (`pwsh -File .claude/skills/verify/<name>.ps1 ...`); install it with `winget install Microsoft.PowerShell`.
+- `.claude/skills/verify/ui-run.ps1 -Exe <exe> -Script <steps.json> -OutDir <folder>` runs a script with `--ui-shots`: at each `shot` step it captures the app's window into the folder beside `state.jsonl`. Screenshots are the proof a rerun reproduces, not the assertion.
+- `.claude/skills/verify/measure-app.ps1 -Exe <release exe>` measures startup, idle private working set and the zipped exe against the spec's targets. Run it on every UI ticket and put its summary in the ticket's record.
 - Windows UI Automation can't drive the app: gpui's Windows accessibility is incomplete.
 
 ## Sources
