@@ -165,7 +165,11 @@ fn routine_charsets(
         starts.push(end + 1);
     }
     for i in end..tokens.len() {
-        if word_is(&tokens[i], &["DECLARE"]) {
+        // DECLARE opens a statement only at the start of a BEGIN block or after a
+        // semicolon; elsewhere (`t.declare`) it is an identifier.
+        let statement_start =
+            tokens[i - 1].token == Token::SemiColon || word_is(&tokens[i - 1], &["BEGIN"]);
+        if statement_start && word_is(&tokens[i], &["DECLARE"]) {
             let mut name = i + 1;
             while tokens
                 .get(name + 1)
@@ -192,11 +196,11 @@ fn routine_charsets(
                 // MySQL ignores BINARY on a string type without a charset, but honours it
                 // once a charset is written, so the attribute is dropped to keep the
                 // source's collation.
+                // Text between the type and BINARY (spaces, comments) is kept.
                 if let Some(binary) = string_type.binary {
                     let binary_start = byte_offset(definition, tokens[binary].span.start);
-                    if definition[offset..binary_start].trim().is_empty() {
-                        copied = byte_offset(definition, tokens[binary].span.end);
-                    }
+                    sql.push_str(definition[offset..binary_start].trim_end());
+                    copied = byte_offset(definition, tokens[binary].span.end);
                 }
             }
         }
@@ -486,6 +490,29 @@ mod tests {
             )
             .unwrap(),
             "CREATE PROCEDURE p(a CHAR(5) CHARACTER SET `latin1` COLLATE `latin1_swedish_ci`, b VARCHAR(10) CHARACTER SET `latin1` COLLATE latin1_bin) SELECT 1",
+        );
+    }
+
+    #[test]
+    fn binary_after_a_comment_is_dropped_and_the_comment_kept() {
+        assert_eq!(
+            routine_charsets(
+                "CREATE PROCEDURE p() BEGIN DECLARE v CHAR(5) /* note */ BINARY; END",
+                "",
+                "latin1",
+                "latin1_swedish_ci"
+            )
+            .unwrap(),
+            "CREATE PROCEDURE p() BEGIN DECLARE v CHAR(5) CHARACTER SET `latin1` COLLATE `latin1_swedish_ci` /* note */; END",
+        );
+    }
+
+    #[test]
+    fn declare_as_a_qualified_column_name_is_not_a_declaration() {
+        let definition = "CREATE PROCEDURE p() BEGIN SELECT t.declare + CHAR(65) FROM t; END";
+        assert_eq!(
+            routine_charsets(definition, "", "latin1", "latin1_swedish_ci").unwrap(),
+            definition
         );
     }
 
