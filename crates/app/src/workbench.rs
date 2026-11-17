@@ -69,6 +69,9 @@ pub struct VisibleState {
     pub editor_text: String,
 }
 
+/// Work to run when the window first draws.
+type FirstFrameHook = Box<dyn FnOnce(&mut Window, &mut Context<Workbench>)>;
+
 pub struct Workbench {
     editor: Entity<EditorState>,
     /// Focus handles for every pane except the editor, which owns its own.
@@ -77,7 +80,7 @@ pub struct Workbench {
     last_action: Option<&'static str>,
     messages: Vec<SharedString>,
     /// Called once, from the first `render`.
-    on_first_frame: Option<Box<dyn FnOnce(&mut Window, &mut Context<Self>)>>,
+    on_first_frame: Option<FirstFrameHook>,
 }
 
 impl Workbench {
