@@ -440,6 +440,23 @@ async fn pg_danger_estimate_matches_analyzed_table_cardinality() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn pg_danger_estimate_skips_a_safe_delete_on_the_same_line() {
+    let database = database().await;
+    let mut session = open(&database).await;
+    setup(
+        &mut session,
+        "CREATE TABLE t(id int PRIMARY KEY); INSERT INTO t SELECT generate_series(1,1000); ANALYZE t",
+    )
+    .await;
+    let script = "DELETE FROM t WHERE id = 1; DELETE FROM t";
+    let findings = danger::check(script, Engine::PostgreSql);
+    let estimates = postgres::estimate_rows(&mut session, script, &findings.statements)
+        .await
+        .unwrap();
+    assert_eq!(estimates, vec![Some(1000.0)]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn pg_wrong_password_is_clear_and_redacted() {
     let database = database().await;
     let error = postgres::connect(&details(&database), Some("invented-wrong-password"))

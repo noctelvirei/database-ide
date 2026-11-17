@@ -5,6 +5,7 @@ pub mod connections;
 pub mod danger;
 pub mod export;
 pub mod grid_edit;
+pub mod mssql;
 pub mod mysql;
 pub mod objects;
 pub mod plan;

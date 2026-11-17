@@ -6,8 +6,11 @@ license.workspace = true
 publish = false
 
 [dependencies]
+mssql-tds.workspace = true
+rand.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
 
 [lints]
 workspace = true

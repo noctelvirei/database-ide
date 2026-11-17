@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use tokio_postgres::Client;
 
 use super::{Error, Notice, Postgres, Request, cancel::Cancellation, execution, idle_query};
-use crate::danger::{DangerKind, DangerousStatement};
+use crate::danger::{DangerKind, DangerousStatement, Engine};
 use crate::session::{Event, PlanMode, Session};
 
 struct ParsedStatement<'a> {
@@ -166,6 +166,12 @@ pub(super) async fn estimate_rows(
                         && delete.delete_token.0.span.start.line == finding.line
                 }
                 _ => false,
+            } && {
+                // A safe `DELETE … WHERE` on the same line must not lend its estimate.
+                crate::danger::check(&statement.statement.to_string(), Engine::PostgreSql)
+                    .statements
+                    .iter()
+                    .any(|other| other.kind == finding.kind)
             })
         else {
             estimates.push(None);

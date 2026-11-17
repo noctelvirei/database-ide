@@ -91,14 +91,14 @@ INSERT INTO shop.common_types (
  -3.4028234e38, -1.7976931348623157e308, '', '', N'', N'', N'', 0x00000000, 0x, 0x,
  '0001-01-01', '00:00:00', '1753-01-01', '1900-01-01', '0001-01-01T00:00:00',
  '0001-01-01T00:00:00+00:00', '00000000-0000-0000-0000-000000000000',
- N'{}', N'<v/>', CAST(-1 AS int)),
+ N'{}', N'<v/>', CAST(CAST(-1 AS int) AS sql_variant)),
 (3, 1, 255, 32767, 2147483647, 9223372036854775807,
  9999999999999999999999999999.9999999999, 922337203685477.5807, 214748.3647,
  3.4028234e38, 1.7976931348623157e308, 'star', 'Nebula', N'雪é', N'Nebula 雪é',
  REPLICATE(CAST(N'雪é' AS nvarchar(max)), 5000), 0x00017fff, 0x80ff, 0x00017fff80ff,
  '9999-12-31', '23:59:59.9999999', '9999-12-31T23:59:59.997', '2079-06-06T23:59:00',
  '9999-12-31T23:59:59.9999999', '9999-12-31T23:59:59.9999999+00:00',
- 'ffffffff-ffff-ffff-ffff-ffffffffffff', N'{"invented":[1,null,"雪"]}', N'<v>雪</v>', CAST(N'雪' AS nvarchar(1)));
+ 'ffffffff-ffff-ffff-ffff-ffffffffffff', N'{"invented":[1,null,"雪"]}', N'<v>雪</v>', CAST(CAST(N'雪' AS nvarchar(1)) AS sql_variant));
 GO
 CREATE VIEW shop.order_summary AS
 SELECT o.id, c.display_name, o.ordered_at, o.total
