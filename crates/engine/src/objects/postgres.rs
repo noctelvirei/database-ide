@@ -10,6 +10,8 @@ use std::future::Future;
 use futures::StreamExt;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use sqlparser::dialect::PostgreSqlDialect;
+use sqlparser::tokenizer::{Location, Token, Tokenizer};
 
 use crate::objects::{
     Column, Constraint, Index, Kind, Object, Script, Search, SearchReport, SkippedDatabase,
@@ -228,7 +230,7 @@ pub fn supports(kind: Kind, form: Script) -> bool {
 /// Temporary objects support SELECT and the table ALTER skeleton, but not executable DDL.
 /// Table ALTER is a fully commented skeleton; SELECT names every column and limits to 1000.
 /// Executing generated DDL sets the destination search_path to the source's resolved schemas.
-/// Apply the SET header before sending the DDL so string literals use the source's settings.
+/// DDL literals parse identically with standard_conforming_strings on or off.
 pub async fn script(
     session: &mut dyn Session,
     object: &Object,
@@ -343,9 +345,8 @@ pub async fn script(
         let strings = row
             .standard_conforming_strings
             .ok_or_else(|| Error::Catalog("Missing standard_conforming_strings setting".into()))?;
-        sql = format!(
-            "SET search_path = {search_path};\nSET standard_conforming_strings = {strings};\n{sql}"
-        );
+        sql = portable_literals(&sql, &strings)?;
+        sql = format!("SET search_path = {search_path};\n{sql}");
     }
     Ok(sql)
 }
@@ -357,6 +358,48 @@ struct ScriptRow {
     standard_conforming_strings: Option<String>,
     #[serde(default)]
     inherited: bool,
+}
+
+// ruleutils.c emits ordinary literals under either setting, never E literals.
+fn portable_literals(sql: &str, strings: &str) -> Result<String, Error> {
+    let tokens = Tokenizer::new(&PostgreSqlDialect {}, sql)
+        .with_unescape(false)
+        .tokenize_with_location()
+        .map_err(|error| Error::Catalog(error.to_string()))?;
+    let mut positions = sql
+        .char_indices()
+        .scan(Location::new(1, 1), |location, (offset, ch)| {
+            let start = *location;
+            if ch == '\n' {
+                location.line += 1;
+                location.column = 1;
+            } else {
+                location.column += 1;
+            }
+            Some((start, offset))
+        });
+    let mut result = String::with_capacity(sql.len());
+    let mut copied = 0;
+    for token in tokens {
+        if let Token::SingleQuotedString(value) = token.token
+            && value.contains('\\')
+        {
+            let (_, start) = positions
+                .find(|(location, _)| *location == token.span.start)
+                .ok_or_else(|| Error::Catalog("Missing literal position".into()))?;
+            result.push_str(&sql[copied..start]);
+            result.push_str("E'");
+            if strings == "on" {
+                result.push_str(&value.replace('\\', "\\\\"));
+            } else {
+                result.push_str(&value);
+            }
+            result.push('\'');
+            copied = start + value.len() + 2;
+        }
+    }
+    result.push_str(&sql[copied..]);
+    Ok(result)
 }
 
 fn relation_from() -> &'static str {
@@ -557,6 +600,39 @@ fn kind_name(kind: Kind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ddl_literals_escape_backslashes_from_either_source_setting() {
+        assert_eq!(
+            portable_literals(r"DEFAULT 'pear\tree''s\'::text", "on").unwrap(),
+            r"DEFAULT E'pear\\tree''s\\'::text"
+        );
+        assert_eq!(
+            portable_literals(r"DEFAULT 'pear\\tree''s\\'::text", "off").unwrap(),
+            r"DEFAULT E'pear\\tree''s\\'::text"
+        );
+    }
+
+    #[test]
+    fn ddl_literal_conversion_preserves_other_sql_verbatim() {
+        let sql = "-- 'pear\\tree'\n/* 'pear\\tree' /* nested */ */\n\
+            CREATE VIEW \"果実\\箱\" AS SELECT E'pear\\\\tree', $body$'pear\\tree'$body$,\n\
+            'pear', '果実\\木', 'more\\fruit';\n";
+        assert_eq!(
+            portable_literals(sql, "on").unwrap(),
+            "-- 'pear\\tree'\n/* 'pear\\tree' /* nested */ */\n\
+            CREATE VIEW \"果実\\箱\" AS SELECT E'pear\\\\tree', $body$'pear\\tree'$body$,\n\
+            'pear', E'果実\\\\木', E'more\\\\fruit';\n"
+        );
+    }
+
+    #[test]
+    fn invalid_ddl_is_rejected_instead_of_returning_partial_sql() {
+        assert!(matches!(
+            portable_literals("SELECT 'unterminated", "on"),
+            Err(Error::Catalog(_))
+        ));
+    }
 
     #[test]
     fn literals_escape_quotes_backslashes_and_sql_payloads() {

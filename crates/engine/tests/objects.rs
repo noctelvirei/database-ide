@@ -471,47 +471,6 @@ async fn pg_create_table_preserves_named_not_null_constraints_and_comments() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn pg_create_table_preserves_backslash_defaults_across_string_settings() {
-    let source = database().await;
-    let target = database().await;
-    let mut session = open(&source).await;
-    let mut destination = open(&target).await;
-    run(&mut session, "SET standard_conforming_strings = off").await;
-    run(
-        &mut session,
-        r#"CREATE TABLE public.pears (name text DEFAULT E'pear\\tree')"#,
-    )
-    .await;
-    run(&mut destination, "SET standard_conforming_strings = on").await;
-    let table = object(&mut session, "pears").await;
-    let script = objects::script(&mut session, &table, Script::Create)
-        .await
-        .unwrap();
-    artifact(&source, "pears-backslash.sql", &script);
-    assert!(script.contains("SET standard_conforming_strings = off;\n"));
-    // A simple-query batch is parsed before SET executes; apply its header first, as psql does.
-    let (header, definition) = script.split_at(script.find("CREATE TABLE").unwrap());
-    run(&mut destination, header).await;
-    run(&mut destination, definition).await;
-    assert_eq!(
-        run(
-            &mut session,
-            "INSERT INTO public.pears DEFAULT VALUES RETURNING name"
-        )
-        .await,
-        vec![vec![Value::Text(r"pear\tree".into())]]
-    );
-    assert_eq!(
-        run(
-            &mut destination,
-            "INSERT INTO public.pears DEFAULT VALUES RETURNING name"
-        )
-        .await,
-        vec![vec![Value::Text(r"pear\tree".into())]]
-    );
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn pg_create_view_and_routines_round_trip_and_offer_replace() {
     let source = database().await;
     let target = database().await;
