@@ -1,4 +1,5 @@
 //! MySQL 8.4 catalog SQL; substitutions are UTF8 hex literals, never SQL fragments from callers.
+//! Name predicates convert utf8mb3 catalog text before comparing it with UTF8 literals.
 
 /// Visible user databases; enumeration opens no additional connections.
 pub(super) const DATABASES: &str = r#"
@@ -48,7 +49,8 @@ SELECT CAST(JSON_OBJECT('name', COLUMN_NAME, 'type_name', COLUMN_TYPE,
         JSON_OBJECT('expression', GENERATION_EXPRESSION,
             'stored', CAST(IF(EXTRA LIKE '%STORED GENERATED%', 'true', 'false') AS JSON))))
     AS CHAR CHARACTER SET utf8mb4)
-FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = {table}
+FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE()
+    AND CONVERT(TABLE_NAME USING utf8mb4) COLLATE utf8mb4_bin = {table}
     AND EXTRA NOT LIKE '%INVISIBLE%'
 ORDER BY ORDINAL_POSITION
 "#;
@@ -59,7 +61,8 @@ SELECT CAST(JSON_OBJECT('name', INDEX_NAME, 'column', COLUMN_NAME, 'expression',
     'prefix', SUB_PART, 'descending', IF(COLLATION = 'D', 1, 0), 'non_unique', NON_UNIQUE,
     'method', INDEX_TYPE, 'visible', IF(IS_VISIBLE = 'YES', 1, 0))
     AS CHAR CHARACTER SET utf8mb4)
-FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = {table}
+FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE()
+    AND CONVERT(TABLE_NAME USING utf8mb4) COLLATE utf8mb4_bin = {table}
 ORDER BY BINARY INDEX_NAME, SEQ_IN_INDEX
 "#;
 
@@ -72,7 +75,8 @@ SELECT CAST(JSON_OBJECT('name', k.CONSTRAINT_NAME, 'column', k.COLUMN_NAME,
 FROM information_schema.KEY_COLUMN_USAGE k
 JOIN information_schema.REFERENTIAL_CONSTRAINTS r ON r.CONSTRAINT_SCHEMA = k.CONSTRAINT_SCHEMA
     AND r.TABLE_NAME = k.TABLE_NAME AND r.CONSTRAINT_NAME = k.CONSTRAINT_NAME
-WHERE k.TABLE_SCHEMA = DATABASE() AND k.TABLE_NAME = {table}
+WHERE k.TABLE_SCHEMA = DATABASE()
+    AND CONVERT(k.TABLE_NAME USING utf8mb4) COLLATE utf8mb4_bin = {table}
 ORDER BY BINARY k.CONSTRAINT_NAME, k.ORDINAL_POSITION
 "#;
 
@@ -83,6 +87,8 @@ SELECT CAST(JSON_OBJECT('name', t.CONSTRAINT_NAME, 'kind', 'check',
     AS CHAR CHARACTER SET utf8mb4)
 FROM information_schema.TABLE_CONSTRAINTS t JOIN information_schema.CHECK_CONSTRAINTS c
     ON c.CONSTRAINT_SCHEMA = t.CONSTRAINT_SCHEMA AND c.CONSTRAINT_NAME = t.CONSTRAINT_NAME
-WHERE t.TABLE_SCHEMA = DATABASE() AND t.TABLE_NAME = {table} AND t.CONSTRAINT_TYPE = 'CHECK'
+WHERE t.TABLE_SCHEMA = DATABASE()
+    AND CONVERT(t.TABLE_NAME USING utf8mb4) COLLATE utf8mb4_bin = {table}
+    AND t.CONSTRAINT_TYPE = 'CHECK'
 ORDER BY BINARY t.CONSTRAINT_NAME
 "#;

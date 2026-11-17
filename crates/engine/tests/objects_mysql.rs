@@ -301,6 +301,7 @@ async fn mysql_search_all_returns_hits_from_two_databases_without_switching_the_
     )
     .await
     .unwrap();
+    artifact(&first, "mysql-search.txt", &format!("{report:#?}"));
     assert_eq!(report.objects.len(), 2);
     assert!(report.objects.iter().any(
         |object| object.id.database == first.database() && object.name == "cross_database_pear"
@@ -312,9 +313,17 @@ async fn mysql_search_all_returns_hits_from_two_databases_without_switching_the_
             .any(|object| object.id.database == second.database()
                 && object.name == "cross_database_pear")
     );
-    assert!(report.skipped.is_empty());
+    // Other tests share this user/server and may drop a database after enumeration.
+    assert!(
+        report.skipped.iter().all(|skipped| {
+            skipped.database != first.database()
+                && skipped.database != second.database()
+                && skipped.reason.contains("1049")
+                && skipped.reason.contains("Unknown database")
+        }),
+        "{report:#?}"
+    );
     assert_eq!(session.current_database(), first.database());
-    artifact(&first, "mysql-search.txt", &format!("{report:#?}"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -691,18 +700,31 @@ async fn mysql_view_create_preserves_unicode_from_a_latin1_creation_context() {
     let mut session = open(&source).await;
     run(
         &mut session,
-        "SET NAMES latin1; CREATE VIEW pears AS SELECT _latin1 X'E9' AS name; SET NAMES utf8mb4",
+        "SET NAMES latin1; CREATE VIEW pears AS SELECT _latin1 X'E9' AS name,
+            CAST(COERCIBILITY(_latin1 X'E9') AS SIGNED) AS coercibility,
+            _latin1 X'615C62276300' COLLATE latin1_bin AS escaped,
+            _utf8mb4 X'E99BAA' AS mixed_name; SET NAMES utf8mb4",
     )
     .await;
     let view = object(&mut session, "pears").await;
     let sql = objects::script(&mut session, &view, Script::Create)
         .await
         .unwrap();
+    artifact(&source, "mysql-view-latin1.sql", &sql);
     run(&mut session, "DROP VIEW pears").await;
     run(&mut session, &sql).await;
     assert_eq!(
-        run(&mut session, "SELECT name FROM pears").await,
-        vec![vec![Value::Text("é".into())]]
+        run(
+            &mut session,
+            "SELECT name, coercibility, escaped, mixed_name FROM pears"
+        )
+        .await,
+        vec![vec![
+            Value::Text("é".into()),
+            Value::Integer(4),
+            Value::Text("a\\b'c\0".into()),
+            Value::Text("雪".into())
+        ]]
     );
 }
 
@@ -724,13 +746,13 @@ async fn mysql_search_all_reports_a_refused_database_without_losing_other_hits()
         },
         |database| {
             let mut connection = connection.clone();
-            let password = password.clone();
-            let refuse = database == refused_name;
+            let password = if database == refused_name {
+                "incorrect password".to_owned()
+            } else {
+                password.clone()
+            };
             connection.database = Some(database);
             async move {
-                if refuse {
-                    return Err("database refused".to_owned());
-                }
                 mysql::connect(&connection, Some(&password))
                     .await
                     .map_err(|error| error.to_string())
@@ -739,11 +761,25 @@ async fn mysql_search_all_reports_a_refused_database_without_losing_other_hits()
     )
     .await
     .unwrap();
+    artifact(&source, "mysql-search-refused.txt", &format!("{report:#?}"));
     assert_eq!(report.objects.len(), 1);
     assert_eq!(report.objects[0].name, "surviving_pear");
-    assert_eq!(report.skipped.len(), 1);
-    assert_eq!(report.skipped[0].database, refused.database());
-    assert_eq!(report.skipped[0].reason, "database refused");
+    let refusal = report
+        .skipped
+        .iter()
+        .find(|skipped| skipped.database == refused.database())
+        .unwrap_or_else(|| panic!("{report:#?}"));
+    assert!(refusal.reason.contains("1045"), "{report:#?}");
+    assert!(refusal.reason.contains("Access denied"), "{report:#?}");
+    assert!(
+        report.skipped.iter().all(|skipped| {
+            skipped.database == refused.database()
+                || (skipped.database != source.database()
+                    && skipped.reason.contains("1049")
+                    && skipped.reason.contains("Unknown database"))
+        }),
+        "{report:#?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

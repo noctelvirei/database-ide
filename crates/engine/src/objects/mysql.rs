@@ -313,12 +313,17 @@ pub(super) fn literal(value: &str) -> Result<String, Error> {
     if value.contains('\0') {
         return Err(Error::Nul);
     }
+    Ok(utf8_literal(value))
+}
+
+/// Encodes SQL string contents, including zero bytes, independently of the session SQL mode.
+pub(super) fn utf8_literal(value: &str) -> String {
     let hex = value
         .as_bytes()
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
-    Ok(format!("_utf8mb4 X'{hex}'"))
+    format!("_utf8mb4 X'{hex}'")
 }
 
 /// Quotes an identifier component, including embedded backticks, without treating it as SQL.
