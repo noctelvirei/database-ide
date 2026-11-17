@@ -264,10 +264,10 @@ fn comments_in_qualified_names_do_not_turn_identifiers_into_keywords() {
 }
 
 #[test]
-fn block_comments_after_go_keep_the_batch_boundary() {
+fn go_followed_by_a_block_comment_is_not_a_batch_separator() {
     assert_eq!(
         format("select 1\nGO /* batch */\nselect 2", Engine::SqlServer).unwrap(),
-        "SELECT 1\nGO /* batch */\n\nSELECT 2"
+        "SELECT 1 GO /* batch */ SELECT 2"
     );
 }
 
@@ -316,4 +316,35 @@ fn adjacent_operator_characters_stay_together() {
 fn formatting_that_would_make_a_column_named_go_a_batch_separator_is_refused() {
     let input = "select go from extraordinarily_long_table_name_that_makes_this_statement_exceed_eighty_characters";
     assert!(format(input, Engine::SqlServer).is_err());
+}
+
+#[test]
+fn go_after_a_block_comment_stays_inside_the_batch() {
+    assert_eq!(
+        format(
+            "exec
+/* x */ go",
+            Engine::SqlServer
+        )
+        .unwrap(),
+        "exec /* x */ go"
+    );
+}
+
+#[test]
+fn postgresql_unicode_escaped_identifiers_are_refused() {
+    assert!(format(r#"select U&"d\0061t" from t"#, Engine::PostgreSql).is_err());
+}
+
+#[test]
+fn an_invalid_go_repeat_count_is_refused() {
+    assert!(
+        format(
+            "select 1
+GO 0
+select 2",
+            Engine::SqlServer
+        )
+        .is_err()
+    );
 }

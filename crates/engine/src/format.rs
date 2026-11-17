@@ -15,59 +15,92 @@ pub enum Error {
     /// the spacing inside an operator.
     #[error("formatting would change SQL tokens; keep the original text")]
     ChangedTokens,
+    /// A SQL Server `GO` line is invalid, so the script's batches are unknown.
+    #[error("cannot format batches: {0}")]
+    BatchSeparator(String),
+    /// The input uses a construct whose meaning the formatter cannot preserve.
+    #[error("cannot format {0}; keep the original text")]
+    Unsupported(&'static str),
 }
 
-/// Formats a batch or fragment without server access, using four-space indentation and
-/// an 80-character compact layout. Only whitespace and listed structural keyword case change.
-/// Returns an error if tokenization fails or the output fails the token-preservation guard;
+/// Formats a script or fragment without server access, using four-space indentation and
+/// an 80-character compact layout. Only whitespace and listed structural keyword case change;
+/// SQL Server `GO` lines are copied unchanged, each on its own line.
+/// Returns an error if tokenization fails or the output fails the preservation guard;
 /// the borrowed input is never changed. Unrecognised statements use conservative layout;
 /// batches with executable MySQL comments or COPY data are returned verbatim.
 pub fn format(text: &str, engine: Engine) -> Result<String, Error> {
-    let dialect: &dyn Dialect = match engine {
-        Engine::SqlServer => &MsSqlDialect {},
-        Engine::PostgreSql => &PostgreSqlDialect {},
-        Engine::MySql => &MySqlDialect {},
+    match engine {
+        Engine::SqlServer => format_script(text),
+        Engine::PostgreSql => format_batch(text, &PostgreSqlDialect {}),
+        Engine::MySql => format_batch(text, &MySqlDialect {}),
+    }
+}
+
+/// Formats each SQL Server batch on its own and copies the `GO` lines between them. The
+/// batch splitter the runner uses decides what a batch is, so formatting cannot move a
+/// boundary: the output must split into the same batches with the same repeat counts.
+fn format_script(text: &str) -> Result<String, Error> {
+    let separator_error =
+        |error: crate::mssql::batches::Error| Error::BatchSeparator(error.to_string());
+    let dialect = MsSqlDialect {};
+    let (mut output, script) = match text.strip_prefix('\u{feff}') {
+        Some(script) => (String::from('\u{feff}'), script),
+        None => (String::new(), text),
     };
+    let mut formatted = Vec::new();
+    let mut cursor = 0;
+    for batch in crate::mssql::batches::split(script).map_err(separator_error)? {
+        // `split` returns slices of `script`.
+        let start = batch.sql.as_ptr() as usize - script.as_ptr() as usize;
+        push_separator_lines(&mut output, &script[cursor..start]);
+        let sql = format_batch(batch.sql, &dialect)?;
+        newline(&mut output, 2);
+        output.push_str(&sql);
+        formatted.push((sql, batch.repeat));
+        cursor = start + batch.sql.len();
+    }
+    push_separator_lines(&mut output, &script[cursor..]);
+    let checked = crate::mssql::batches::split(&output).map_err(separator_error)?;
+    if checked.len() != formatted.len()
+        || checked
+            .iter()
+            .zip(&formatted)
+            .any(|(batch, (sql, repeat))| batch.sql.trim() != sql.trim() || batch.repeat != *repeat)
+    {
+        return Err(Error::ChangedTokens);
+    }
+    Ok(output)
+}
+
+/// Copies the nonblank lines of the text between two batches (its `GO` lines) unchanged,
+/// each on a line of its own.
+fn push_separator_lines(output: &mut String, between: &str) {
+    for line in between.lines().filter(|line| !line.trim().is_empty()) {
+        newline(output, 1);
+        output.push_str(line);
+        output.push('\n');
+    }
+}
+
+/// Formats text that holds no batch separators.
+fn format_batch(text: &str, dialect: &dyn Dialect) -> Result<String, Error> {
     let tokens = lex(text, dialect)?;
+    if dialect.is::<PostgreSqlDialect>() && has_unicode_escaped_identifier(&tokens) {
+        return Err(Error::Unsupported("PostgreSQL U& identifiers"));
+    }
     let mut output = String::new();
     let mut start = 0;
     let mut depth: usize = 0;
     for (index, token) in tokens.iter().enumerate() {
-        if index < start {
-            continue;
-        }
-        if is_go(&tokens, index, engine) {
-            append_statement(&mut output, &tokens[start..index]);
-            newline(&mut output, 1);
-            output.push_str(token.raw);
-            start = index + 1;
-            if let Some(count) = repeat_count(&tokens, index) {
-                output.push(' ');
-                output.push_str(count.raw);
-                start += 1;
+        match token.token {
+            Token::LParen => depth += 1,
+            Token::RParen => depth = depth.saturating_sub(1),
+            Token::SemiColon if depth == 0 => {
+                append_statement(&mut output, &tokens[start..=index]);
+                start = index + 1;
             }
-            while let Some(comment) = tokens.get(start)
-                && matches!(comment.token, Token::Whitespace(_))
-                && !has_newline(comment.gap)
-            {
-                output.push(' ');
-                output.push_str(comment.raw);
-                start += 1;
-                if comment.line_comment() || has_newline(comment.raw) {
-                    break;
-                }
-            }
-            newline(&mut output, 1);
-        } else {
-            match token.token {
-                Token::LParen => depth += 1,
-                Token::RParen => depth = depth.saturating_sub(1),
-                Token::SemiColon if depth == 0 => {
-                    append_statement(&mut output, &tokens[start..=index]);
-                    start = index + 1;
-                }
-                _ => {}
-            }
+            _ => {}
         }
     }
     append_statement(&mut output, &tokens[start..]);
@@ -81,13 +114,23 @@ pub fn format(text: &str, engine: Engine) -> Result<String, Error> {
             literal_continues_on_new_line(&tokens, index)
                 != literal_continues_on_new_line(&checked, index)
                 || (joined_operator(&tokens, index) && !checked[index].gap.is_empty())
-                // A word alone on its line becomes a SQL Server batch separator.
-                || is_go(&tokens, index, engine) != is_go(&checked, index, engine)
         })
     {
         return Err(Error::ChangedTokens);
     }
     Ok(output)
+}
+
+/// Whether the tokens hold `U&"…"`, which the tokenizer splits into a word, an `&` and a
+/// quoted identifier; spacing them out would change the identifier into an expression.
+fn has_unicode_escaped_identifier(tokens: &[Lexeme<'_>]) -> bool {
+    tokens.windows(3).any(|window| {
+        window[0].word_is("U")
+            && matches!(window[1].token, Token::Ampersand)
+            && window[1].gap.is_empty()
+            && window[2].gap.is_empty()
+            && matches!(&window[2].token, Token::Word(word) if word.quote_style == Some('"'))
+    })
 }
 
 struct Lexeme<'a> {
@@ -272,42 +315,6 @@ fn lex<'a>(text: &'a str, dialect: &dyn Dialect) -> Result<Vec<Lexeme<'a>>, Erro
 
 fn has_newline(text: &str) -> bool {
     text.contains(['\r', '\n'])
-}
-
-fn is_go(tokens: &[Lexeme<'_>], index: usize, engine: Engine) -> bool {
-    if engine != Engine::SqlServer || !tokens[index].word_is("GO") {
-        return false;
-    }
-    let mut before = index;
-    while before > 0 && !has_newline(tokens[before].gap) {
-        before -= 1;
-        if !matches!(tokens[before].token, Token::Whitespace(_)) {
-            return false;
-        }
-        if has_newline(tokens[before].raw) {
-            break;
-        }
-    }
-    let after = index + 1 + usize::from(repeat_count(tokens, index).is_some());
-    for token in &tokens[after..] {
-        if has_newline(token.gap) {
-            return true;
-        }
-        if !matches!(token.token, Token::Whitespace(_)) {
-            return false;
-        }
-        if token.line_comment() || has_newline(token.raw) {
-            return true;
-        }
-    }
-    true
-}
-
-/// The `GO <count>` repeat count on the same line as the `GO` at `index`, if any.
-fn repeat_count<'t, 'a>(tokens: &'t [Lexeme<'a>], index: usize) -> Option<&'t Lexeme<'a>> {
-    tokens
-        .get(index + 1)
-        .filter(|next| matches!(next.token, Token::Number(..)) && !has_newline(next.gap))
 }
 
 /// For a string literal that follows another one with only comments between them, whether
