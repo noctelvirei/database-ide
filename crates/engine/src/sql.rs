@@ -3,6 +3,36 @@
 use crate::danger::Engine;
 use crate::session::Value;
 
+/// Decodes a server-reported qualified identifier, preserving quoted dots and escapes.
+pub(crate) fn qualified_identifier(text: &str) -> Result<Vec<String>, Error> {
+    use sqlparser::dialect::{Dialect, GenericDialect, MsSqlDialect};
+    use sqlparser::parser::Parser;
+    use sqlparser::tokenizer::Token;
+
+    // Source quoting is independent of the dialect chosen for an INSERT export.
+    for dialect in [&GenericDialect {} as &dyn Dialect, &MsSqlDialect {}] {
+        let Ok(mut parser) = Parser::new(dialect).try_with_sql(text) else {
+            continue;
+        };
+        let Ok(name) = parser.parse_object_name(false) else {
+            continue;
+        };
+        if parser.peek_token().token != Token::EOF {
+            continue;
+        }
+        return name
+            .0
+            .iter()
+            .map(|part| {
+                part.as_ident()
+                    .map(|name| name.value.clone())
+                    .ok_or(Error::Identifier)
+            })
+            .collect();
+    }
+    Err(Error::Identifier)
+}
+
 /// A value or identifier cannot be represented without changing its meaning.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

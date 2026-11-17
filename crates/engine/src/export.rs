@@ -39,8 +39,8 @@ pub enum Format {
         /// SQL syntax used to quote identifiers and values.
         engine: Engine,
         /// Unquoted identifier components (schema, table, etc.). None uses the common
-        /// base table, splitting its server-reported name on dots; pass components for
-        /// identifiers that contain literal dots. Base column names override aliases.
+        /// base table, preserving its server-reported quoting and literal dots.
+        /// Base column names override aliases.
         table: Option<Vec<String>>,
     },
 }

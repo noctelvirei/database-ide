@@ -207,6 +207,56 @@ fn insert_uses_explicit_table_components_and_base_column_names() {
 }
 
 #[test]
+fn insert_infers_quoted_mysql_provenance_without_splitting_embedded_dots() {
+    let mut columns = columns(&["alias"]);
+    columns[0].base_table = Some("`odd.schema`.`fruit``.table`".into());
+    columns[0].base_column = Some("id".into());
+    let mut store = Store::new(columns, None).unwrap();
+    store.append(vec![vec![Value::Integer(42)]]).unwrap();
+    store.complete().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("rows.sql");
+    export::write(
+        &store.reader(),
+        &path,
+        &Format::Insert {
+            engine: dbide_engine::danger::Engine::MySql,
+            table: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(path).unwrap(),
+        "INSERT INTO `odd.schema`.`fruit``.table` (`id`) VALUES (42);\n"
+    );
+}
+
+#[test]
+fn insert_decodes_source_quoting_independently_of_the_output_dialect() {
+    let mut columns = columns(&["alias"]);
+    columns[0].base_table = Some("`odd.schema`.`fruit``.table`".into());
+    columns[0].base_column = Some("id".into());
+    let mut store = Store::new(columns, None).unwrap();
+    store.append(vec![vec![Value::Integer(42)]]).unwrap();
+    store.complete().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("rows.sql");
+    export::write(
+        &store.reader(),
+        &path,
+        &Format::Insert {
+            engine: dbide_engine::danger::Engine::PostgreSql,
+            table: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(path).unwrap(),
+        "INSERT INTO \"odd.schema\".\"fruit`.table\" (\"id\") VALUES (42);\n"
+    );
+}
+
+#[test]
 fn insert_rejects_unvalidated_decimal_sql() {
     let store = store(
         &["a"],
