@@ -48,12 +48,16 @@ function Save-WindowShot([IntPtr] $Handle, [string] $Path) {
     $bitmap.Dispose()
 }
 
-New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+# Absolute, because the app does not share this shell's current location.
+$OutDir = (New-Item -ItemType Directory -Force -Path $OutDir).FullName
 $state = Join-Path $OutDir 'state.jsonl'
 $marker = "$state.shot"
 $done = "$state.done"
 
-$argList = @('--ui-script', (Resolve-Path -LiteralPath $Script).Path, '--ui-state', $state, '--ui-shots')
+# A previous run's markers would end this run's wait before the app clears them.
+Remove-Item -LiteralPath $marker, $done -ErrorAction SilentlyContinue
+# Start-Process joins arguments with spaces, so quote the paths. Windows paths cannot contain '"'.
+$argList = '--ui-script "{0}" --ui-state "{1}" --ui-shots' -f (Resolve-Path -LiteralPath $Script).Path, $state
 $app = Start-Process -FilePath $Exe -ArgumentList $argList -PassThru
 try {
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)

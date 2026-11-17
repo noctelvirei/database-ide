@@ -67,7 +67,8 @@ fn main() -> ExitCode {
             let workbench = cx.new(|cx| {
                 Workbench::new(
                     move |window, cx| {
-                        write_first_frame_time();
+                        // Next-frame callbacks run once this frame has been drawn and presented.
+                        window.on_next_frame(|_, _| write_first_frame_time());
                         if let Some(script) = script {
                             cx.spawn_in(window, async move |this, cx| {
                                 script.play(this, cx.clone()).await
@@ -89,7 +90,7 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Writes the first frame's time for the startup measurement, when it asks for it.
+/// Writes the time the first frame was presented, for the startup measurement, when it asks.
 fn write_first_frame_time() {
     let Ok(path) = std::env::var("DBIDE_FIRST_FRAME") else {
         return;
