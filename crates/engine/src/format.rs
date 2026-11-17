@@ -113,7 +113,7 @@ fn format_batch(text: &str, dialect: &dyn Dialect) -> Result<String, Error> {
         || (0..tokens.len()).any(|index| {
             literal_continues_on_new_line(&tokens, index)
                 != literal_continues_on_new_line(&checked, index)
-                || (joined_operator(&tokens, index) && !checked[index].gap.is_empty())
+                || (joined(&tokens, index) && !checked[index].gap.is_empty())
         })
     {
         return Err(Error::ChangedTokens);
@@ -338,14 +338,32 @@ fn literal_continues_on_new_line(tokens: &[Lexeme<'_>], index: usize) -> Option<
     None
 }
 
-/// Whether the tokens at `index - 1` and `index` are operator characters written with no
-/// space between them. PostgreSQL user-defined operators such as `===` tokenize as several
-/// operators, and a space between them names a different operator.
-fn joined_operator(tokens: &[Lexeme<'_>], index: usize) -> bool {
-    index > 0
-        && tokens[index].gap.is_empty()
-        && tokens[index - 1].is_operator()
-        && tokens[index].is_operator()
+/// Whether `tokens[index]` is written against the token before it and a space between
+/// them would change what the server reads. The tokenizer splits some single server tokens
+/// in two: PostgreSQL operators such as `===` become several operators, `1e` and `0x41g`
+/// (MySQL identifiers, or a T-SQL float) become a literal and a word, MySQL's `@'x'`
+/// becomes `@` and a string, and T-SQL money such as `$-2.5` or `£3` becomes a sign and a
+/// number.
+fn joined(tokens: &[Lexeme<'_>], index: usize) -> bool {
+    if index == 0 || !tokens[index].gap.is_empty() {
+        return false;
+    }
+    let (previous, token) = (&tokens[index - 1], &tokens[index]);
+    let sigil = |lexeme: &Lexeme<'_>| {
+        matches!(lexeme.token, Token::AtSign | Token::Char(_))
+            || matches!(&lexeme.token, Token::Placeholder(text) if text == "$")
+    };
+    (previous.is_operator() && token.is_operator())
+        || ((matches!(previous.token, Token::Number(..)) || previous.is_string())
+            && matches!(token.token, Token::Word(_) | Token::Number(..)))
+        || sigil(previous)
+        || sigil(token)
+        // The sign in `$-2.5` belongs to the money literal.
+        || (index >= 2
+            && sigil(&tokens[index - 2])
+            && previous.gap.is_empty()
+            && matches!(previous.token, Token::Minus | Token::Plus)
+            && matches!(token.token, Token::Number(..)))
 }
 
 fn newline(output: &mut String, count: usize) {
@@ -395,7 +413,7 @@ fn separator(tokens: &[Lexeme<'_>], index: usize) -> &'static str {
     if let Some(line_break) = literal_continues_on_new_line(tokens, index) {
         return if line_break { "\n" } else { " " };
     }
-    if joined_operator(tokens, index) {
+    if joined(tokens, index) {
         return "";
     }
     // Spaces around a dot can distinguish numeric and operator tokens in a fragment.

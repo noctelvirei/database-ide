@@ -348,3 +348,31 @@ select 2",
         .is_err()
     );
 }
+
+#[test]
+fn literals_written_against_a_word_stay_joined() {
+    assert_eq!(
+        format("SELECT 1e, 0x41g, 1.e FROM t", Engine::MySql).unwrap(),
+        "SELECT 1e, 0x41g, 1.e FROM t"
+    );
+    assert_eq!(
+        format("SELECT 1e FROM t", Engine::SqlServer).unwrap(),
+        "SELECT 1e FROM t"
+    );
+}
+
+#[test]
+fn mysql_quoted_user_variables_stay_joined() {
+    assert_eq!(
+        format("SELECT @'x' := 1", Engine::MySql).unwrap(),
+        "SELECT @'x' := 1"
+    );
+}
+
+#[test]
+fn sql_server_money_literals_stay_joined() {
+    assert_eq!(
+        format("SELECT $-2.5, £3, €4 FROM t", Engine::SqlServer).unwrap(),
+        "SELECT $-2.5, £3, €4 FROM t"
+    );
+}
