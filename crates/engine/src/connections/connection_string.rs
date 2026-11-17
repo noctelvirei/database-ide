@@ -18,7 +18,7 @@ pub struct ParsedConnection {
     pub password: Option<Secret>,
 }
 
-/// Detect the engine from libpq/JDBC; otherwise interpret ADO.NET as SQL Server.
+/// Detect the engine from libpq/JDBC/URIs or an ADO.NET Provider; otherwise use SQL Server.
 /// Quoted/escaped values are decoded. Unsupported options are ignored; malformed syntax,
 /// missing hosts and endpoints the single-server model cannot represent are rejected.
 pub fn parse(input: &str) -> Result<ParsedConnection, Error> {
@@ -35,6 +35,8 @@ pub fn parse(input: &str) -> Result<ParsedConnection, Error> {
         parsed = uri(rest, Engine::PostgreSql, true)?;
     } else if let Some(rest) = input.strip_prefix("jdbc:mysql://") {
         parsed = uri(rest, Engine::MySql, true)?;
+    } else if let Some(rest) = input.strip_prefix("mysql://") {
+        parsed = uri(rest, Engine::MySql, false)?;
     } else if let Some(rest) = input
         .strip_prefix("postgresql://")
         .or_else(|| input.strip_prefix("postgres://"))
@@ -196,6 +198,9 @@ fn apply(
         let key = key.to_ascii_lowercase().replace([' ', '_'], "");
         let connection = &mut parsed.connection;
         match key.as_str() {
+            "provider" if value.eq_ignore_ascii_case("mysql") => {
+                connection.engine = Engine::MySql;
+            }
             "server" | "datasource" | "address" | "addr" | "networkaddress" | "servername" => {
                 endpoint(connection, &value, ',')?
             }

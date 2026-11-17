@@ -5,6 +5,33 @@ use dbide_engine::connections::{connection_string, credentials::Credentials, reg
 use dbide_engine::danger::Engine;
 
 #[test]
+fn pasted_uri_decodes_credentials_without_exposing_them_for_mysql() {
+    let parsed = connection_string::parse(
+        "mysql://reader:invented%40secret@db.example.test:3307/trees?sslmode=disabled",
+    )
+    .unwrap();
+    assert_eq!(parsed.connection.engine, Engine::MySql);
+    assert_eq!(parsed.connection.host, "db.example.test");
+    assert_eq!(parsed.connection.port, Some(3307));
+    assert_eq!(parsed.connection.database.as_deref(), Some("trees"));
+    assert_eq!(parsed.connection.tls, TlsMode::Off);
+    assert_eq!(
+        parsed.password.as_ref().unwrap().expose(),
+        "invented@secret"
+    );
+    assert!(!format!("{parsed:?}").contains("invented@secret"));
+}
+
+#[test]
+fn pasted_ado_provider_selects_password_sign_in_for_mysql() {
+    let parsed = connection_string::parse("Provider=MySQL;Server=db.example.test;Port=3307;Database=trees;User ID=reader;Password=invented-secret;SslMode=Disabled").unwrap();
+    assert_eq!(parsed.connection.engine, Engine::MySql);
+    assert_eq!(parsed.connection.port, Some(3307));
+    assert_eq!(parsed.connection.tls, TlsMode::Off);
+    assert_eq!(parsed.connection.sign_in, SignInMethod::Password);
+}
+
+#[test]
 fn a_missing_file_is_an_empty_tree() {
     let directory = tempfile::tempdir().unwrap();
     let tree = Connections::load(directory.path().join("connections.toml")).unwrap();
