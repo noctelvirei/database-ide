@@ -391,6 +391,20 @@ async fn mssql_danger_estimate_matches_rows_without_deleting() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn mssql_danger_estimate_skips_a_safe_delete_on_the_same_line() {
+    let database = database().await;
+    let mut session = open(&database).await;
+    setup(&mut session, "CREATE TABLE t(n int PRIMARY KEY); INSERT INTO t SELECT value FROM GENERATE_SERIES(1,100); UPDATE STATISTICS t WITH FULLSCAN").await;
+    let script = "DELETE FROM t WHERE n = 1; DELETE FROM t";
+    let flagged = danger::check(script, Engine::SqlServer);
+    let estimate = mssql::estimate_rows(&mut session, script, &flagged.statements)
+        .await
+        .unwrap();
+    assert_eq!(estimate.len(), 1);
+    assert!((estimate[0].unwrap() - 100.0).abs() < 1.0, "{estimate:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn mssql_wrong_password_reports_login_failure_without_the_password() {
     let database = database().await;
     let error = mssql::connect(&details(&database), Some("wrong-password-never-report"))

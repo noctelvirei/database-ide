@@ -26,7 +26,8 @@ pub(super) fn split(script: &str) -> Result<Vec<Batch<'_>>, Error> {
     let mut quote = None;
     let mut depth = 0u32;
     for (line, text) in script.split_inclusive('\n').enumerate() {
-        let mut words = text.split_whitespace();
+        // SSMS accepts a trailing `--` comment after GO and its count.
+        let mut words = text.split("--").next().unwrap_or(text).split_whitespace();
         let go = quote.is_none()
             && depth == 0
             && words
@@ -137,6 +138,34 @@ mod tests {
                 line_offset: 0,
                 repeat: 1
             }]
+        );
+    }
+
+    #[test]
+    fn go_with_a_trailing_comment_still_splits() {
+        assert_eq!(
+            split(
+                "SELECT 1
+GO 2 -- twice
+SELECT 2
+GO--end
+"
+            )
+            .unwrap(),
+            vec![
+                Batch {
+                    sql: "SELECT 1
+",
+                    line_offset: 0,
+                    repeat: 2
+                },
+                Batch {
+                    sql: "SELECT 2
+",
+                    line_offset: 2,
+                    repeat: 1
+                },
+            ]
         );
     }
 

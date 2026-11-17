@@ -51,7 +51,16 @@ pub(super) async fn estimate_rows(
                 }
                 _ => None,
             };
-            statements.push((kind, line, statement.to_string()));
+            // Only a statement the danger check flags may take a finding: a safe
+            // `DELETE … WHERE` on the same line must not lend its estimate.
+            let sql = statement.to_string();
+            let kind = kind.filter(|kind| {
+                crate::danger::check(&sql, crate::danger::Engine::SqlServer)
+                    .statements
+                    .iter()
+                    .any(|finding| finding.kind == *kind)
+            });
+            statements.push((kind, line, sql));
         }
     }
     let mut estimates = Vec::with_capacity(flagged.len());
