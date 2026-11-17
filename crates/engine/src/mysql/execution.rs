@@ -3,7 +3,7 @@
 use futures::StreamExt;
 use mysql_async::{Conn, Row, prelude::Queryable};
 
-use super::{Request, Response, diagnostics, values};
+use super::{Request, diagnostics, values};
 use crate::session::{Event, Severity};
 
 /// Consumer backpressure never prevents cancellation or protocol cleanup.
@@ -12,16 +12,16 @@ pub(super) async fn send(request: &Request, event: Event) {
         biased;
         _ = request.cancel.cancelled() => {}
         _ = request.stopped.cancelled() => {}
-        _ = request.events.send(Response::Event(event)) => {}
+        _ = request.events.send(event) => {}
     }
 }
 
 /// Streams one unchanged batch and drains recoverable errors; Err discards the connection.
 pub(super) async fn run(conn: &mut Conn, request: &Request) -> Result<(), ()> {
-    let statements = diagnostics::statements(&request.batch);
+    let statements = &request.database_changes.statements;
     let password = conn.opts().pass().map(str::to_owned);
     let mut statement = 0;
-    if let Err(error) = results(conn, request, &statements, &mut statement).await {
+    if let Err(error) = results(conn, request, statements, &mut statement).await {
         send(
             request,
             diagnostics::error(&error, statements.get(statement), password.as_deref()),
@@ -50,6 +50,14 @@ async fn results(
         let has_rows = !columns.is_empty();
         let affected = stream.affected_rows();
         let warnings = stream.get_warnings();
+        // USE's OK packet is already known; the next stream poll may wait on another query.
+        if !has_rows
+            && let Some(database) = statements
+                .get(*index)
+                .and_then(|statement| statement.database.as_ref())
+        {
+            let _ = request.database_changes.names[*index].set(database.clone());
+        }
         if has_rows {
             send(
                 request,
@@ -92,17 +100,6 @@ async fn results(
         drop(stream);
         if !rows.is_empty() {
             send(request, Event::Rows(rows)).await;
-        }
-        // Tracking successful USE avoids a housekeeping SELECT overwriting ROW_COUNT().
-        if !has_rows
-            && let Some(database) = statements
-                .get(*index)
-                .and_then(|statement| statement.database.as_ref())
-        {
-            let _ = request
-                .events
-                .send(Response::Database(database.clone()))
-                .await;
         }
         if has_rows {
             send(request, Event::RowCount(count)).await;

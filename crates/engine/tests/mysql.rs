@@ -390,6 +390,104 @@ async fn mysql_query_timeout_stops_sleep_and_session_recovers() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn mysql_query_timeout_stops_server_work_without_consuming_rows() {
+    let database = database().await;
+    let mut connection = details(&database);
+    connection.query_timeout = 1;
+    let mut session = mysql::connect(&connection, Some(database.password()))
+        .await
+        .unwrap();
+    let id: Vec<_> = session.run("SELECT CONNECTION_ID()").collect().await;
+    let Event::Rows(rows) = &id[1] else {
+        panic!("{id:?}")
+    };
+    let id = match rows[0][0] {
+        Value::UnsignedInteger(id) => id,
+        Value::Integer(id) => id.try_into().unwrap(),
+        ref value => panic!("{value:?}"),
+    };
+    let mut observer = open(&database).await;
+    let mut run = session.run(
+        "WITH digits(n) AS (SELECT 0 UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9) SELECT REPEAT('x', 4096) FROM digits a CROSS JOIN digits b CROSS JOIN digits c CROSS JOIN digits d CROSS JOIN digits e; SELECT SLEEP(30)",
+    );
+    assert!(matches!(
+        run.next().await,
+        Some(Event::ResultSetStarted { .. })
+    ));
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    let events: Vec<_> = observer
+        .run(&format!("SELECT COUNT(*) FROM information_schema.processlist WHERE ID = {id} AND COMMAND = 'Query'"))
+        .collect()
+        .await;
+    assert_eq!(events[1], Event::Rows(vec![vec![Value::Integer(0)]]));
+    let events: Vec<_> = tokio::time::timeout(Duration::from_secs(5), run.collect())
+        .await
+        .unwrap();
+    assert!(
+        events.contains(&Event::Error {
+            text: "MySQL query timed out".into(),
+            line: None,
+            code: None,
+        }),
+        "{events:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mysql_dropping_run_preserves_a_successful_use() {
+    let original = database().await;
+    let destination = database().await;
+    let mut session = open(&original).await;
+    let batch = format!(
+        "SELECT 1; USE `{}`; SELECT SLEEP(5)",
+        destination.database()
+    );
+    let mut run = session.run(&batch);
+    assert!(matches!(
+        run.next().await,
+        Some(Event::ResultSetStarted { .. })
+    ));
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    drop(run);
+    assert_eq!(session.current_database(), destination.database());
+    let events: Vec<_> = tokio::time::timeout(
+        Duration::from_secs(4),
+        session.run("SELECT DATABASE()").collect(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        events[1],
+        Event::Rows(vec![vec![Value::Text(destination.database().into())]])
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mysql_geometry_preserves_the_srid_prefix_and_wkb_bytes() {
+    let database = database().await;
+    let mut session = open(&database).await;
+    let events: Vec<_> = session
+        .run("SELECT ST_GeomFromText('POINT(1 2)') AS shape, HEX(ST_GeomFromText('POINT(1 2)')), HEX(ST_AsBinary(ST_GeomFromText('POINT(1 2)')))")
+        .collect()
+        .await;
+    let Event::ResultSetStarted { columns } = &events[0] else {
+        panic!("{events:?}")
+    };
+    assert_eq!(columns[0].type_name, "geometry");
+    assert_eq!(columns[0].category, TypeCategory::Bytes);
+    assert_eq!(
+        events[1],
+        Event::Rows(vec![vec![
+            Value::Bytes(vec![
+                0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 240, 63, 0, 0, 0, 0, 0, 0, 0, 64
+            ]),
+            Value::Text("000000000101000000000000000000F03F0000000000000040".into()),
+            Value::Text("0101000000000000000000F03F0000000000000040".into()),
+        ]])
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn mysql_use_updates_the_current_database() {
     let original = database().await;
     let destination = database().await;

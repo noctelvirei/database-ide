@@ -63,8 +63,8 @@ fn kind(column: &mysql_async::Column) -> (&'static str, TypeCategory) {
         MYSQL_TYPE_LONG_BLOB => ("longtext", C::Text),
         MYSQL_TYPE_BLOB => ("text", C::Text),
         MYSQL_TYPE_NULL => ("null", C::Other),
-        MYSQL_TYPE_GEOMETRY => ("geometry", C::Other),
-        MYSQL_TYPE_VECTOR => ("vector", C::Other),
+        MYSQL_TYPE_GEOMETRY => ("geometry", C::Bytes),
+        MYSQL_TYPE_VECTOR => ("vector", C::Bytes),
         _ => ("unknown", C::Other),
     }
 }

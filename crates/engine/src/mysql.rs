@@ -1,8 +1,8 @@
 //! MySQL text-protocol sessions with bounded results and server-side cancellation.
 
 use std::fmt;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use futures::{StreamExt, future, stream};
@@ -39,28 +39,32 @@ pub enum Error {
 /// credentials and driver connection settings are omitted from Debug.
 pub struct MySql {
     database: String,
+    database_changes: Vec<Arc<DatabaseChanges>>,
     requests: mpsc::Sender<Request>,
 }
 
 impl fmt::Debug for MySql {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MySql")
-            .field("database", &self.database)
+            .field("database", &self.current_database())
             .finish_non_exhaustive()
     }
 }
 
 struct Request {
     batch: String,
-    events: mpsc::Sender<Response>,
+    events: mpsc::Sender<Event>,
     cancel: CancellationToken,
     stopped: CancellationToken,
-    handled: Arc<AtomicBool>,
+    database_changes: Arc<DatabaseChanges>,
+    timed_out: Arc<AtomicBool>,
 }
 
-enum Response {
-    Event(Event),
-    Database(String),
+struct DatabaseChanges {
+    statements: Vec<diagnostics::Statement>,
+    // Immutable slots let current_database return &str while the worker records USE.
+    names: Vec<OnceLock<String>>,
+    handled: AtomicBool,
 }
 
 /// Connect with saved details and a separately supplied password. TLS uses the native
@@ -118,45 +122,75 @@ pub async fn connect(details: &Connection, password: Option<&str>) -> Result<MyS
     let (requests, receiver) = mpsc::channel(1);
     tokio::spawn(worker(conn, options, receiver, details.query_timeout));
     let database = details.database.clone().unwrap_or_default();
-    Ok(MySql { database, requests })
+    Ok(MySql {
+        database,
+        database_changes: Vec::new(),
+        requests,
+    })
 }
 
 impl Session for MySql {
     fn current_database(&self) -> &str {
-        &self.database
+        self.database_changes
+            .iter()
+            .rev()
+            .flat_map(|changes| changes.names.iter().rev())
+            .find_map(OnceLock::get)
+            .map_or(&self.database, String::as_str)
     }
 
     fn run<'a>(&'a mut self, batch: &'a str) -> Run<'a> {
+        // Retire completed or unsent batches; a worker still recovering keeps its Arc.
+        let completed = self
+            .database_changes
+            .iter()
+            .take_while(|changes| {
+                changes.handled.load(Ordering::Acquire) || Arc::strong_count(changes) == 1
+            })
+            .count();
+        for changes in self.database_changes.drain(..completed) {
+            if let Some(name) = changes.names.iter().rev().find_map(OnceLock::get) {
+                self.database.clone_from(name);
+            }
+        }
         let cancel = CancellationToken::new();
         let (events, receiver) = mpsc::channel(16);
-        let handled = Arc::new(AtomicBool::new(false));
+        let statements = diagnostics::statements(batch);
+        let changes = Arc::new(DatabaseChanges {
+            names: statements.iter().map(|_| OnceLock::new()).collect(),
+            statements,
+            handled: AtomicBool::new(false),
+        });
+        self.database_changes.push(changes.clone());
+        let timed_out = Arc::new(AtomicBool::new(false));
         let request = Request {
             batch: batch.into(),
             events,
             cancel: cancel.clone(),
             stopped: CancellationToken::new(),
-            handled: handled.clone(),
+            database_changes: changes.clone(),
+            timed_out: timed_out.clone(),
         };
         let requests = self.requests.clone();
-        let database = &mut self.database;
         let source = stream::once(async move {
             if requests.send(request).await.is_err() {
                 return stream::once(async { closed() }).boxed();
             }
-            let events = stream::unfold(
-                (receiver, database),
-                |(mut receiver, database)| async move {
-                    loop {
-                        match receiver.recv().await? {
-                            Response::Event(event) => return Some((event, (receiver, database))),
-                            Response::Database(name) => *database = name,
-                        }
-                    }
-                },
-            );
-            let stopped =
-                stream::once(async move { (!handled.load(Ordering::Acquire)).then(closed) })
-                    .filter_map(future::ready);
+            let events = stream::unfold(receiver, |mut receiver| async move {
+                receiver.recv().await.map(|event| (event, receiver))
+            });
+            let stopped = stream::once(async move {
+                if timed_out.load(Ordering::Acquire) {
+                    Some(Event::Error {
+                        text: "MySQL query timed out".into(),
+                        line: None,
+                        code: None,
+                    })
+                } else {
+                    (!changes.handled.load(Ordering::Acquire)).then(closed)
+                }
+            })
+            .filter_map(future::ready);
             events.chain(stopped).boxed()
         })
         .flatten();
@@ -185,7 +219,10 @@ async fn worker(
 ) {
     while let Some(request) = requests.recv().await {
         if request.cancel.is_cancelled() {
-            request.handled.store(true, Ordering::Release);
+            request
+                .database_changes
+                .handled
+                .store(true, Ordering::Release);
             continue;
         }
         let id = conn.id();
@@ -202,9 +239,8 @@ async fn worker(
             result = &mut operation => Some(result),
             _ = request.cancel.cancelled() => None,
             _ = deadline => {
-                execution::send(&request, Event::Error {
-                    text: "MySQL query timed out".into(), line: None, code: None,
-                }).await;
+                // Report on stream exhaustion so a full channel cannot delay KILL QUERY.
+                request.timed_out.store(true, Ordering::Release);
                 None
             }
         };
@@ -230,7 +266,10 @@ async fn worker(
         if result.is_err() {
             break;
         }
-        request.handled.store(true, Ordering::Release);
+        request
+            .database_changes
+            .handled
+            .store(true, Ordering::Release);
     }
     let _ = conn.disconnect().await;
 }
