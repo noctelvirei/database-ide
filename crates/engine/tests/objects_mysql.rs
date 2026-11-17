@@ -883,6 +883,50 @@ async fn mysql_spatial_index_scripts_recreate_the_spatial_access_method() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn mysql_fulltext_index_scripts_preserve_the_parser() {
+    let source = database().await;
+    let mut session = open(&source).await;
+    run(
+        &mut session,
+        "CREATE TABLE pears (description text, FULLTEXT KEY pear_description (description) WITH PARSER ngram)",
+    )
+    .await;
+    let table = object(&mut session, "pears").await;
+    let indexes = objects::indexes(&mut session, &table).await.unwrap();
+    let sql = objects::script(&mut session, &indexes[0].object, Script::Create)
+        .await
+        .unwrap();
+    assert!(sql.contains("WITH PARSER `ngram`"), "{sql}");
+    artifact(&source, "mysql-fulltext-parser.sql", &sql);
+    run(&mut session, "DROP INDEX pear_description ON pears").await;
+    run(&mut session, &sql).await;
+    let definition = run(&mut session, "SHOW CREATE TABLE pears").await;
+    let Value::Text(definition) = &definition[0][1] else {
+        panic!("Expected SHOW CREATE TABLE text");
+    };
+    assert!(definition.contains("WITH PARSER `ngram`"), "{definition}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mysql_procedure_scripts_name_the_creation_database_collation() {
+    let source = database().await;
+    let mut session = open(&source).await;
+    run(
+        &mut session,
+        "ALTER DATABASE CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
+        CREATE PROCEDURE pear_name(IN fruit_name varchar(20)) SELECT fruit_name;
+        ALTER DATABASE CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci",
+    )
+    .await;
+    let procedure = object(&mut session, "pear_name").await;
+    let sql = objects::script(&mut session, &procedure, Script::Create)
+        .await
+        .unwrap();
+    assert!(sql.lines().any(|line| line == "-- Created in a database with collation utf8mb4_bin; string parameters and variables without CHARACTER SET take the destination database's default."), "{sql}");
+    artifact(&source, "mysql-procedure-collation.sql", &sql);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn mysql_functional_index_scripts_recreate_the_expression() {
     let source = database().await;
     let mut session = open(&source).await;

@@ -3,10 +3,12 @@
 use std::collections::BTreeMap;
 
 use serde::Deserialize;
+use sqlparser::dialect::MySqlDialect;
+use sqlparser::tokenizer::{Token, Tokenizer};
 
-use super::{Error, literal, queries, query, quote};
+use super::{Error, literal, queries, query, quote, rows};
 use crate::objects::{Column, Constraint, ConstraintKind, Index, Kind, Object, ObjectId};
-use crate::session::Session;
+use crate::session::{Session, Value};
 
 /// Reads live columns in declaration order after the caller has validated the node.
 pub(super) async fn columns(
@@ -96,6 +98,9 @@ pub(super) async fn indexes(
                 quote(&name)?
             )
         };
+        if first.method == "FULLTEXT" {
+            definition.push_str(&fulltext_parser(session, &qualified, &name).await?);
+        }
         if first.visible == 0 {
             definition.push_str(" INVISIBLE");
         }
@@ -126,6 +131,53 @@ pub(super) async fn indexes(
         });
     }
     Ok(indexes)
+}
+
+/// Reads the parser from SHOW's executable comment, which STATISTICS does not expose.
+async fn fulltext_parser(
+    session: &mut dyn Session,
+    qualified: &str,
+    name: &str,
+) -> Result<String, Error> {
+    let result = rows(session, &format!("SHOW CREATE TABLE {qualified}")).await?;
+    let Some(Value::Text(definition)) = result.first().and_then(|row| row.get(1)) else {
+        return Err(Error::Catalog(
+            "Missing SHOW CREATE TABLE definition".into(),
+        ));
+    };
+    let tokens = Tokenizer::new(&MySqlDialect {}, definition)
+        .tokenize()
+        .map_err(|error| Error::Catalog(error.to_string()))?
+        .into_iter()
+        .filter(|token| !matches!(token, Token::Whitespace(_)))
+        .collect::<Vec<_>>();
+    let start = tokens
+        .windows(3)
+        .position(|tokens| {
+            matches!((&tokens[0], &tokens[1], &tokens[2]),
+            (Token::Word(fulltext), Token::Word(key), Token::Word(index))
+            if fulltext.quote_style.is_none() && fulltext.value == "FULLTEXT"
+                && key.quote_style.is_none() && key.value == "KEY" && index.value == name)
+        })
+        .ok_or_else(|| Error::Catalog("Missing FULLTEXT key in SHOW CREATE TABLE".into()))?;
+    let mut depth = 0;
+    // MySqlDialect expands versioned comments into their executable tokens.
+    for tokens in tokens[start + 3..].windows(3) {
+        match &tokens[0] {
+            Token::LParen => depth += 1,
+            Token::RParen if depth > 0 => depth -= 1,
+            Token::Comma | Token::RParen if depth == 0 => break,
+            Token::Word(with) if depth == 0 && with.value == "WITH" => {
+                if let (Token::Word(parser), Token::Word(name)) = (&tokens[1], &tokens[2])
+                    && parser.value == "PARSER"
+                {
+                    return Ok(format!(" WITH PARSER {}", quote(&name.value)?));
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(String::new())
 }
 
 #[derive(Deserialize)]

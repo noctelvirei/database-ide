@@ -87,6 +87,12 @@ pub(super) async fn script(
             literal(text(row, offset + 1)?)?
         ));
     }
+    if routine {
+        sql.push_str(&format!(
+            "-- Created in a database with collation {}; string parameters and variables without CHARACTER SET take the destination database's default.\n",
+            text(row, 5)?
+        ));
+    }
     sql.push_str(definition.trim_end_matches(';'));
     sql.push_str(";\n");
     Ok(sql)
