@@ -409,9 +409,39 @@ async fn mysql_table_without_key_is_read_only_with_reason() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn mysql_float_edits_are_refused_without_an_exact_original() {
+async fn mysql_rounded_float_can_be_edited_without_a_false_conflict() {
     let (_database, mut session) = fixture().await;
-    query(&mut session, "CREATE TABLE measurement (id int PRIMARY KEY, reading float); INSERT INTO measurement VALUES (1,0.1)").await;
+    query(&mut session, "CREATE TABLE measurement (id int PRIMARY KEY, reading float); INSERT INTO measurement VALUES (1,1.23456789)").await;
+    let result = query(&mut session, "SELECT id, reading FROM measurement").await;
+    assert_eq!(
+        result.rows,
+        vec![vec![Value::Integer(1), Value::Float(1.23457)]]
+    );
+    let script = editable(&mut session, &result)
+        .await
+        .script(&[Change::Update {
+            original: result.rows[0].clone(),
+            cells: vec![Cell {
+                column: 1,
+                value: Value::Float(0.5),
+            }],
+        }])
+        .unwrap();
+    let report = session.save(script).await.unwrap();
+    assert_eq!(report.conflict, None);
+    assert_eq!(report.rows.updated, 1);
+    assert_eq!(
+        query(&mut session, "SELECT reading FROM measurement")
+            .await
+            .rows,
+        vec![vec![Value::Float(0.5)]]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mysql_changed_float_conflicts_with_update() {
+    let (database, mut session) = fixture().await;
+    query(&mut session, "CREATE TABLE measurement (id int PRIMARY KEY, reading float); INSERT INTO measurement VALUES (1,1.23456789)").await;
     let result = query(&mut session, "SELECT id, reading FROM measurement").await;
     let script = editable(&mut session, &result)
         .await
@@ -421,20 +451,131 @@ async fn mysql_float_edits_are_refused_without_an_exact_original() {
                 column: 1,
                 value: Value::Float(0.5),
             }],
-        }]);
-    assert!(
-        matches!(script, Err(grid_edit::Error::InvalidChange(reason))
-        if reason == "edited column has no equality comparison")
+        }])
+        .unwrap();
+    let mut other = open(&database).await;
+    query(
+        &mut other,
+        "UPDATE measurement SET reading = 2.5 WHERE id = 1",
+    )
+    .await;
+    let report = session.save(script).await.unwrap();
+    assert_eq!(
+        report.conflict,
+        Some(Conflict {
+            change: 0,
+            affected: 0
+        })
     );
     assert_eq!(
-        query(
-            &mut session,
-            "SELECT reading = CAST(0.1 AS FLOAT) FROM measurement"
-        )
-        .await
-        .rows,
-        vec![vec![Value::Integer(1)]]
+        report.rows,
+        Counts {
+            updated: 0,
+            inserted: 0,
+            deleted: 0
+        }
     );
+    assert_eq!(
+        query(&mut session, "SELECT reading FROM measurement")
+            .await
+            .rows,
+        vec![vec![Value::Float(2.5)]]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mysql_changed_float_conflicts_with_delete() {
+    let (database, mut session) = fixture().await;
+    query(&mut session, "CREATE TABLE measurement (id int PRIMARY KEY, reading float); INSERT INTO measurement VALUES (1,1.23456789)").await;
+    let result = query(&mut session, "SELECT id, reading FROM measurement").await;
+    let script = editable(&mut session, &result)
+        .await
+        .script(&[Change::Delete {
+            original: result.rows[0].clone(),
+        }])
+        .unwrap();
+    let mut other = open(&database).await;
+    query(
+        &mut other,
+        "UPDATE measurement SET reading = 2.5 WHERE id = 1",
+    )
+    .await;
+    let report = session.save(script).await.unwrap();
+    assert_eq!(
+        report.conflict,
+        Some(Conflict {
+            change: 0,
+            affected: 0
+        })
+    );
+    assert_eq!(
+        report.rows,
+        Counts {
+            updated: 0,
+            inserted: 0,
+            deleted: 0
+        }
+    );
+    assert_eq!(
+        query(&mut session, "SELECT reading FROM measurement")
+            .await
+            .rows,
+        vec![vec![Value::Float(2.5)]]
+    );
+}
+
+async fn assert_float_round_trip(insert: &str, expected: f64) {
+    let (_database, mut session) = fixture().await;
+    query(
+        &mut session,
+        "CREATE TABLE measurement (id int PRIMARY KEY, reading float)",
+    )
+    .await;
+    query(&mut session, insert).await;
+    let result = query(&mut session, "SELECT id, reading FROM measurement").await;
+    assert_eq!(
+        result.rows,
+        vec![vec![Value::Integer(1), Value::Float(expected)]]
+    );
+    let script = editable(&mut session, &result)
+        .await
+        .script(&[Change::Update {
+            original: result.rows[0].clone(),
+            cells: vec![Cell {
+                column: 1,
+                value: Value::Float(0.5),
+            }],
+        }])
+        .unwrap();
+    let report = session.save(script).await.unwrap();
+    assert_eq!(report.conflict, None);
+    assert_eq!(report.rows.updated, 1);
+    assert_eq!(
+        query(&mut session, "SELECT reading FROM measurement")
+            .await
+            .rows,
+        vec![vec![Value::Float(0.5)]]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mysql_float_one_tenth_round_trips_without_a_false_conflict() {
+    assert_float_round_trip("INSERT INTO measurement VALUES (1,0.1)", 0.1).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mysql_float_negative_zero_round_trips_without_a_false_conflict() {
+    assert_float_round_trip("INSERT INTO measurement VALUES (1,-0e0)", 0.0).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mysql_float_large_exponent_round_trips_without_a_false_conflict() {
+    assert_float_round_trip("INSERT INTO measurement VALUES (1,3.4e38)", 3.4e38).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mysql_float_small_exponent_round_trips_without_a_false_conflict() {
+    assert_float_round_trip("INSERT INTO measurement VALUES (1,1e-38)", 1e-38).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

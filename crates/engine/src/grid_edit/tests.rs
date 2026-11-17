@@ -22,6 +22,27 @@ fn text_originals_use_binary_comparison_in_the_mysql_column_charset() {
 }
 
 #[test]
+fn float_originals_compare_the_mysql_text_result_as_a_number() {
+    let mut result = result(Engine::MySql);
+    result.table = vec!["test".into(), "measurements".into()];
+    result.columns[1].name = Some("reading".into());
+    result.comparison_types = vec![None, Some("FLOAT".into()), None];
+    let script = result
+        .script(&[Change::Update {
+            original: vec![Value::Integer(1), Value::Float(1.23457), Value::Null],
+            cells: vec![Cell {
+                column: 1,
+                value: Value::Float(0.5),
+            }],
+        }])
+        .unwrap();
+    assert_eq!(
+        script.sql(),
+        "UPDATE `test`.`measurements` SET `reading` = 5e-1 WHERE `id` = 1 AND CAST(CAST(`reading` AS CHAR) AS DOUBLE) = 1.23457e0;\n"
+    );
+}
+
+#[test]
 fn double_originals_are_cast_to_mysql_double_precision() {
     let mut result = result(Engine::MySql);
     result.table = vec!["test".into(), "measurements".into()];
