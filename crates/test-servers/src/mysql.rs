@@ -90,7 +90,8 @@ impl MySql {
             .file_name()
             .expect("tempdir has a name")
             .to_string_lossy()
-            .into_owned();
+            // MySQL on Windows stores database names in lower case (lower_case_table_names=1).
+            .to_lowercase();
         server.sql(None, &format!("CREATE DATABASE `{database}`"))?;
         Ok(Self { server, database })
     }
@@ -270,6 +271,8 @@ impl Server {
                 "--host=127.0.0.1",
                 "--connect-timeout=5",
                 "--ssl-mode=DISABLED",
+                // caching_sha2_password over a plain connection needs the server's RSA key.
+                "--get-server-public-key",
             ])
             .arg(format!("--port={}", self.port))
             .arg(format!("--user={}", if root { "root" } else { USER }))
