@@ -115,6 +115,7 @@ pub(super) async fn inspect(
             return Err(Error::Catalog("invalid column description".into()));
         };
         let comparison = match (ty.as_str(), charset) {
+            ("float", _) => Some("FLOAT".into()),
             ("double", _) => Some("DOUBLE".into()),
             (_, Value::Text(charset)) => {
                 if charset.is_empty()
@@ -129,8 +130,7 @@ pub(super) async fn inspect(
             }
             _ => None,
         };
-        // Text-protocol FLOAT originals lose digits; omit them rather than report false conflicts.
-        let comparable = !matches!(ty.as_str(), "float" | "json" | "geometry" | "vector");
+        let comparable = !matches!(ty.as_str(), "json" | "geometry" | "vector");
         policy.push(EditColumn {
             name: Some(name.clone()),
             read_only: extra.contains("auto_increment")
@@ -154,9 +154,12 @@ pub(super) async fn inspect(
             .entry(index.clone())
             .or_insert_with(|| Some(Vec::new()));
         let column = match name {
-            Value::Text(name) => policy
-                .iter()
-                .position(|column| column.name.as_ref() == Some(name) && column.comparable),
+            Value::Text(name) => policy.iter().enumerate().position(|(index, column)| {
+                // Rounded FLOAT originals cannot identify a unique stored value.
+                column.name.as_ref() == Some(name)
+                    && column.comparable
+                    && comparison_types[index].as_deref() != Some("FLOAT")
+            }),
             _ => None,
         };
         if let (Some(key), Some(column), true, Value::Null) =

@@ -397,6 +397,15 @@ impl EditableResult {
                     }
                     predicates.push(if original[index] == Value::Null {
                         format!("{column} IS NULL")
+                    } else if self.engine == Engine::MySql
+                        && self.comparison_types.get(index).and_then(Option::as_deref)
+                            == Some("FLOAT")
+                    {
+                        // CHAR uses the wire's FLOAT formatter; DOUBLE matches our decoded original.
+                        format!(
+                            "CAST(CAST({column} AS CHAR) AS DOUBLE) = {}",
+                            literal(&original[index], self.engine)?
+                        )
                     } else if self.engine == Engine::SqlServer
                         && matches!(original[index], Value::Text(_))
                     {
