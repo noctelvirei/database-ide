@@ -59,7 +59,7 @@ async fn mysql_select_streams_typed_base_columns_rows_count_then_done() {
                     type_name: "int".into(),
                     category: TypeCategory::Integer,
                     nullable: Some(false),
-                    base_table: Some(format!("{}.trees", database.database())),
+                    base_table: Some(format!("`{}`.`trees`", database.database())),
                     base_column: Some("id".into()),
                 },
                 Column {
@@ -67,7 +67,7 @@ async fn mysql_select_streams_typed_base_columns_rows_count_then_done() {
                     type_name: "varchar".into(),
                     category: TypeCategory::Text,
                     nullable: Some(true),
-                    base_table: Some(format!("{}.trees", database.database())),
+                    base_table: Some(format!("`{}`.`trees`", database.database())),
                     base_column: Some("name".into()),
                 },
             ]

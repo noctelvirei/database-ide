@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use futures::{StreamExt, future, stream};
 use mysql_async::{Conn, Opts, OptsBuilder, SslOpts, prelude::Queryable};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::connections::{Connection, SignInMethod, TlsMode};
@@ -16,6 +16,7 @@ use crate::session::{Event, PlanMode, Run, Session};
 
 mod diagnostics;
 mod execution;
+mod grid_edit;
 mod values;
 
 /// Invalid saved details, unsupported sign-in or connection failures.
@@ -40,7 +41,7 @@ pub enum Error {
 pub struct MySql {
     database: String,
     database_changes: Vec<Arc<DatabaseChanges>>,
-    requests: mpsc::Sender<Request>,
+    requests: mpsc::Sender<Work>,
 }
 
 impl fmt::Debug for MySql {
@@ -60,6 +61,14 @@ struct Request {
     timed_out: Arc<AtomicBool>,
 }
 
+enum Work {
+    Run(Request),
+    Save {
+        script: crate::grid_edit::Script,
+        reply: oneshot::Sender<Result<crate::grid_edit::SaveReport, crate::grid_edit::Error>>,
+    },
+}
+
 struct DatabaseChanges {
     statements: Vec<diagnostics::Statement>,
     // Immutable slots let current_database return &str while the worker records USE.
@@ -69,6 +78,7 @@ struct DatabaseChanges {
 
 /// Connect with saved details and a separately supplied password. TLS uses the native
 /// certificate store; Optional falls back only when the server has no TLS capability.
+/// UPDATE row counts include matched rows whose values did not change.
 pub async fn connect(details: &Connection, password: Option<&str>) -> Result<MySql, Error> {
     if details.sign_in == SignInMethod::Windows {
         return Err(Error::WindowsSignIn);
@@ -90,6 +100,7 @@ pub async fn connect(details: &Connection, password: Option<&str>) -> Result<MyS
         .ip_or_hostname(&details.host)
         .tcp_port(details.port.unwrap_or(3306))
         .prefer_socket(false)
+        .client_found_rows(true)
         .user(Some(user))
         .pass(password)
         .db_name(details.database.as_deref())
@@ -127,6 +138,27 @@ pub async fn connect(details: &Connection, password: Option<&str>) -> Result<MyS
         database_changes: Vec::new(),
         requests,
     })
+}
+
+impl MySql {
+    /// Saves a confirmed MySQL grid script on this tab's session. Conflicts roll back
+    /// the whole Save; an existing transaction uses a savepoint and stays open.
+    /// Dropping the future cancels, drains and rolls back before reuse; a commit
+    /// already sent may finish. UPDATE counts report matched rows, including no-ops.
+    pub async fn save(
+        &mut self,
+        script: crate::grid_edit::Script,
+    ) -> Result<crate::grid_edit::SaveReport, crate::grid_edit::Error> {
+        if script.engine != Engine::MySql {
+            return Err(crate::grid_edit::Error::Unsupported(script.engine));
+        }
+        let (reply, receiver) = oneshot::channel();
+        self.requests
+            .send(Work::Save { script, reply })
+            .await
+            .map_err(|_| grid_edit::closed())?;
+        receiver.await.map_err(|_| grid_edit::closed())?
+    }
 }
 
 impl Session for MySql {
@@ -173,7 +205,7 @@ impl Session for MySql {
         };
         let requests = self.requests.clone();
         let source = stream::once(async move {
-            if requests.send(request).await.is_err() {
+            if requests.send(Work::Run(request)).await.is_err() {
                 return stream::once(async { closed() }).boxed();
             }
             let events = stream::unfold(receiver, |mut receiver| async move {
@@ -211,13 +243,24 @@ impl Session for MySql {
     }
 }
 
-async fn worker(
-    mut conn: Conn,
-    options: Opts,
-    mut requests: mpsc::Receiver<Request>,
-    timeout: u32,
-) {
-    while let Some(request) = requests.recv().await {
+async fn worker(mut conn: Conn, options: Opts, mut requests: mpsc::Receiver<Work>, timeout: u32) {
+    while let Some(work) = requests.recv().await {
+        let request = match work {
+            Work::Run(request) => request,
+            Work::Save { script, mut reply } => {
+                if reply.is_closed() {
+                    continue;
+                }
+                let result =
+                    grid_edit::save(&mut conn, &options, &script, &mut reply, timeout).await;
+                let failed = matches!(&result, Err(crate::grid_edit::Error::Recovery { .. }));
+                let _ = reply.send(result);
+                if failed {
+                    break;
+                }
+                continue;
+            }
+        };
         if request.cancel.is_cancelled() {
             request
                 .database_changes
