@@ -31,9 +31,6 @@ pub enum Error {
     /// No app-data location can be determined from the environment.
     #[error("app-data environment variable is missing or empty")]
     AppData,
-    /// Credential deletion failed; the tree has not been edited.
-    #[error(transparent)]
-    Credentials(#[from] credentials::Error),
 }
 
 /// How to obtain credentials; Windows sign-in uses the current process account.
@@ -279,25 +276,26 @@ impl Connections {
         Ok(id)
     }
 
-    /// Replace details while retaining identity and location. Switching away from password sign-in
-    /// deletes any saved password first; credential failure leaves the details unchanged.
+    /// Replace details while retaining identity and location, without accessing Credential Manager.
+    /// After `save` succeeds, pass each returned ID to `Credentials::delete` and report any errors.
     pub fn update_connection(
         &mut self,
         id: &str,
         connection: Connection,
-        credentials: &credentials::Credentials,
-    ) -> Result<(), Error> {
+    ) -> Result<Vec<String>, Error> {
         connection.validate()?;
         let saved = self
             .connections
             .iter_mut()
             .find(|c| c.id == id)
             .ok_or(Error::NotFound)?;
-        if connection.sign_in != SignInMethod::Password {
-            credentials.delete(id)?;
-        }
+        let deletions = if connection.sign_in != SignInMethod::Password {
+            vec![id.to_owned()]
+        } else {
+            Vec::new()
+        };
         saved.connection = connection;
-        Ok(())
+        Ok(deletions)
     }
 
     /// Set or clear a folder's colour and danger-check overrides.
@@ -361,14 +359,9 @@ impl Connections {
         Ok(())
     }
 
-    /// Delete a connection or a whole folder subtree and its credentials. Missing IDs are a no-op.
-    /// Credential failure retains the tree; earlier successful credential deletions cannot be undone.
-    /// Call `save` afterwards to persist the tree edit.
-    pub fn delete(
-        &mut self,
-        id: &str,
-        credentials: &credentials::Credentials,
-    ) -> Result<(), Error> {
+    /// Delete a connection or folder subtree without accessing Credential Manager. Missing IDs
+    /// are a no-op. After `save` succeeds, delete credentials for each returned ID and report errors.
+    pub fn delete(&mut self, id: &str) -> Result<Vec<String>, Error> {
         let mut removed = HashSet::from([id.to_owned()]);
         loop {
             let before = removed.len();
@@ -381,17 +374,18 @@ impl Connections {
                 break;
             }
         }
+        let mut deletions = Vec::new();
         for saved in &self.connections {
             if removed.contains(&saved.id)
                 || saved.parent.as_ref().is_some_and(|p| removed.contains(p))
             {
-                credentials.delete(&saved.id)?;
+                deletions.push(saved.id.clone());
                 removed.insert(saved.id.clone());
             }
         }
         self.connections.retain(|c| !removed.contains(&c.id));
         self.folders.retain(|f| !removed.contains(&f.id));
-        Ok(())
+        Ok(deletions)
     }
 
     /// Resolve both settings in one call. Each setting uses its nearest explicit ancestor independently.
