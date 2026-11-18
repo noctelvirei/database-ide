@@ -242,6 +242,51 @@ fn ui_pg_a_connection_in_a_coloured_folder_connects() {
 }
 
 #[test]
+fn ui_pg_a_test_result_clears_when_a_detail_changes() {
+    let postgres = Postgres::start().expect("PostgreSQL test server");
+    let server = Server {
+        name: "Lab PostgreSQL",
+        engine_keys: &["down", "down", "enter"],
+        host: postgres.host(),
+        port: postgres.port(),
+        user: postgres.user(),
+        password: postgres.password(),
+        database: postgres.database(),
+    };
+    // The save step's keys stop on the Trust server certificate checkbox, then Enter saves.
+    let mut keys = add_and_connect(&server)[0]["input"]
+        .as_array()
+        .unwrap()
+        .clone();
+    keys.pop();
+    keys.extend([json!({ "key": "alt-t" }), json!("idle")]);
+    let steps = json!([
+        { "name": "explorer", "input": [{ "key": "f8" }] },
+        { "name": "tested", "input": keys },
+        { "name": "changed", "input": [{ "key": "space" }] },
+    ]);
+    let dir = tempfile::tempdir().expect("temp dir");
+    let script = dir.path().join("script.json");
+    std::fs::write(&script, steps.to_string()).unwrap();
+    let lines = run_script(&script, Some(dir.path()));
+
+    let tested = state(&lines, "tested");
+    assert_eq!(
+        tested["explorer"]["dialog"]["test"]["state"], "connected",
+        "{tested:#}"
+    );
+    let changed = state(&lines, "changed");
+    assert_eq!(
+        changed["explorer"]["dialog"]["trust_server_certificate"],
+        false
+    );
+    assert_eq!(
+        changed["explorer"]["dialog"]["test"]["state"], "not_run",
+        "{changed:#}"
+    );
+}
+
+#[test]
 fn ui_mysql_a_connection_in_a_coloured_folder_connects() {
     let mysql = MySql::start().expect("MySQL test server");
     let servers = [Server {

@@ -114,6 +114,9 @@ pub struct ConnectionForm {
     runtime: Runtime,
     error: Option<SharedString>,
     test: TestStatus,
+    /// The details and typed password the last test ran with. Its result is shown only
+    /// while the fields still hold them.
+    tested_with: Option<(Connection, String)>,
 }
 
 impl ConnectionForm {
@@ -199,6 +202,7 @@ impl ConnectionForm {
             runtime,
             error: None,
             test: TestStatus::NotRun,
+            tested_with: None,
         }
     }
 
@@ -253,7 +257,24 @@ impl ConnectionForm {
             tls: label(&self.tls, cx),
             trust_server_certificate: self.trust_server_certificate,
             error: self.error.clone(),
-            test: self.test.clone(),
+            test: self.shown_test(cx),
+        }
+    }
+
+    /// The last test's outcome, or `NotRun` once a field has changed since it ran, so a
+    /// result is never shown for details it didn't test.
+    fn shown_test(&self, cx: &gpui::App) -> TestStatus {
+        let current = self
+            .read(cx)
+            .ok()
+            .map(|connection| (connection, self.password.read(cx).value().to_string()));
+        match (&self.test, &self.tested_with) {
+            (TestStatus::Connected | TestStatus::Failed(_), Some(tested))
+                if current.as_ref() != Some(tested) =>
+            {
+                TestStatus::NotRun
+            }
+            (test, _) => test.clone(),
         }
     }
 
@@ -314,12 +335,14 @@ impl ConnectionForm {
         let connection = match self.read(cx) {
             Ok(connection) => connection,
             Err(error) => {
+                self.tested_with = None;
                 self.test = TestStatus::Failed(error);
                 cx.notify();
                 return;
             }
         };
         let typed = self.password.read(cx).value().to_string();
+        self.tested_with = Some((connection.clone(), typed.clone()));
         let password = match (connection.sign_in, typed.is_empty(), &self.editing) {
             (SignInMethod::Windows, _, _) => None,
             (_, false, _) => Some(typed),
@@ -441,7 +464,7 @@ impl Render for ConnectionForm {
                     .child(Input::new(&self.query_timeout)),
             );
 
-        let test_line = match &self.test {
+        let test_line = match &self.shown_test(cx) {
             TestStatus::NotRun => None,
             TestStatus::Testing => Some(("Testing…".into(), theme.muted_foreground)),
             TestStatus::Connected => Some(("Connected.".into(), theme.success)),
