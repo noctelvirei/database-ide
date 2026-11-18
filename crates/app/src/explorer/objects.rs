@@ -388,7 +388,8 @@ pub(super) struct OpenMenu {
 impl Explorer {
     /// The filter box, filtering the rows as the user types.
     pub(super) fn new_filter(window: &mut Window, cx: &mut Context<Self>) -> Entity<InputState> {
-        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter (Ctrl+F)"));
+        let filter =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Filter what's loaded (Ctrl+F)"));
         cx.subscribe_in(
             &filter,
             window,
@@ -625,8 +626,10 @@ impl Explorer {
                 cx.spawn(async move |this, cx| {
                     let (session, outcome) = reply.await;
                     let _ = this.update(cx, |this, cx| {
-                        this.replied(&connection, database.as_deref(), attempt, session, cx);
-                        this.apply(&connection, database.as_deref(), call, outcome, cx);
+                        // A reply from before a disconnect belongs to a connection that is gone.
+                        if this.replied(&connection, database.as_deref(), attempt, session, cx) {
+                            this.apply(&connection, database.as_deref(), call, outcome, cx);
+                        }
                     });
                 })
                 .detach();
@@ -648,8 +651,9 @@ impl Explorer {
         }
     }
 
-    /// A call finished: its session goes back to the slot, or is closed if the connection
-    /// has since gone, and the slot's next call starts.
+    /// A call finished: its session goes back to the slot and the slot's next call starts.
+    /// Returns false, closing the session, when the connection has since disconnected or
+    /// reconnected, so the call's outcome is stale.
     fn replied(
         &mut self,
         connection: &str,
@@ -657,7 +661,7 @@ impl Explorer {
         attempt: u64,
         session: Box<dyn Session>,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         match self
             .servers
             .get_mut(connection)
@@ -668,8 +672,12 @@ impl Explorer {
                 slot.session = Some(session);
                 slot.busy = false;
                 self.pump(connection, database, cx);
+                true
             }
-            None => self.runtime.close(session),
+            None => {
+                self.runtime.close(session);
+                false
+            }
         }
     }
 
