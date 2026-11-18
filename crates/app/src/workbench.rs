@@ -2,8 +2,9 @@
 //! object explorer on the left, the editor with its messages strip and the results in the
 //! middle, the inspector on the right.
 //!
-//! U1 builds the frame only: the panes, moving focus between them, and every key in the
-//! keymap. Actions whose feature is not built yet say so in the messages strip.
+//! U1 built the frame: the panes, moving focus between them, and every key in the keymap.
+//! U2 puts the saved connections in the explorer (`explorer.rs`). Actions whose feature is
+//! not built yet say so in the messages strip.
 
 use gpui::{
     App, AppContext as _, Context, Entity, FocusHandle, Focusable as _, IntoElement,
@@ -13,6 +14,7 @@ use gpui_component::ActiveTheme as _;
 use gpui_component::input::{Editor, EditorState};
 use serde::Serialize;
 
+use crate::explorer::{Explorer, ExplorerEvent, ExplorerState};
 use crate::keymap::{
     CancelRun, CommentLines, EstimatedPlan, FocusExplorer, Format, NewQueryTab, NextPane,
     NextQueryTab, OpenFile, PickDatabase, PrevPane, RefreshAutocomplete, Run, SaveFile,
@@ -67,6 +69,7 @@ pub struct VisibleState {
     /// The messages strip's lines, oldest first.
     pub messages: Vec<SharedString>,
     pub editor_text: String,
+    pub explorer: ExplorerState,
 }
 
 /// Work to run when the window first draws.
@@ -74,7 +77,8 @@ type FirstFrameHook = Box<dyn FnOnce(&mut Window, &mut Context<Workbench>)>;
 
 pub struct Workbench {
     editor: Entity<EditorState>,
-    /// Focus handles for every pane except the editor, which owns its own.
+    explorer: Entity<Explorer>,
+    /// Focus handles for the panes that don't own one; the editor and explorer do.
     pane_focus: [FocusHandle; 6],
     results_visible: bool,
     last_action: Option<&'static str>,
@@ -87,14 +91,25 @@ impl Workbench {
     /// Builds the workbench with an empty SQL editor focused. `on_first_frame` runs once,
     /// when the window first draws: the startup measurement and the UI script hook in there.
     pub fn new(
+        explorer: Entity<Explorer>,
         on_first_frame: impl FnOnce(&mut Window, &mut Context<Self>) + 'static,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let editor = cx.new(|cx| EditorState::new(window, cx).language("sql"));
         let pane_focus = std::array::from_fn(|_| cx.focus_handle());
+        cx.subscribe(
+            &explorer,
+            |this: &mut Self, _, event: &ExplorerEvent, cx| {
+                let ExplorerEvent::Message(text) = event;
+                this.messages.push(text.clone());
+                cx.notify();
+            },
+        )
+        .detach();
         let this = Self {
             editor,
+            explorer,
             pane_focus,
             results_visible: true,
             last_action: None,
@@ -114,6 +129,7 @@ impl Workbench {
     fn focus_handle_of(&self, pane: Pane, cx: &App) -> FocusHandle {
         match pane {
             Pane::Editor => self.editor.focus_handle(cx),
+            Pane::Explorer => self.explorer.focus_handle(cx),
             other => self.pane_focus[other as usize].clone(),
         }
     }
@@ -174,6 +190,7 @@ impl Workbench {
             results_visible: self.results_visible,
             messages: self.messages.clone(),
             editor_text: self.editor.read(cx).value().to_string(),
+            explorer: self.explorer.read(cx).state(cx),
         }
     }
 
@@ -198,7 +215,7 @@ impl Workbench {
                     .child(pane.title()),
             );
         match pane {
-            Pane::Editor => frame,
+            Pane::Editor | Pane::Explorer => frame,
             other => frame.track_focus(&self.focus_handle_of(other, cx)),
         }
     }
@@ -217,7 +234,11 @@ impl Render for Workbench {
             .flex()
             .flex_col()
             .child(self.pane(Pane::QueryTabs, focused, cx).flex_1())
-            .child(self.pane(Pane::Explorer, focused, cx).flex_1());
+            .child(
+                self.pane(Pane::Explorer, focused, cx)
+                    .flex_1()
+                    .child(self.explorer.clone()),
+            );
         // Newest message at the bottom; older ones scroll out of the top.
         let newest = self.messages.len().saturating_sub(MESSAGES_SHOWN);
         let messages = self
