@@ -228,6 +228,92 @@ fn completion_rejects_appends_and_preserves_columns_and_rows() {
 }
 
 #[test]
+fn observing_completion_publishes_the_final_count() {
+    let mut store = Store::new(columns(1), None).unwrap();
+    let reader = store.reader();
+    std::thread::scope(|scope| {
+        let writer = scope.spawn(move || {
+            store.append(vec![vec![Value::Integer(42)]; 100]).unwrap();
+            store.complete().unwrap();
+            store
+        });
+        while !reader.is_complete().unwrap() {
+            std::thread::yield_now();
+        }
+        assert_eq!(reader.row_count().unwrap(), 100);
+        let _store = writer.join().unwrap();
+    });
+}
+
+#[test]
+fn metadata_and_drop_progress_alongside_a_range_read() {
+    let folder = tempfile::tempdir().unwrap();
+    let mut store = Store::new(columns(1), Some(folder.path())).unwrap();
+    store
+        .append(vec![vec![Value::Bytes(vec![42; 64 * 1024 * 1024])]])
+        .unwrap();
+    store.complete().unwrap();
+    let reader = store.reader();
+    let start = std::sync::Barrier::new(2);
+    // The public API has no notification during decoding. A barrier starts both operations
+    // together with a large payload, without sleeps or an assertion on scheduler timing.
+    // The private lock test separately proves metadata never acquires the index lock.
+    std::thread::scope(|scope| {
+        let reading = scope.spawn(|| {
+            start.wait();
+            reader.rows(0..1)
+        });
+        start.wait();
+        assert_eq!(store.row_count().unwrap(), 1);
+        assert!(reader.is_complete().unwrap());
+        assert_eq!(reader.row_count().unwrap(), 1);
+        drop(store);
+        match reading.join().unwrap() {
+            Ok(rows) => assert!(
+                matches!(&rows[..], [row] if matches!(&row[..], [Value::Bytes(bytes)] if bytes.len() == 64 * 1024 * 1024 && bytes.iter().all(|byte| *byte == 42)))
+            ),
+            Err(Error::Closed) => (),
+            Err(error) => panic!("Read failed: {error}"),
+        }
+    });
+    assert!(matches!(reader.rows(0..1), Err(Error::Closed)));
+    assert_eq!(std::fs::read_dir(folder.path()).unwrap().count(), 0);
+}
+
+#[cfg(windows)]
+#[test]
+fn failed_append_reports_write_failure_and_preserves_published_rows() {
+    let folder = tempfile::tempdir().unwrap();
+    let mut store = Store::new(columns(1), Some(folder.path())).unwrap();
+    store.append(vec![vec![Value::Integer(42)]]).unwrap();
+    let reader = store.reader();
+    let path = std::fs::read_dir(folder.path())
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .unwrap();
+    // Windows byte-range locks reject I/O through other handles, including spill writes.
+    file.lock().unwrap();
+    assert!(matches!(
+        store.append(vec![vec![Value::Integer(99)]]),
+        Err(Error::Io(_))
+    ));
+    file.unlock().unwrap();
+    assert!(reader.write_failed());
+    assert!(!reader.is_complete().unwrap());
+    assert_eq!(reader.row_count().unwrap(), 1);
+    assert!(matches!(store.complete(), Err(Error::WriteFailed)));
+    assert!(matches!(store.append(vec![]), Err(Error::WriteFailed)));
+    assert_eq!(reader.rows(0..2).unwrap(), vec![vec![Value::Integer(42)]]);
+}
+
+#[test]
 fn cell_size_does_not_increase_index_memory() {
     let mut small = Store::new(columns(1), None).unwrap();
     let mut large = Store::new(columns(1), None).unwrap();
@@ -306,4 +392,44 @@ fn a_million_five_column_rows_keep_only_a_proportional_index() {
             Value::Bool(true)
         ]]
     );
+}
+
+/// Reads no longer share one file handle under the lock, so overlapping reads on several
+/// threads must each still get exactly their own rows.
+#[test]
+fn concurrent_overlapping_reads_each_return_their_own_rows() {
+    const ROWS: usize = 5_000;
+    let mut store = Store::new(columns(2), None).unwrap();
+    store
+        .append(
+            (0..ROWS)
+                .map(|i| vec![Value::Integer(i as i64), Value::Text(format!("row {i}"))])
+                .collect(),
+        )
+        .unwrap();
+    store.complete().unwrap();
+    let reader = store.reader();
+    let start = std::sync::Barrier::new(8);
+    std::thread::scope(|scope| {
+        for thread in 0..8_usize {
+            let (reader, start) = (reader.clone(), &start);
+            scope.spawn(move || {
+                start.wait();
+                for round in 0..300_usize {
+                    // Single rows and 256-row pages, at starts that differ per thread and round.
+                    let first = (thread * 613 + round * 97) % ROWS;
+                    let len = if round % 2 == 0 { 1 } else { 256 };
+                    let rows = reader.rows(first..first + len).unwrap();
+                    assert_eq!(rows.len(), len.min(ROWS - first));
+                    for (offset, row) in rows.iter().enumerate() {
+                        let i = first + offset;
+                        assert_eq!(
+                            row,
+                            &vec![Value::Integer(i as i64), Value::Text(format!("row {i}"))]
+                        );
+                    }
+                }
+            });
+        }
+    });
 }
