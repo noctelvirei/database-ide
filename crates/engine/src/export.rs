@@ -5,6 +5,7 @@
 //! complete; errors leave that marker on disk, including a finalized workbook on cancellation.
 
 use std::fs::File;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use futures::StreamExt;
@@ -105,6 +106,39 @@ pub struct RunReport {
     pub events: Vec<Event>,
 }
 
+/// Lossless display text shared by text exports, before destination escaping.
+/// NULL becomes an empty string; binary uses `0x` and lowercase hex, UUIDs lowercase hex.
+/// Text, decimal and temporal representations retain their original spelling.
+pub fn cell_text(value: &Value) -> String {
+    match value {
+        Value::Null => String::new(),
+        Value::Bool(value) => value.to_string(),
+        Value::Integer(value) => value.to_string(),
+        Value::UnsignedInteger(value) => value.to_string(),
+        Value::Float(value) => value.to_string(),
+        Value::Decimal(value) | Value::Text(value) | Value::Json(value) | Value::Other(value) => {
+            value.clone()
+        }
+        Value::Bytes(value) => format!("0x{}", text::hex(value)),
+        Value::Uuid(value) => {
+            let hex = text::hex(value);
+            format!(
+                "{}-{}-{}-{}-{}",
+                &hex[..8],
+                &hex[8..12],
+                &hex[12..16],
+                &hex[16..20],
+                &hex[20..]
+            )
+        }
+        Value::Date(value) => value.as_str().into(),
+        Value::Time(value) => value.as_str().into(),
+        Value::TimeWithZone(value) => value.as_str().into(),
+        Value::Timestamp(value) => value.as_str().into(),
+        Value::TimestampWithZone(value) => value.as_str().into(),
+    }
+}
+
 /// Returns Excel-compatible quoted tab-separated text with headers and CRLF records.
 /// NULL is empty. Refuses more than `max_rows` data rows or `max_bytes` UTF-8 bytes
 /// (including headers); row reads are bounded by PAGE_ROWS. Requires a completed result.
@@ -112,7 +146,37 @@ pub fn clipboard(reader: &Reader, max_rows: usize, max_bytes: usize) -> Result<S
     if !reader.is_complete()? {
         return Err(Error::IncompleteResult);
     }
-    Ok(clipboard::write(reader, max_rows, max_bytes)?)
+    clipboard_block(
+        reader,
+        0..usize::MAX,
+        0..usize::MAX,
+        true,
+        max_rows,
+        max_bytes,
+    )
+}
+
+/// Returns quoted TSV with CRLF records for zero-based, end-exclusive row and column ranges.
+/// Ranges clamp to the rows published when copying starts and to the column count;
+/// reversed ranges are empty. Empty column ranges emit empty CRLF records. Incomplete
+/// results are allowed. NULL is empty; optional headers count toward `max_bytes` (UTF-8), but not
+/// `max_rows`. Refuses either bound and propagates spill errors; reads at most PAGE_ROWS.
+pub fn clipboard_block(
+    reader: &Reader,
+    rows: Range<usize>,
+    columns: Range<usize>,
+    include_headers: bool,
+    max_rows: usize,
+    max_bytes: usize,
+) -> Result<String, Error> {
+    Ok(clipboard::write(
+        reader,
+        rows,
+        columns,
+        include_headers,
+        max_rows,
+        max_bytes,
+    )?)
 }
 
 /// Writes a completed spill result to a new file; refuses existing destinations and leaves

@@ -102,7 +102,7 @@ fn decimal(text: &str) -> bool {
 pub(crate) fn original_literal(value: &Value, engine: Engine) -> Result<String, Error> {
     // PostgreSQL coerces an unknown string literal to the column type, avoiding real-to-double promotion.
     if engine == Engine::PostgreSql && !matches!(value, Value::Null | Value::Bytes(_)) {
-        string(&crate::export::text::cell(value), engine)
+        string(&crate::export::cell_text(value), engine)
     } else {
         literal(value, engine)
     }
@@ -128,7 +128,7 @@ pub(crate) fn literal(value: &Value, engine: Engine) -> Result<String, Error> {
                 Engine::MySql => format!("_binary X'{hex}'"),
             }
         }
-        _ => string(&crate::export::text::cell(value), engine)?,
+        _ => string(&crate::export::cell_text(value), engine)?,
     })
 }
 
