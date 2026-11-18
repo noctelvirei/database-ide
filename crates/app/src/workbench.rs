@@ -184,6 +184,10 @@ impl Workbench {
 
     /// Makes tab `ix` active and gives its editor focus.
     fn show_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(leaving) = self.tabs.get(self.active).filter(|_| self.active != ix) {
+            leaving.update(cx, |tab, _| tab.set_shown(false));
+        }
+        self.tabs[ix].update(cx, |tab, _| tab.set_shown(true));
         self.active = ix;
         self.tabs[ix].update(cx, |tab, cx| tab.focus(window, cx));
         cx.notify();

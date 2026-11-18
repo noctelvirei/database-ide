@@ -98,12 +98,21 @@ pub struct QueryTab {
     database: Option<String>,
     /// The running batch's cancel handle, once the runtime has started it.
     cancel: Option<CancelHandle>,
-    /// Cancel was pressed during the current run. A run not yet started is cancelled as it
-    /// starts, and the run's end says it was cancelled.
+    /// Cancel was pressed during the current run; a run not yet started is cancelled as it
+    /// starts.
     cancel_pressed: bool,
+    /// The engine confirmed the current run was cancelled, so its end says so. A cancel
+    /// pressed after the run finished never confirms, and the run reads as finished.
+    run_cancelled: bool,
+    /// False while another tab is on screen: a database list that loads then is dropped,
+    /// so its picker never opens over another tab's editor.
+    shown: bool,
     dialog: Option<dialogs::OpenDialog>,
     messages: Messages,
 }
+
+/// The text the engine gives the error that confirms a cancel (`dbide_engine::session::Event`).
+const CANCELLED: &str = "Run was cancelled";
 
 impl QueryTab {
     /// A tab titled `title`, connecting at once when it has a target.
@@ -125,6 +134,8 @@ impl QueryTab {
             database: None,
             cancel: None,
             cancel_pressed: false,
+            run_cancelled: false,
+            shown: true,
             dialog: None,
             messages: Messages::default(),
         };
@@ -360,6 +371,7 @@ impl QueryTab {
         self.status = Status::Running;
         self.cancel = None;
         self.cancel_pressed = false;
+        self.run_cancelled = false;
         let mut updates = self.runtime.run(session, batch);
         cx.spawn_in(window, async move |this, cx| {
             while let Some(update) = updates.next().await {
@@ -420,7 +432,10 @@ impl QueryTab {
                     1 => "(1 row affected)".to_owned(),
                     rows => format!("({rows} rows affected)"),
                 }),
-                Event::Error { text, line, .. } => {
+                Event::Error { text, line, code } => {
+                    if code.is_none() && text == CANCELLED {
+                        self.run_cancelled = true;
+                    }
                     let line = editor_line(line);
                     let text = match line {
                         Some(line) => format!("Line {}: {text}", line + 1),
@@ -432,7 +447,7 @@ impl QueryTab {
                         line,
                     }
                 }
-                Event::Done { elapsed } if self.cancel_pressed => {
+                Event::Done { elapsed } if self.run_cancelled => {
                     Message::plain(format!("Cancelled after {:.2} s.", elapsed.as_secs_f64()))
                 }
                 Event::Done { elapsed } => {
@@ -481,6 +496,11 @@ impl QueryTab {
             let _ = this.update_in(cx, |this, window, cx| {
                 this.give_back(session);
                 match listed {
+                    Ok(_) if !this.shown => this.say(
+                        "You left this tab before its database list loaded. Press Ctrl+U to pick again.",
+                        Tone::Plain,
+                        cx,
+                    ),
                     Ok(databases) => dialogs::pick_database(this, databases, window, cx),
                     Err(error) => this.say(
                         format!("Couldn't list the databases: {error}"),
@@ -530,6 +550,11 @@ impl QueryTab {
             editor.set_cursor_position(Position::new(line, 0), window, cx);
             editor.focus(window, cx);
         });
+    }
+
+    /// Records whether the tab is on screen; the workbench calls it as tabs change.
+    pub fn set_shown(&mut self, shown: bool) {
+        self.shown = shown;
     }
 
     /// Gives the editor keyboard focus.
