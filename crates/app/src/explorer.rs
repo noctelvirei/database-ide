@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use dbide_engine::connections::credentials::Credentials;
-use dbide_engine::connections::{self, Connections, SavedConnection, SignInMethod};
+use dbide_engine::connections::{self, Connections, SavedConnection};
 use dbide_engine::session::Session;
 use gpui::{
     App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
@@ -34,6 +34,8 @@ use crate::keymap::{
 };
 use crate::palette;
 use crate::runtime::Runtime;
+
+mod connect;
 
 /// Something for the messages strip.
 pub enum ExplorerEvent {
@@ -342,18 +344,19 @@ impl Explorer {
     ) -> Result<T, connections::Error> {
         // The engine's `update_connection` and `delete` remove passwords before the file is
         // written, so each saved password is read first and put back if the edit fails.
-        let passwords: Vec<_> = self
-            .saved
-            .connections()
-            .iter()
-            .filter_map(|saved| Some((saved, self.credentials.read(saved).ok()??)))
-            .collect();
+        // A password that can't be read can't be put back, so it stops the edit.
+        let mut passwords = Vec::new();
+        for saved in self.saved.connections() {
+            if let Some(password) = self.credentials.read(saved)? {
+                passwords.push((saved.clone(), password));
+            }
+        }
         let mut next = self.saved.clone();
         let outcome = edit(&mut next).and_then(|value| next.save(&self.path).map(|()| value));
         if outcome.is_err() {
             for (saved, password) in passwords {
-                if let Ok(None) = self.credentials.read(saved)
-                    && let Err(error) = self.credentials.store(saved, password.expose())
+                if let Ok(None) = self.credentials.read(&saved)
+                    && let Err(error) = self.credentials.store(&saved, password.expose())
                 {
                     let name = &saved.connection.name;
                     self.message(
@@ -366,19 +369,6 @@ impl Explorer {
             self.saved = next;
         }
         outcome
-    }
-
-    /// Drops the connection's session and any connect still under way, so the next connect
-    /// uses its current details. Returns true if a session was open.
-    fn forget_session(&mut self, id: &str) -> bool {
-        self.connecting.remove(id);
-        match self.sessions.remove(id) {
-            Some(session) => {
-                self.runtime.close(session);
-                true
-            }
-            None => false,
-        }
     }
 
     fn new_connection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -724,140 +714,6 @@ impl Explorer {
             }
             Err(error) => self.message(format!("Couldn't move: {error}."), cx),
         }
-    }
-
-    /// Enter: opens or closes a folder, or connects a connection.
-    fn activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(id) = self.selected(cx) else { return };
-        if self.is_folder(&id) {
-            if !self.expanded.remove(&id) {
-                self.expanded.insert(id.clone());
-            }
-            self.rebuild(Some(&id), cx);
-            return;
-        }
-        let Some(saved) = self.connection(&id).cloned() else {
-            return;
-        };
-        match self.status(&id) {
-            Status::Connected => {
-                self.message(
-                    format!("Already connected to {}.", saved.connection.name),
-                    cx,
-                );
-            }
-            Status::Connecting => {}
-            Status::Disconnected => match saved.connection.sign_in {
-                SignInMethod::Windows => self.connect(&saved, None, window, cx),
-                SignInMethod::Password => match self.credentials.read(&saved) {
-                    Ok(Some(secret)) => {
-                        let password = secret.expose().to_owned();
-                        self.connect(&saved, Some(password), window, cx);
-                    }
-                    Ok(None) => self.ask_password(saved, window, cx),
-                    Err(error) => {
-                        self.message(format!("Can't read the saved password: {error}."), cx);
-                    }
-                },
-                SignInMethod::AskEachTime => self.ask_password(saved, window, cx),
-            },
-        }
-    }
-
-    fn ask_password(
-        &mut self,
-        saved: SavedConnection,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let input = cx.new(|cx| InputState::new(window, cx).masked(true));
-        let connection: SharedString = saved.connection.name.clone().into();
-        self.dialog = Some(OpenDialog::Password {
-            connection: connection.clone(),
-            input: input.clone(),
-        });
-        let explorer = cx.entity();
-        let first_open = Cell::new(true);
-        window.open_dialog(cx, move |dialog, window, cx| {
-            if first_open.replace(false) {
-                input.focus_handle(cx).focus(window, cx);
-            }
-            let go = {
-                let (explorer, input, saved) = (explorer.clone(), input.clone(), saved.clone());
-                move |_: &gpui::ClickEvent, window: &mut Window, cx: &mut App| {
-                    let password = input.read(cx).value().to_string();
-                    explorer.update(cx, |this, cx| {
-                        this.connect(&saved, Some(password), window, cx)
-                    });
-                    true
-                }
-            };
-            dialog
-                .title(format!("Password for {connection}"))
-                .entrance(DialogEntrance::None)
-                .w(px(420.))
-                .child(Input::new(&input))
-                .footer(footer("Connect (Enter)"))
-                .on_ok(go)
-                .on_close(closer(&explorer))
-        });
-    }
-
-    fn connect(
-        &mut self,
-        saved: &SavedConnection,
-        password: Option<String>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let id = saved.id.clone();
-        let name = saved.connection.name.clone();
-        let attempt = self.next_attempt;
-        self.next_attempt += 1;
-        self.connecting.insert(id.clone(), attempt);
-        self.message(format!("Connecting to {name}…"), cx);
-        cx.notify();
-        let connecting = self.runtime.connect(saved.connection.clone(), password);
-        cx.spawn_in(window, async move |this, cx| {
-            let outcome = connecting.await;
-            let _ = this.update(cx, |this, cx| {
-                if this.connecting.get(&id) != Some(&attempt) {
-                    // The connection was edited or deleted while connecting: its details
-                    // are out of date, so a session from them is closed, not kept.
-                    if let Ok(session) = outcome {
-                        this.runtime.close(session);
-                    }
-                    return;
-                }
-                this.connecting.remove(&id);
-                match outcome {
-                    Ok(session) => {
-                        this.sessions.insert(id, session);
-                        this.message(format!("Connected to {name}."), cx);
-                    }
-                    Err(error) => {
-                        this.message(format!("Couldn't connect to {name}. {}", error.message), cx);
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    fn disconnect(&mut self, cx: &mut Context<Self>) {
-        let Some(id) = self.selected(cx) else { return };
-        let name = self
-            .describe(&id)
-            .map(|(_, name, _)| name)
-            .unwrap_or_default();
-        let was_connecting = self.connecting.contains_key(&id);
-        if self.forget_session(&id) {
-            self.message(format!("Disconnected from {name}."), cx);
-        } else if was_connecting {
-            self.message(format!("Stopped connecting to {name}."), cx);
-        }
-        cx.notify();
     }
 }
 

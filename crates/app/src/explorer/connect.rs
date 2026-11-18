@@ -1,0 +1,164 @@
+//! Connecting and disconnecting the explorer's connections: Enter connects with the saved
+//! password, Windows sign-in or a typed one, and each session lives until the connection is
+//! disconnected, edited or deleted.
+
+use std::cell::Cell;
+
+use dbide_engine::connections::{SavedConnection, SignInMethod};
+use gpui::{
+    App, AppContext as _, Context, Focusable as _, ParentElement as _, SharedString, Window, px,
+};
+use gpui_component::WindowExt as _;
+use gpui_component::dialog::DialogEntrance;
+use gpui_component::input::{Input, InputState};
+
+use super::{Explorer, OpenDialog, Status, closer, footer};
+
+impl Explorer {
+    /// Drops the connection's session and any connect still under way, so the next connect
+    /// uses its current details. Returns true if a session was open.
+    pub(super) fn forget_session(&mut self, id: &str) -> bool {
+        self.connecting.remove(id);
+        match self.sessions.remove(id) {
+            Some(session) => {
+                self.runtime.close(session);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Enter: opens or closes a folder, or connects a connection.
+    pub(super) fn activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.selected(cx) else { return };
+        if self.is_folder(&id) {
+            if !self.expanded.remove(&id) {
+                self.expanded.insert(id.clone());
+            }
+            self.rebuild(Some(&id), cx);
+            return;
+        }
+        let Some(saved) = self.connection(&id).cloned() else {
+            return;
+        };
+        match self.status(&id) {
+            Status::Connected => {
+                self.message(
+                    format!("Already connected to {}.", saved.connection.name),
+                    cx,
+                );
+            }
+            Status::Connecting => {}
+            Status::Disconnected => match saved.connection.sign_in {
+                SignInMethod::Windows => self.connect(&saved, None, window, cx),
+                SignInMethod::Password => match self.credentials.read(&saved) {
+                    Ok(Some(secret)) => {
+                        let password = secret.expose().to_owned();
+                        self.connect(&saved, Some(password), window, cx);
+                    }
+                    Ok(None) => self.ask_password(saved, window, cx),
+                    Err(error) => {
+                        self.message(format!("Can't read the saved password: {error}."), cx);
+                    }
+                },
+                SignInMethod::AskEachTime => self.ask_password(saved, window, cx),
+            },
+        }
+    }
+
+    fn ask_password(
+        &mut self,
+        saved: SavedConnection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let input = cx.new(|cx| InputState::new(window, cx).masked(true));
+        let connection: SharedString = saved.connection.name.clone().into();
+        self.dialog = Some(OpenDialog::Password {
+            connection: connection.clone(),
+            input: input.clone(),
+        });
+        let explorer = cx.entity();
+        let first_open = Cell::new(true);
+        window.open_dialog(cx, move |dialog, window, cx| {
+            if first_open.replace(false) {
+                input.focus_handle(cx).focus(window, cx);
+            }
+            let go = {
+                let (explorer, input, saved) = (explorer.clone(), input.clone(), saved.clone());
+                move |_: &gpui::ClickEvent, window: &mut Window, cx: &mut App| {
+                    let password = input.read(cx).value().to_string();
+                    explorer.update(cx, |this, cx| {
+                        this.connect(&saved, Some(password), window, cx)
+                    });
+                    true
+                }
+            };
+            dialog
+                .title(format!("Password for {connection}"))
+                .entrance(DialogEntrance::None)
+                .w(px(420.))
+                .child(Input::new(&input))
+                .footer(footer("Connect (Enter)"))
+                .on_ok(go)
+                .on_close(closer(&explorer))
+        });
+    }
+
+    fn connect(
+        &mut self,
+        saved: &SavedConnection,
+        password: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let id = saved.id.clone();
+        let name = saved.connection.name.clone();
+        let attempt = self.next_attempt;
+        self.next_attempt += 1;
+        self.connecting.insert(id.clone(), attempt);
+        self.message(format!("Connecting to {name}…"), cx);
+        cx.notify();
+        let connecting = self.runtime.connect(saved.connection.clone(), password);
+        cx.spawn_in(window, async move |this, cx| {
+            let outcome = connecting.await;
+            let _ = this.update(cx, |this, cx| {
+                if this.connecting.get(&id) != Some(&attempt) {
+                    // The connection was edited or deleted while connecting: its details
+                    // are out of date, so a session from them is closed, not kept.
+                    if let Ok(session) = outcome {
+                        this.runtime.close(session);
+                    }
+                    return;
+                }
+                this.connecting.remove(&id);
+                match outcome {
+                    Ok(session) => {
+                        this.sessions.insert(id, session);
+                        this.message(format!("Connected to {name}."), cx);
+                    }
+                    Err(error) => {
+                        this.message(format!("Couldn't connect to {name}. {}", error.message), cx);
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub(super) fn disconnect(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.selected(cx) else { return };
+        let name = self
+            .describe(&id)
+            .map(|(_, name, _)| name)
+            .unwrap_or_default();
+        let was_connecting = self.connecting.contains_key(&id);
+        if self.forget_session(&id) {
+            self.message(format!("Disconnected from {name}."), cx);
+        } else if was_connecting {
+            self.message(format!("Stopped connecting to {name}."), cx);
+        }
+        cx.notify();
+    }
+}
