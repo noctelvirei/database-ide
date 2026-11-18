@@ -5,6 +5,10 @@
 //! rows cost the page in memory, not the result (docs/spec.md, "Results: spill to disk").
 //! A row not loaded yet draws empty for the frame or two its page takes.
 //!
+//! The UI thread never touches the spill file: the reader's lock is held while the runtime
+//! writes rows, so the row count and completion are copied in by `refresh`, the page by
+//! `want_row` and the selected cell's value by `selection_changed`, all off the UI thread.
+//!
 //! The table selects one cell, row or column at a time; the grid adds a block on top of
 //! that. The table's own selection is the block's active corner, and the grid keeps the
 //! other corner (the anchor), which Shift with an arrow key leaves where it is.
@@ -62,6 +66,19 @@ pub struct Grid {
     /// The selected block, kept here because cells draw inside the table's update, where
     /// the table's own selection can't be read.
     block: Option<Block>,
+    /// Rows published, as of the last `refresh`.
+    rows: usize,
+    /// Whether the result was complete at the last `refresh`.
+    complete: bool,
+    /// True while a `refresh` is reading.
+    refreshing: bool,
+    /// Set when a `refresh` was asked for during another, which then reads again.
+    refresh_again: bool,
+    /// The selected cell and its whole value, kept apart from the page so the inspector
+    /// still shows it once the grid scrolls away.
+    selected: Option<((usize, usize), Value)>,
+    /// Why reading rows failed; once set, the grid stops reading and says so.
+    failure: Option<String>,
 }
 
 impl Grid {
@@ -73,6 +90,12 @@ impl Grid {
             anchor: None,
             extending: false,
             block: None,
+            rows: 0,
+            complete: false,
+            refreshing: false,
+            refresh_again: false,
+            selected: None,
+            failure: None,
         }
     }
 
@@ -80,9 +103,76 @@ impl Grid {
         &self.reader
     }
 
-    /// Rows published so far; it grows while the run streams.
+    /// Rows published so far, as of the last `refresh`; it grows while the run streams.
     pub fn row_count(&self) -> usize {
-        self.reader.row_count().unwrap_or(0)
+        self.rows
+    }
+
+    /// Whether every row has arrived, as of the last `refresh`.
+    pub fn is_complete(&self) -> bool {
+        self.complete
+    }
+
+    /// Why the grid couldn't read its rows, if it couldn't.
+    pub fn failure(&self) -> Option<&str> {
+        self.failure.as_deref()
+    }
+
+    /// True while the row count is being read.
+    pub fn is_refreshing(&self) -> bool {
+        self.refreshing
+    }
+
+    /// Reads the row count and completion again, off the UI thread, and redraws. Asked
+    /// during a read, it reads once more after; once the result is complete, it does nothing.
+    pub fn refresh(&mut self, cx: &mut Context<TableState<Self>>) {
+        if self.complete {
+            return;
+        }
+        if self.refreshing {
+            self.refresh_again = true;
+            return;
+        }
+        self.refreshing = true;
+        let reader = self.reader.clone();
+        cx.spawn(async move |table, cx| {
+            let counts = cx
+                .background_spawn(async move {
+                    Ok::<_, dbide_engine::spill::Error>((
+                        reader.row_count()?,
+                        reader.is_complete()?,
+                    ))
+                })
+                .await;
+            let _ = table.update(cx, |table, cx| {
+                let grid = table.delegate_mut();
+                grid.refreshing = false;
+                match counts {
+                    Ok((rows, complete)) => {
+                        grid.rows = rows;
+                        grid.complete = complete;
+                    }
+                    Err(error) => grid.fail(&error),
+                }
+                if std::mem::take(&mut grid.refresh_again) {
+                    grid.refresh(cx);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Stops reading after `error` and keeps it to show.
+    fn fail(&mut self, error: &dbide_engine::spill::Error) {
+        self.failure = Some(error.to_string());
+        self.complete = true;
+    }
+
+    /// The selected cell's whole value, once it is read.
+    pub fn selected_value(&self, row: usize, column: usize) -> Option<&Value> {
+        let (cell, value) = self.selected.as_ref()?;
+        (*cell == (row, column)).then_some(value)
     }
 
     /// The selected block.
@@ -91,14 +181,59 @@ impl Grid {
     }
 
     /// The table's selection changed to `selection`: works out the block from it and the
-    /// anchor. A new single cell becomes the anchor, unless the grid is growing the block.
-    pub fn selection_changed(&mut self, selection: TableSelection) {
+    /// anchor, and reads a single selected cell's value for the inspector. A new single cell
+    /// becomes the anchor, unless the grid is growing the block.
+    pub fn selection_changed(
+        &mut self,
+        selection: TableSelection,
+        cx: &mut Context<TableState<Self>>,
+    ) {
         if let TableSelection::Cell(row, column) = selection
             && !std::mem::take(&mut self.extending)
         {
             self.anchor = Some((row, column));
         }
         self.block = self.block_for(selection);
+        self.selected = None;
+        if let TableSelection::Cell(row, column) = selection {
+            self.read_selected(row, column, cx);
+        }
+    }
+
+    /// Keeps the value of cell (`row`, `column`), from the page if it is there, otherwise
+    /// read from the spill file in the background.
+    fn read_selected(&mut self, row: usize, column: usize, cx: &mut Context<TableState<Self>>) {
+        if let Some(value) = self.value(row, column) {
+            self.selected = Some(((row, column), value.clone()));
+            return;
+        }
+        if self.failure.is_some() {
+            return;
+        }
+        let reader = self.reader.clone();
+        cx.spawn(async move |table, cx| {
+            let read = cx
+                .background_spawn(async move { reader.rows(row..row + 1) })
+                .await;
+            let _ = table.update(cx, |table, cx| {
+                let still_selected = table.selection() == TableSelection::Cell(row, column);
+                let grid = table.delegate_mut();
+                match read {
+                    Ok(mut rows) if still_selected => {
+                        if let Some(value) = rows
+                            .pop()
+                            .and_then(|mut r| (column < r.len()).then(|| r.swap_remove(column)))
+                        {
+                            grid.selected = Some(((row, column), value));
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(error) => grid.fail(&error),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn block_for(&self, selection: TableSelection) -> Option<Block> {
@@ -144,7 +279,7 @@ impl Grid {
     fn want_row(&mut self, row_ix: usize, cx: &mut Context<TableState<Self>>) {
         let loaded = self.page.as_ref().is_some_and(|p| p.row(row_ix).is_some());
         let loading = self.loading.as_ref().is_some_and(|r| r.contains(&row_ix));
-        if loaded || loading {
+        if loaded || loading || self.failure.is_some() {
             return;
         }
         let start = row_ix.saturating_sub(PAGE_LEAD);
@@ -159,12 +294,15 @@ impl Grid {
                 if grid.loading.as_ref() == Some(&range) {
                     grid.loading = None;
                 }
-                // A failed read leaves the old page; the rows draw empty.
-                if let Ok(rows) = rows {
-                    grid.page = Some(Page {
-                        start: range.start,
-                        rows,
-                    });
+                match rows {
+                    Ok(rows) => {
+                        grid.page = Some(Page {
+                            start: range.start,
+                            rows,
+                        })
+                    }
+                    // The grid stops reading and its heading says why; the rows draw empty.
+                    Err(error) => grid.fail(&error),
                 }
                 cx.notify();
             });

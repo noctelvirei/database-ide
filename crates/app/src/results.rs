@@ -73,6 +73,8 @@ pub struct Results {
     maximised: Option<usize>,
     /// Copies still reading their block from the spill file.
     copying: usize,
+    /// An earlier run's spill files that a copy still reads; dropped when the copies end.
+    retired: Vec<Store>,
     /// The stacked grids' scroll position.
     scroll: ScrollHandle,
     focus_handle: FocusHandle,
@@ -94,15 +96,21 @@ impl Results {
             focused: 0,
             maximised: None,
             copying: 0,
+            retired: Vec::new(),
             scroll: ScrollHandle::new(),
             focus_handle: cx.focus_handle(),
         }
     }
 
-    /// Drops the last run's grids and deletes their files, for a new run.
+    /// Drops the last run's grids and deletes their files, for a new run. Files a copy is
+    /// still reading are deleted when the copy ends.
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.grids.clear();
-        self.stores.clear();
+        if self.is_copying() {
+            self.retired.append(&mut self.stores);
+        } else {
+            self.stores.clear();
+        }
         self.focused = 0;
         self.maximised = None;
         cx.notify();
@@ -128,9 +136,9 @@ impl Results {
                         | TableEvent::SelectColumn(_)
                         | TableEvent::ClearSelection
                 ) {
-                    table.update(cx, |table, _| {
+                    table.update(cx, |table, cx| {
                         let selection = table.selection();
-                        table.delegate_mut().selection_changed(selection);
+                        table.delegate_mut().selection_changed(selection, cx);
                     });
                     this.focused = ix;
                     cx.notify();
@@ -138,13 +146,22 @@ impl Results {
             },
         )
         .detach();
+        table.update(cx, |table, cx| table.delegate_mut().refresh(cx));
         self.grids.push(table);
         cx.notify();
     }
 
-    /// Takes over the run's spill files when the run ends.
-    pub fn keep(&mut self, stores: Vec<Store>) {
+    /// Reads the row counts of grids still receiving rows again, for their headings.
+    pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        for table in &self.grids {
+            table.update(cx, |table, cx| table.delegate_mut().refresh(cx));
+        }
+    }
+
+    /// Takes over the run's spill files when the run ends, and reads the final row counts.
+    pub fn keep(&mut self, stores: Vec<Store>, cx: &mut Context<Self>) {
         self.stores = stores;
+        self.refresh(cx);
     }
 
     /// Gives the focused grid keyboard focus, selecting its first cell if nothing is
@@ -193,7 +210,7 @@ impl Results {
                         .map(|c| c.name.clone())
                         .collect(),
                     rows: grid.row_count(),
-                    complete: grid.reader().is_complete().unwrap_or(false),
+                    complete: grid.is_complete(),
                     visible_rows: table.visible_range().rows().clone(),
                     block: grid.block().cloned(),
                     focused: ix == self.focused,
@@ -210,7 +227,7 @@ impl Results {
             return None;
         };
         let grid = table.delegate();
-        let value = grid.value(row, column)?;
+        let value = grid.selected_value(row, column)?;
         let header = grid.reader().columns().get(column)?;
         Some(Inspected {
             column: header.name.clone(),
@@ -223,8 +240,17 @@ impl Results {
     }
 
     /// True while a copy is still reading its block.
-    pub fn is_copying(&self) -> bool {
+    fn is_copying(&self) -> bool {
         self.copying > 0
+    }
+
+    /// True while a copy or a row count is still being read.
+    pub fn is_reading(&self, cx: &App) -> bool {
+        self.is_copying()
+            || self
+                .grids
+                .iter()
+                .any(|table| table.read(cx).delegate().is_refreshing())
     }
 
     fn focused_table(&self) -> Option<Entity<TableState<Grid>>> {
@@ -328,6 +354,9 @@ impl Results {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.copying -= 1;
+                if this.copying == 0 {
+                    this.retired.clear();
+                }
                 let message = match copied {
                     Ok(text) => {
                         cx.write_to_clipboard(ClipboardItem::new_string(text));
@@ -380,16 +409,16 @@ impl Results {
         let table = &self.grids[ix];
         let grid = table.read(cx).delegate();
         let rows = grid.row_count();
-        let arriving = !grid.reader().is_complete().unwrap_or(true);
         let count = match rows {
             1 => "1 row".to_owned(),
             rows => format!("{rows} rows"),
         };
-        let heading = format!(
-            "Result {}: {count}{}",
-            ix + 1,
-            if arriving { ", still arriving" } else { "" }
-        );
+        let note = match grid.failure() {
+            Some(failure) => format!("; couldn't read its rows: {failure}"),
+            None if !grid.is_complete() => ", still arriving".to_owned(),
+            None => String::new(),
+        };
+        let heading = format!("Result {}: {count}{note}", ix + 1);
         let theme = cx.theme();
         // Each grid's own id keeps the two tables' element ids apart.
         div()
