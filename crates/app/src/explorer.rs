@@ -347,66 +347,18 @@ impl Explorer {
 
     /// Applies `edit` to a copy of the tree and writes the copy to `connections.toml`. The
     /// explorer takes the copy only once the file is written, so a failed edit or save leaves
-    /// the screen, the file and the saved passwords as they were. `under` names the item
-    /// whose connections' passwords the edit may delete: the connection itself, or a folder
-    /// and everything in it.
+    /// the screen and the file as they were. Edits that drop saved passwords return the
+    /// connections whose passwords to delete, and callers delete them only after this
+    /// succeeds (DAT-44).
     fn commit<T>(
         &mut self,
-        under: Option<&str>,
-        cx: &mut Context<Self>,
         edit: impl FnOnce(&mut Connections) -> Result<T, connections::Error>,
     ) -> Result<T, connections::Error> {
-        // The engine's `update_connection` and `delete` remove passwords before the file is
-        // written, so those passwords are read first and put back if the edit fails. One
-        // that can't be read couldn't be put back, so it stops the edit. DAT-44 moves the
-        // deletion after the save in the engine; this backup goes once that lands.
-        let mut passwords = Vec::new();
-        if let Some(under) = under {
-            for saved in self.saved.connections() {
-                if self.is_within(&saved.id, saved.parent.as_deref(), under)
-                    && let Some(password) = self.credentials.read(saved)?
-                {
-                    passwords.push((saved.clone(), password));
-                }
-            }
-        }
         let mut next = self.saved.clone();
-        let outcome = edit(&mut next).and_then(|value| next.save(&self.path).map(|()| value));
-        if outcome.is_err() {
-            for (saved, password) in passwords {
-                if let Ok(None) = self.credentials.read(&saved)
-                    && let Err(error) = self.credentials.store(&saved, password.expose())
-                {
-                    let name = &saved.connection.name;
-                    self.message(
-                        format!("Couldn't put back the saved password for {name}: {error}."),
-                        cx,
-                    );
-                }
-            }
-        } else {
-            self.saved = next;
-        }
-        outcome
-    }
-
-    /// True when the item `id`, whose folder is `parent`, is `under` or inside it.
-    fn is_within<'a>(&'a self, id: &str, mut parent: Option<&'a str>, under: &str) -> bool {
-        if id == under {
-            return true;
-        }
-        while let Some(folder) = parent {
-            if folder == under {
-                return true;
-            }
-            parent = self
-                .saved
-                .folders()
-                .iter()
-                .find(|f| f.id == folder)
-                .and_then(|f| f.parent.as_deref());
-        }
-        false
+        let value = edit(&mut next)?;
+        next.save(&self.path)?;
+        self.saved = next;
+        Ok(value)
     }
 
     fn new_connection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -473,11 +425,14 @@ impl Explorer {
             return false;
         };
         let name = output.connection.name.clone();
-        let credentials = self.credentials.clone();
-        let saved = self.commit(editing, cx, |saved| match editing {
+        let mut deletions = Vec::new();
+        let saved = self.commit(|saved| match editing {
             Some(id) => saved
-                .update_connection(id, output.connection, &credentials)
-                .map(|()| id.to_owned()),
+                .update_connection(id, output.connection)
+                .map(|pending| {
+                    deletions = pending;
+                    id.to_owned()
+                }),
             None => saved.add_connection(output.connection, parent),
         });
         let id = match saved {
@@ -488,6 +443,14 @@ impl Explorer {
                 return false;
             }
         };
+        for id in deletions {
+            if let Err(error) = self.credentials.delete(&id) {
+                self.message(
+                    format!("Saved {name}, but couldn't delete its saved password: {error}."),
+                    cx,
+                );
+            }
+        }
         if editing.is_some() && self.forget_session(&id) {
             self.message(
                 format!("Disconnected from {name}, because its details changed."),
@@ -571,7 +534,7 @@ impl Explorer {
             return false;
         };
         let name = output.name.clone();
-        let saved = self.commit(None, cx, |saved| {
+        let saved = self.commit(|saved| {
             let id = match editing {
                 Some(id) => saved.rename(id, &output.name).map(|()| id.to_owned()),
                 None => saved.add_folder(&output.name, parent),
@@ -635,7 +598,7 @@ impl Explorer {
                         if name.is_empty() {
                             return false;
                         }
-                        if let Err(error) = this.commit(None, cx, |saved| saved.rename(&id, name)) {
+                        if let Err(error) = this.commit(|saved| saved.rename(&id, name)) {
                             // The dialog stays open with the name, so the user can retry.
                             this.message(format!("Couldn't rename: {error}."), cx);
                             return false;
@@ -697,10 +660,22 @@ impl Explorer {
             .iter()
             .map(|c| c.id.clone())
             .collect();
-        let credentials = self.credentials.clone();
-        if let Err(error) = self.commit(Some(id), cx, |saved| saved.delete(id, &credentials)) {
-            self.message(format!("Couldn't delete: {error}."), cx);
-            return;
+        let deletions = match self.commit(|saved| saved.delete(id)) {
+            Ok(deletions) => deletions,
+            Err(error) => {
+                self.message(format!("Couldn't delete: {error}."), cx);
+                return;
+            }
+        };
+        for id in deletions {
+            if let Err(error) = self.credentials.delete(&id) {
+                self.message(
+                    format!(
+                        "Deleted the connection, but couldn't delete its saved password: {error}."
+                    ),
+                    cx,
+                );
+            }
         }
         // Close the sessions of every deleted connection.
         let kept: HashSet<String> = self
@@ -739,7 +714,7 @@ impl Explorer {
             return;
         }
         let target = if at_top { None } else { self.target_folder(cx) };
-        match self.commit(None, cx, |saved| saved.move_to(&id, target.as_deref())) {
+        match self.commit(|saved| saved.move_to(&id, target.as_deref())) {
             Ok(()) => {
                 self.cut = None;
                 if let Some(target) = &target {
