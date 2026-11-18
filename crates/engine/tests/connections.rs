@@ -679,6 +679,123 @@ fn cyclic_regsrvr_folders_are_rejected() {
 }
 
 #[test]
+fn sign_in_edits_return_credential_deletions_only_for_non_password_methods() {
+    let mut tree = Connections::default();
+    let mut connection = Connection::new(Engine::SqlServer, "sql01.example.test");
+    connection.sign_in = SignInMethod::Password;
+    let id = tree.add_connection(connection.clone(), None).unwrap();
+
+    assert!(
+        tree.update_connection(&id, connection.clone())
+            .unwrap()
+            .is_empty()
+    );
+    connection.sign_in = SignInMethod::Windows;
+    assert_eq!(
+        tree.update_connection(&id, connection.clone()).unwrap(),
+        vec![id.clone()]
+    );
+    assert_eq!(
+        tree.connections()[0].connection.sign_in,
+        SignInMethod::Windows
+    );
+    connection.sign_in = SignInMethod::AskEachTime;
+    assert_eq!(
+        tree.update_connection(&id, connection.clone()).unwrap(),
+        vec![id.clone()]
+    );
+    let before = tree.clone();
+    connection.host.clear();
+    assert!(tree.update_connection(&id, connection).is_err());
+    assert_eq!(tree, before);
+    assert!(
+        tree.update_connection(
+            "missing",
+            Connection::new(Engine::SqlServer, "sql01.example.test")
+        )
+        .is_err()
+    );
+    assert_eq!(tree, before);
+}
+
+#[test]
+fn deleting_a_subtree_returns_only_its_connection_credential_ids() {
+    let mut tree = Connections::default();
+    let parent = tree.add_folder("Prod", None).unwrap();
+    let child = tree.add_folder("Orders", Some(&parent)).unwrap();
+    let connection = Connection::new(Engine::SqlServer, "sql01.example.test");
+    let root = tree
+        .add_connection(connection.clone(), Some(&parent))
+        .unwrap();
+    let nested = tree
+        .add_connection(connection.clone(), Some(&child))
+        .unwrap();
+    let kept = tree.add_connection(connection, None).unwrap();
+
+    assert_eq!(tree.delete(&parent).unwrap(), vec![root, nested]);
+    assert!(tree.folders().is_empty());
+    assert_eq!(tree.connections().len(), 1);
+    assert_eq!(tree.connections()[0].id, kept);
+    assert!(tree.delete("missing").unwrap().is_empty());
+    assert_eq!(tree.delete(&kept).unwrap(), vec![kept]);
+    assert!(tree.connections().is_empty());
+}
+
+#[test]
+fn credman_failed_save_after_delete_keeps_the_password() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("connections.toml");
+    let mut tree = Connections::default();
+    let mut connection = Connection::new(Engine::SqlServer, "sql01.example.test");
+    connection.sign_in = SignInMethod::Password;
+    let id = tree.add_connection(connection, None).unwrap();
+    let cleanup = CredentialCleanup::new(vec![id.clone()]);
+    let saved = tree.connections()[0].clone();
+    cleanup.credentials.store(&saved, "fixture-secret").unwrap();
+    tree.save(&path).unwrap();
+    let original = std::fs::read_to_string(&path).unwrap();
+    let blocker = directory.path().join("not-a-directory");
+    std::fs::write(&blocker, "blocked").unwrap();
+
+    tree.delete(&id).unwrap();
+    assert!(tree.save(blocker.join("connections.toml")).is_err());
+
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    assert_eq!(
+        cleanup.credentials.read(&saved).unwrap().unwrap().expose(),
+        "fixture-secret"
+    );
+}
+
+#[test]
+fn credman_failed_save_after_sign_in_change_keeps_the_password() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("connections.toml");
+    let mut tree = Connections::default();
+    let mut connection = Connection::new(Engine::SqlServer, "sql01.example.test");
+    connection.sign_in = SignInMethod::Password;
+    let id = tree.add_connection(connection, None).unwrap();
+    let cleanup = CredentialCleanup::new(vec![id.clone()]);
+    let saved = tree.connections()[0].clone();
+    cleanup.credentials.store(&saved, "fixture-secret").unwrap();
+    tree.save(&path).unwrap();
+    let original = std::fs::read_to_string(&path).unwrap();
+    let blocker = directory.path().join("not-a-directory");
+    std::fs::write(&blocker, "blocked").unwrap();
+    let mut details = saved.connection.clone();
+    details.sign_in = SignInMethod::AskEachTime;
+
+    tree.update_connection(&id, details).unwrap();
+    assert!(tree.save(blocker.join("connections.toml")).is_err());
+
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    assert_eq!(
+        cleanup.credentials.read(&saved).unwrap().unwrap().expose(),
+        "fixture-secret"
+    );
+}
+
+#[test]
 fn credman_password_survives_rename_and_is_deleted_with_the_connection() {
     let mut tree = Connections::default();
     let mut connection = Connection::new(Engine::SqlServer, "sql01.example.test");
@@ -700,7 +817,16 @@ fn credman_password_survives_rename_and_is_deleted_with_the_connection() {
         "fixture-secret"
     );
     let saved = tree.connections()[0].clone();
-    tree.delete(&id, &cleanup.credentials).unwrap();
+    let deletions = tree.delete(&id).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("connections.toml");
+    tree.save(&path).unwrap();
+    assert!(Connections::load(&path).unwrap().connections().is_empty());
+    assert_eq!(deletions, vec![id]);
+    assert!(cleanup.credentials.read(&saved).unwrap().is_some());
+    for id in deletions {
+        cleanup.credentials.delete(&id).unwrap();
+    }
     assert!(tree.connections().is_empty());
     assert!(cleanup.credentials.read(&saved).unwrap().is_none());
 }
@@ -719,8 +845,22 @@ fn credman_ask_each_time_deletes_a_previously_saved_password() {
     let saved = tree.connections()[0].clone();
     let mut details = saved.connection.clone();
     details.sign_in = SignInMethod::AskEachTime;
-    tree.update_connection(&id, details, &cleanup.credentials)
-        .unwrap();
+    let deletions = tree.update_connection(&id, details).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("connections.toml");
+    tree.save(&path).unwrap();
+    assert_eq!(
+        Connections::load(&path).unwrap().connections()[0]
+            .connection
+            .sign_in,
+        SignInMethod::AskEachTime
+    );
+    assert_eq!(deletions, vec![id]);
+    assert!(cleanup.credentials.read(&saved).unwrap().is_some());
+    for id in deletions {
+        cleanup.credentials.delete(&id).unwrap();
+    }
+    assert!(cleanup.credentials.read(&saved).unwrap().is_none());
     cleanup
         .credentials
         .store(&tree.connections()[0], "must-not-store")
@@ -746,7 +886,15 @@ fn credman_deleting_a_folder_deletes_descendants_and_their_passwords() {
     let cleanup = CredentialCleanup::new(vec![id]);
     let saved = tree.connections()[0].clone();
     cleanup.credentials.store(&saved, "fixture-secret").unwrap();
-    tree.delete(&parent, &cleanup.credentials).unwrap();
+    let deletions = tree.delete(&parent).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    tree.save(directory.path().join("connections.toml"))
+        .unwrap();
+    assert_eq!(deletions, vec![saved.id.clone()]);
+    assert!(cleanup.credentials.read(&saved).unwrap().is_some());
+    for id in deletions {
+        cleanup.credentials.delete(&id).unwrap();
+    }
     assert!(tree.folders().is_empty());
     assert!(tree.connections().is_empty());
     assert!(cleanup.credentials.read(&saved).unwrap().is_none());
