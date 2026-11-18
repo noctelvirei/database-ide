@@ -25,7 +25,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
 use dbide_engine::connections::{self, credentials::Credentials};
-use gpui::{App, AppContext as _, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size};
+use gpui::{
+    App, AppContext as _, Bounds, TitlebarOptions, WindowBounds, WindowOptions, point, px, size,
+};
 use gpui_component::Root;
 
 use crate::explorer::Explorer;
@@ -90,13 +92,23 @@ fn main() -> ExitCode {
         .run(move |cx: &mut App| {
             gpui_component::init(cx);
             keymap::bind(cx);
-            let bounds = Bounds::centered(None, size(px(1400.), px(900.)), cx);
+            let window_size = size(px(1400.), px(900.));
+            // A scripted run opens its window far off every screen and leaves the foreground
+            // alone, so the user's own clicks and keys can't land in it mid-script (DAT-51).
+            // Screenshots still work: ui-run.ps1 captures with PrintWindow.
+            let scripted = script.is_some();
+            let bounds = if scripted {
+                Bounds::new(point(px(-20000.), px(-20000.)), window_size)
+            } else {
+                Bounds::centered(None, window_size, cx)
+            };
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(TitlebarOptions {
                     title: Some("Database IDE".into()),
                     ..Default::default()
                 }),
+                focus: !scripted,
                 ..Default::default()
             };
             let opened = cx.open_window(options, |window, cx| {
@@ -125,7 +137,9 @@ fn main() -> ExitCode {
             if opened.is_err() {
                 cx.quit();
             }
-            cx.activate(true);
+            if !scripted {
+                cx.activate(true);
+            }
         });
     ExitCode::SUCCESS
 }
