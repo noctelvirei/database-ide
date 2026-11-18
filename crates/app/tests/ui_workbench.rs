@@ -76,3 +76,21 @@ fn ui_every_ssms_shortcut_reaches_its_action_from_the_editor() {
         "SaveFile is not built yet."
     );
 }
+
+#[test]
+fn ui_ctrl_f_finds_in_the_editor_and_ctrl_h_adds_replace() {
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scripts/editor-search.json");
+    let lines = run_script(&script, None);
+    let search = |step| state(&lines, step)["tabs"][0]["search"].clone();
+    assert_eq!(search("type"), serde_json::Value::Null);
+    let found = search("find");
+    assert_eq!(found["replace"], false, "{found:#}");
+    assert_eq!(found["query"], "select");
+    assert_eq!(found["matches"], "1/2");
+    assert_eq!(search("find and replace")["replace"], true);
+    assert_eq!(search("close"), serde_json::Value::Null);
+    assert_eq!(
+        state(&lines, "close")["editor_text"],
+        "select 1 union select 2"
+    );
+}

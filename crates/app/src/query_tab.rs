@@ -85,6 +85,17 @@ pub struct TabState {
     pub status: Status,
     /// The editor caret's line, counted from one.
     pub cursor_line: u32,
+    /// The editor's find panel, while it is open.
+    pub search: Option<SearchState>,
+}
+
+/// What a user can see of the editor's find panel (Ctrl+F) or find and replace (Ctrl+H).
+#[derive(Debug, Serialize)]
+pub struct SearchState {
+    pub replace: bool,
+    pub query: String,
+    /// The current match and the total, such as `1/3`; `0/0` with none.
+    pub matches: String,
 }
 
 pub struct QueryTab {
@@ -123,7 +134,11 @@ impl QueryTab {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let editor = cx.new(|cx| EditorState::new(window, cx).language("sql"));
+        let editor = cx.new(|cx| {
+            EditorState::new(window, cx)
+                .language("sql")
+                .searchable(true)
+        });
         let mut tab = Self {
             title,
             target,
@@ -170,6 +185,13 @@ impl QueryTab {
             colour: crate::palette::name(self.target.as_ref().and_then(|t| t.colour.as_deref())),
             status: self.status,
             cursor_line: self.editor.read(cx).cursor_position().line + 1,
+            search: Some(self.editor.read(cx).search_session())
+                .filter(|search| search.open)
+                .map(|search| SearchState {
+                    replace: search.replace_mode,
+                    query: search.query.clone(),
+                    matches: search.matcher.label(),
+                }),
         }
     }
 

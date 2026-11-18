@@ -53,8 +53,8 @@ fn type_lines(lines: &[&str]) -> Vec<Value> {
     keys
 }
 
-/// Saves a connection called "Lab" to `lab` in `appdata`, with its password in Credential
-/// Manager.
+/// Saves a red connection called "Lab" to `lab` in `appdata`, with its password in
+/// Credential Manager.
 fn save_connection(lab: &Lab, appdata: &Path) {
     let mut details = Connection::new(lab.engine, lab.host);
     details.name = "Lab".into();
@@ -62,6 +62,7 @@ fn save_connection(lab: &Lab, appdata: &Path) {
     details.sign_in = SignInMethod::Password;
     details.user = Some(lab.user.into());
     details.database = Some(lab.database.into());
+    details.colour = Some("#d13438".into());
     // The lab servers' certificates are self-signed.
     details.tls = TlsMode::Off;
     details.trust_server_certificate = true;
@@ -159,6 +160,10 @@ fn drive_a_query_tab(lab: &Lab) -> Vec<Value> {
     assert_eq!(opened["active_tab"], 1);
     let tab = active_tab(opened);
     assert_eq!(tab["connection"], "Lab");
+    assert_eq!(
+        tab["colour"], "Red",
+        "the tab wears its connection's colour"
+    );
     assert_eq!(tab["status"], "ready", "{opened:#}");
     assert_eq!(tab["database"], lab.database);
     assert_eq!(opened["focused_pane"], "Editor");
