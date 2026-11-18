@@ -49,6 +49,9 @@ pub struct GridState {
     /// The rows on screen, zero-based and end-exclusive.
     pub visible_rows: std::ops::Range<usize>,
     pub block: Option<Block>,
+    /// The highlighted cell the keyboard moves, as (row, column), when one cell is selected;
+    /// the inspector shows its value.
+    pub active_cell: Option<(usize, usize)>,
     pub focused: bool,
     /// True when some of the grid shows in the pane, which scrolls when the grids don't fit.
     pub on_screen: bool,
@@ -215,6 +218,10 @@ impl Results {
                     complete: grid.is_complete(),
                     visible_rows: table.visible_range().rows().clone(),
                     block: grid.block(),
+                    active_cell: match table.selection() {
+                        TableSelection::Cell(row, column) => Some((row, column)),
+                        _ => None,
+                    },
                     focused: ix == self.focused,
                     on_screen: self.is_on_screen(ix),
                 }
