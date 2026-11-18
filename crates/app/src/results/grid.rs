@@ -138,10 +138,10 @@ impl Grid {
         cx.spawn(async move |table, cx| {
             let counts = cx
                 .background_spawn(async move {
-                    Ok::<_, dbide_engine::spill::Error>((
-                        reader.row_count()?,
-                        reader.is_complete()?,
-                    ))
+                    // Completion first: rows can still arrive between the two reads, and a
+                    // count read after completion is final.
+                    let complete = reader.is_complete()?;
+                    Ok::<_, dbide_engine::spill::Error>((reader.row_count()?, complete))
                 })
                 .await;
             let _ = table.update(cx, |table, cx| {

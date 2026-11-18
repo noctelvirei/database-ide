@@ -109,7 +109,7 @@ impl Results {
         if self.is_copying() {
             self.retired.append(&mut self.stores);
         } else {
-            self.stores.clear();
+            delete(std::mem::take(&mut self.stores), cx);
         }
         self.focused = 0;
         self.maximised = None;
@@ -355,7 +355,7 @@ impl Results {
             let _ = this.update(cx, |this, cx| {
                 this.copying -= 1;
                 if this.copying == 0 {
-                    this.retired.clear();
+                    delete(std::mem::take(&mut this.retired), cx);
                 }
                 let message = match copied {
                     Ok(text) => {
@@ -441,6 +441,14 @@ impl Results {
                     .child(heading),
             )
             .child(div().flex_1().child(DataTable::new(table)))
+    }
+}
+
+/// Deletes spill files on the background executor: dropping a store waits for any read of
+/// it still under way.
+fn delete(stores: Vec<Store>, cx: &App) {
+    if !stores.is_empty() {
+        cx.background_spawn(async move { drop(stores) }).detach();
     }
 }
 
