@@ -499,6 +499,77 @@ flagged!(
 );
 clear!(empty_batch_is_fully_checked, SqlServer, "", true);
 clear!(
+    go_separated_safe_batches_are_fully_checked,
+    SqlServer,
+    "SELECT 1\r\ngO 2 -- repeat\r\nSELECT 2;\r\nGO\r\n",
+    true
+);
+clear!(
+    unparseable_second_go_batch_is_not_fully_checked,
+    SqlServer,
+    "SELECT 1;\nGO\nUNRECOGNIZED nonsense",
+    false
+);
+
+#[test]
+fn delete_in_second_go_batch_uses_script_line_once() {
+    assert_eq!(
+        check(
+            "-- header\nSELECT 1;\nGO\n\nDELETE FROM t;\nGO 3",
+            Engine::SqlServer
+        ),
+        DangerCheck {
+            statements: vec![DangerousStatement {
+                kind: DangerKind::Delete,
+                reason: "DELETE with no WHERE clause",
+                line: 5,
+            }],
+            fully_checked: true,
+        }
+    );
+}
+
+#[test]
+fn go_batches_keep_fallback_findings_and_check_later_batches() {
+    assert_eq!(
+        check(
+            "SELECT 1;\nGO\nSHUTDOWN;\nGO\nDELETE FROM t;",
+            Engine::SqlServer
+        ),
+        DangerCheck {
+            statements: vec![
+                DangerousStatement {
+                    kind: DangerKind::Shutdown,
+                    reason: "SHUTDOWN stops the server",
+                    line: 3,
+                },
+                DangerousStatement {
+                    kind: DangerKind::Delete,
+                    reason: "DELETE with no WHERE clause",
+                    line: 5,
+                },
+            ],
+            fully_checked: false,
+        }
+    );
+}
+
+#[test]
+fn invalid_go_repeat_keeps_findings_and_is_not_fully_checked() {
+    assert_eq!(
+        check("DELETE FROM t;\nGO 0", Engine::SqlServer),
+        DangerCheck {
+            statements: vec![DangerousStatement {
+                kind: DangerKind::Delete,
+                reason: "DELETE with no WHERE clause",
+                line: 1,
+            }],
+            fully_checked: false,
+        }
+    );
+}
+
+clear!(
     comments_only_are_fully_checked,
     PostgreSql,
     "/* comment */ -- comment",
