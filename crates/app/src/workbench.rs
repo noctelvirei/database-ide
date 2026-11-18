@@ -11,8 +11,9 @@ use gpui::{
     App, AppContext as _, Context, Entity, FocusHandle, Focusable as _, IntoElement,
     ParentElement as _, Render, SharedString, Styled as _, Window, div, prelude::*, px,
 };
-use gpui_component::ActiveTheme as _;
+use gpui_component::button::Button;
 use gpui_component::input::Editor;
+use gpui_component::{ActiveTheme as _, Disableable as _};
 use serde::Serialize;
 
 use crate::explorer::{Explorer, ExplorerEvent, ExplorerState};
@@ -22,10 +23,10 @@ use crate::keymap::{
     RefreshAutocomplete, Run, SaveFile, ToggleActualPlan, TogglePlanView, ToggleResults,
     UncommentLines,
 };
-use crate::messages::{Jump, Message, Messages, Tone};
+use crate::messages::Tone;
 use crate::palette;
 use crate::query_tab::dialogs::DialogState;
-use crate::query_tab::{QueryTab, QueryTabEvent, QueryTarget, TabState};
+use crate::query_tab::{QueryTab, QueryTarget, TabState};
 use crate::runtime::Runtime;
 
 /// How many of the newest messages the strip renders; it shows as many as fit.
@@ -103,7 +104,6 @@ pub struct Workbench {
     pane_focus: [FocusHandle; 6],
     results_visible: bool,
     last_action: Option<&'static str>,
-    messages: Messages,
     /// Called once, from the first `render`.
     on_first_frame: Option<FirstFrameHook>,
 }
@@ -124,10 +124,7 @@ impl Workbench {
             &explorer,
             window,
             |this: &mut Self, _, event: &ExplorerEvent, window, cx| match event {
-                ExplorerEvent::Message(text) => {
-                    this.messages.push(Message::plain(text.clone()));
-                    cx.notify();
-                }
+                ExplorerEvent::Message(text) => this.note(text.clone(), cx),
                 ExplorerEvent::OpenQuery(target) => {
                     this.open_tab(Some(target.as_ref().clone()), window, cx);
                 }
@@ -143,7 +140,6 @@ impl Workbench {
             pane_focus,
             results_visible: true,
             last_action: None,
-            messages: Messages::default(),
             on_first_frame: Some(Box::new(on_first_frame)),
         };
         this.open_tab(None, window, cx);
@@ -174,12 +170,8 @@ impl Workbench {
         self.next_tab_number += 1;
         let runtime = self.runtime.clone();
         let tab = cx.new(|cx| QueryTab::new(title, target, runtime, window, cx));
-        cx.subscribe(&tab, |this: &mut Self, _, event: &QueryTabEvent, cx| {
-            let QueryTabEvent::Message(message) = event;
-            this.messages.push(message.clone());
-            cx.notify();
-        })
-        .detach();
+        // The tab list, the strip and the Stop button show the tab's state.
+        cx.observe(&tab, |_, _, cx| cx.notify()).detach();
         cx.on_focus_in(
             &tab.read(cx).editor().focus_handle(cx),
             window,
@@ -212,14 +204,12 @@ impl Workbench {
         self.open_tab(target, window, cx);
     }
 
-    /// Moves the caret to an error's line, showing its tab first.
-    fn go_to(&mut self, jump: Jump, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(ix) = self.tabs.iter().position(|t| t.entity_id() == jump.tab) else {
-            return;
-        };
-        self.active = ix;
-        self.tabs[ix].update(cx, |tab, cx| tab.jump_to(jump.line, window, cx));
-        cx.notify();
+    /// Puts one of the app's notices in the strip of the tab on screen.
+    fn note(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
+        let text = text.into();
+        self.active_tab()
+            .clone()
+            .update(cx, |tab, cx| tab.note(text, cx));
     }
 
     fn focus_handle_of(&self, pane: Pane, cx: &App) -> FocusHandle {
@@ -281,9 +271,7 @@ impl Workbench {
     /// Records an action whose feature a later ticket builds.
     fn not_built(&mut self, name: &'static str, cx: &mut Context<Self>) {
         self.last_action = Some(name);
-        self.messages
-            .push(Message::plain(format!("{name} is not built yet.")));
-        cx.notify();
+        self.note(format!("{name} is not built yet."), cx);
     }
 
     /// True while a connect, a connection test, or a tab's run, switch or list is under way.
@@ -302,13 +290,13 @@ impl Workbench {
             focused_pane: self.focused_pane(window, cx),
             last_action: self.last_action,
             results_visible: self.results_visible,
-            messages: self
-                .messages
+            messages: tab
+                .messages()
                 .lines()
                 .iter()
                 .map(|m| m.text.clone())
                 .collect(),
-            chosen_message: self.messages.chosen(),
+            chosen_message: tab.messages().chosen(),
             editor_text: tab.editor().read(cx).value().to_string(),
             tabs: self.tabs.iter().map(|t| t.read(cx).state(cx)).collect(),
             active_tab: self.active,
@@ -364,16 +352,51 @@ impl Workbench {
         self.pane(Pane::QueryTabs, focused, cx).children(rows)
     }
 
-    /// The messages strip: newest at the bottom, errors in red, the chosen error marked.
+    /// Run and Stop for the active tab. Stop is the way to cancel from a real keyboard on
+    /// Windows, where gpui doesn't pass Alt+Break through (keymap.rs).
+    fn run_bar(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let running = self.active_tab().read(cx).is_running();
+        div()
+            .flex()
+            .flex_row()
+            .gap_2()
+            .px_2()
+            .py_1()
+            .child(
+                Button::new("run")
+                    .label("Run (F5)")
+                    .disabled(running)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.last_action = Some("Run");
+                        let tab = this.active_tab().clone();
+                        tab.update(cx, |tab, cx| tab.run(window, cx));
+                    })),
+            )
+            .child(
+                Button::new("stop")
+                    .label("Stop (Alt+Break)")
+                    .disabled(!running)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.last_action = Some("CancelRun");
+                        let tab = this.active_tab().clone();
+                        tab.update(cx, |tab, cx| tab.cancel(cx));
+                    })),
+            )
+    }
+
+    /// The active tab's messages strip: newest at the bottom, errors in red, the chosen error
+    /// marked.
     fn message_strip(
         &self,
         focused: Option<Pane>,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let theme = cx.theme().clone();
-        let lines = self.messages.lines();
+        let tab = self.active_tab().clone();
+        let messages = tab.read(cx).messages();
+        let lines = messages.lines();
         let newest = lines.len().saturating_sub(MESSAGES_SHOWN);
-        let chosen = self.messages.chosen();
+        let chosen = messages.chosen();
         let rows = lines[newest..].iter().enumerate().map(|(offset, message)| {
             let ix = newest + offset;
             let colour = match message.tone {
@@ -385,14 +408,16 @@ impl Workbench {
                 .id(("message", ix))
                 .text_color(colour)
                 .when(chosen == Some(ix), |row| row.bg(theme.accent))
-                .when(message.jump.is_some(), |row| row.cursor_pointer())
+                .when(message.line.is_some(), |row| row.cursor_pointer())
                 .child(message.text.clone())
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    if let Some(jump) = this.messages.choose(ix) {
-                        this.go_to(jump, window, cx);
+                .on_click({
+                    let tab = tab.clone();
+                    move |_, window, cx| {
+                        tab.update(cx, |tab, cx| tab.go_to_message(ix, window, cx));
                     }
-                }))
+                })
         });
+        let rows: Vec<_> = rows.collect();
         self.pane(Pane::Messages, focused, cx)
             .key_context("Messages")
             .h(px(120.))
@@ -408,17 +433,16 @@ impl Workbench {
                     .children(rows),
             )
             .on_action(cx.listener(|this, _: &PreviousError, _, cx| {
-                this.messages.step(false);
-                cx.notify();
+                let tab = this.active_tab().clone();
+                tab.update(cx, |tab, cx| tab.step_error(false, cx));
             }))
             .on_action(cx.listener(|this, _: &NextError, _, cx| {
-                this.messages.step(true);
-                cx.notify();
+                let tab = this.active_tab().clone();
+                tab.update(cx, |tab, cx| tab.step_error(true, cx));
             }))
             .on_action(cx.listener(|this, _: &GoToError, window, cx| {
-                if let Some(jump) = this.messages.chosen_jump() {
-                    this.go_to(jump, window, cx);
-                }
+                let tab = this.active_tab().clone();
+                tab.update(cx, |tab, cx| tab.go_to_chosen(window, cx));
             }))
     }
 }
@@ -449,6 +473,7 @@ impl Render for Workbench {
             .child(
                 self.pane(Pane::Editor, focused, cx)
                     .flex_1()
+                    .child(self.run_bar(cx))
                     .child(Editor::new(&editor).h_full()),
             )
             .child(self.message_strip(focused, cx));

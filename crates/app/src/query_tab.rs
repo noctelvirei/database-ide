@@ -14,11 +14,11 @@ use dbide_engine::connections::SavedConnection;
 use dbide_engine::danger::{self, DangerCheck};
 use dbide_engine::session::{CancelHandle, Event, Session, Severity};
 use futures::StreamExt as _;
-use gpui::{App, AppContext as _, Context, Entity, EventEmitter, SharedString, Window};
+use gpui::{App, AppContext as _, Context, Entity, SharedString, Window};
 use gpui_component::input::{EditorState, Position};
 use serde::Serialize;
 
-use crate::messages::{Jump, Message, Tone};
+use crate::messages::{Message, Messages, Tone};
 use crate::runtime::{RunUpdate, Runtime};
 
 pub mod dialogs;
@@ -87,11 +87,6 @@ pub struct TabState {
     pub cursor_line: u32,
 }
 
-/// Something for the messages strip.
-pub enum QueryTabEvent {
-    Message(Message),
-}
-
 pub struct QueryTab {
     title: SharedString,
     target: Option<QueryTarget>,
@@ -103,12 +98,12 @@ pub struct QueryTab {
     database: Option<String>,
     /// The running batch's cancel handle, once the runtime has started it.
     cancel: Option<CancelHandle>,
-    /// Cancel was pressed before the run had started; it is cancelled as it starts.
-    cancel_requested: bool,
+    /// Cancel was pressed during the current run. A run not yet started is cancelled as it
+    /// starts, and the run's end says it was cancelled.
+    cancel_pressed: bool,
     dialog: Option<dialogs::OpenDialog>,
+    messages: Messages,
 }
-
-impl EventEmitter<QueryTabEvent> for QueryTab {}
 
 impl QueryTab {
     /// A tab titled `title`, connecting at once when it has a target.
@@ -129,8 +124,9 @@ impl QueryTab {
             session: None,
             database: None,
             cancel: None,
-            cancel_requested: false,
+            cancel_pressed: false,
             dialog: None,
+            messages: Messages::default(),
         };
         tab.connect(window, cx);
         tab
@@ -189,12 +185,42 @@ impl QueryTab {
         self.target.as_ref().and_then(|t| t.colour.as_deref())
     }
 
-    fn say(&self, text: impl Into<SharedString>, tone: Tone, cx: &mut Context<Self>) {
-        cx.emit(QueryTabEvent::Message(Message {
+    pub fn messages(&self) -> &Messages {
+        &self.messages
+    }
+
+    /// Adds one of the app's own notices to the tab's messages strip.
+    pub fn note(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.say(text, Tone::Plain, cx);
+    }
+
+    fn say(&mut self, text: impl Into<SharedString>, tone: Tone, cx: &mut Context<Self>) {
+        self.messages.push(Message {
             text: text.into(),
             tone,
-            jump: None,
-        }));
+            line: None,
+        });
+        cx.notify();
+    }
+
+    /// Up and Down in the strip: chooses the previous or next error that names a line.
+    pub fn step_error(&mut self, forward: bool, cx: &mut Context<Self>) {
+        self.messages.step(forward);
+        cx.notify();
+    }
+
+    /// Enter in the strip: moves the caret to the chosen error's line.
+    pub fn go_to_chosen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(line) = self.messages.chosen_line() {
+            self.jump_to(line, window, cx);
+        }
+    }
+
+    /// A click on message `ix`: chooses it and moves the caret to its line, if it has one.
+    pub fn go_to_message(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(line) = self.messages.choose(ix) {
+            self.jump_to(line, window, cx);
+        }
     }
 
     /// Says why the session can't take new work, or returns it.
@@ -205,7 +231,9 @@ impl QueryTab {
                 "This tab has no connection. Select a connection in the explorer (F8) and press Ctrl+N."
             }
             Status::Connecting => "This tab is still connecting.",
-            Status::Running => "This tab is already running a query. Cancel it with Alt+Break.",
+            Status::Running => {
+                "This tab is already running a query. Cancel it with Stop or Alt+Break."
+            }
             Status::Switching => "This tab is switching databases.",
             Status::Listing => "This tab is loading its database list.",
             Status::Failed => {
@@ -331,13 +359,12 @@ impl QueryTab {
         };
         self.status = Status::Running;
         self.cancel = None;
-        self.cancel_requested = false;
+        self.cancel_pressed = false;
         let mut updates = self.runtime.run(session, batch);
-        let tab = cx.entity_id();
         cx.spawn_in(window, async move |this, cx| {
             while let Some(update) = updates.next().await {
                 let applied = this.update(cx, |this, cx| {
-                    this.apply(update, tab, first_line, cx);
+                    this.apply(update, first_line);
                     cx.notify();
                 });
                 if applied.is_err() {
@@ -358,22 +385,13 @@ impl QueryTab {
         cx.notify();
     }
 
-    fn apply(
-        &mut self,
-        update: RunUpdate,
-        tab: gpui::EntityId,
-        first_line: u32,
-        cx: &mut Context<Self>,
-    ) {
-        let jump = |line: Option<std::num::NonZeroU64>| {
-            line.map(|line| Jump {
-                tab,
-                line: first_line + line.get() as u32 - 1,
-            })
-        };
+    fn apply(&mut self, update: RunUpdate, first_line: u32) {
+        // The engine counts lines from one within the batch; the editor from zero.
+        let editor_line =
+            |line: Option<std::num::NonZeroU64>| line.map(|l| first_line + l.get() as u32 - 1);
         let message = match update {
             RunUpdate::Started(handle) => {
-                if self.cancel_requested {
+                if self.cancel_pressed {
                     handle.cancel();
                 }
                 self.cancel = Some(handle);
@@ -396,23 +414,26 @@ impl QueryTab {
                     } else {
                         Tone::Plain
                     },
-                    jump: jump(line),
+                    line: editor_line(line),
                 },
                 Event::RowCount(rows) => Message::plain(match rows {
                     1 => "(1 row affected)".to_owned(),
                     rows => format!("({rows} rows affected)"),
                 }),
                 Event::Error { text, line, .. } => {
-                    let jump = jump(line);
-                    let text = match jump {
-                        Some(jump) => format!("Line {}: {text}", jump.line + 1),
+                    let line = editor_line(line);
+                    let text = match line {
+                        Some(line) => format!("Line {}: {text}", line + 1),
                         None => text,
                     };
                     Message {
                         text: text.into(),
                         tone: Tone::Error,
-                        jump,
+                        line,
                     }
+                }
+                Event::Done { elapsed } if self.cancel_pressed => {
+                    Message::plain(format!("Cancelled after {:.2} s.", elapsed.as_secs_f64()))
                 }
                 Event::Done { elapsed } => {
                     Message::plain(format!("Finished in {:.2} s.", elapsed.as_secs_f64()))
@@ -421,7 +442,7 @@ impl QueryTab {
                 Event::ResultSetStarted { .. } | Event::Rows(_) | Event::Plan { .. } => return,
             },
         };
-        cx.emit(QueryTabEvent::Message(message));
+        self.messages.push(message);
     }
 
     /// True once the runtime has started the current run, so a cancel reaches the server.
@@ -429,15 +450,20 @@ impl QueryTab {
         self.cancel.is_some()
     }
 
-    /// Alt+Break: cancels the run; rows and messages already received stay.
+    /// True while a run is under way, so Stop can cancel it.
+    pub fn is_running(&self) -> bool {
+        self.status == Status::Running
+    }
+
+    /// Stop or Alt+Break: cancels the run; rows and messages already received stay.
     pub fn cancel(&mut self, cx: &mut Context<Self>) {
         if self.status != Status::Running {
             self.say("Nothing is running in this tab.", Tone::Plain, cx);
             return;
         }
-        match &self.cancel {
-            Some(handle) => handle.cancel(),
-            None => self.cancel_requested = true,
+        self.cancel_pressed = true;
+        if let Some(handle) = &self.cancel {
+            handle.cancel();
         }
         self.say("Cancelling…", Tone::Plain, cx);
     }
