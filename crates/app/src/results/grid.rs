@@ -8,6 +8,9 @@
 //! The UI thread never touches the spill file: the reader's lock is held while the runtime
 //! writes rows, so the row count and completion are copied in by `refresh`, the page by
 //! `want_row` and the selected cell's value by `selection_changed`, all off the UI thread.
+//! shortcut: the refresh polling and its run-ended bookkeeping stand in for a spill reader
+//! whose row count and completion never wait on disk I/O; read them directly once DAT-49
+//! gives the engine that.
 //!
 //! The table selects one cell, row or column at a time; the grid adds a block on top of
 //! that. The table's own selection is the block's active corner, and the grid keeps the

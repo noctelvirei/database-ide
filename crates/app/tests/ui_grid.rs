@@ -46,15 +46,10 @@ fn drive_a_million_rows(server: &Server, query: &str) {
     let steps = json!([
         { "name": "open a tab", "input": [{ "key": "f8" }, { "key": "ctrl-n" }, "idle"] },
         {
-            "name": "run",
-            "input": [
-                { "text": query },
-                { "key": "f5" },
-                "running",
-                { "mark": "while rows arrive" },
-                "idle",
-            ],
+            "name": "while rows arrive",
+            "input": [{ "text": query }, { "key": "f5" }, "running", { "mark": "while rows arrive" }],
         },
+        { "name": "run", "input": ["idle"] },
         { "name": "to the results", "input": [{ "key": "f6" }, { "key": "f6" }] },
         { "name": "to the last cell", "input": [{ "key": "ctrl-end" }] },
         {
@@ -82,6 +77,12 @@ fn drive_a_million_rows(server: &Server, query: &str) {
         run_script(&script, Some(&appdata))
     };
 
+    // How far the run had got when memory was sampled; a fast run may already be done.
+    let arriving = &state(&lines, "while rows arrive")["results"];
+    eprintln!(
+        "rows when sampled: {}, complete: {}",
+        arriving[0]["rows"], arriving[0]["complete"]
+    );
     let ran = state(&lines, "run");
     let grids = ran["results"].as_array().unwrap();
     assert_eq!(grids.len(), 2, "{ran:#}");
