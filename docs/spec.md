@@ -92,7 +92,7 @@ The engine formats SQL text for one engine's dialect. It changes layout and the 
 
 ## UI
 
-gpui + gpui-component pinned exactly, with our public fork for the find panel's Replace keys ([toolkit decision](https://github.com/noctelvirei/database-ide/issues/8)). Layout C "Workbench" ([layout decision](https://github.com/noctelvirei/database-ide/issues/13)): vertical query tabs grouped by connection with the object explorer below them, the editor with an always-visible messages strip, results or plan below, and a permanent inspector on the right. Keyboard-complete: every action has a shortcut or is reachable from the keyboard.
+gpui + gpui-component pinned exactly, with our public fork for the find panel's Replace keys ([toolkit decision](https://github.com/noctelvirei/database-ide/issues/8)). Layout C "Workbench" ([layout decision](https://github.com/noctelvirei/database-ide/issues/13)): vertical query tabs grouped by connection with the object explorer below them, the editor with an always-visible messages strip, results or plan below, and a permanent inspector on the right. Keyboard-complete: every action has a shortcut or is reachable from the keyboard, and every workbench action is listed in the menu bar.
 
 ### Editor and autocomplete
 
@@ -132,6 +132,18 @@ SSMS's shortcuts, not remappable in v1:
 | Ctrl+U | Pick the current database |
 | F8 | Focus the object explorer |
 | Ctrl+O / Ctrl+S | Open / save a `.sql` file |
+
+### Menu bar
+
+A Windows menu bar across the top of the window, so every action can be found without knowing its key. It is gpui-component's `AppMenuBar` built from the same actions the keymap binds; each item shows its shortcut, and an item that can't act now (Cancel with no run going) is greyed out.
+
+- **File:** New query, New connection, Open, Save, Exit.
+- **Edit:** Undo, Redo, Cut, Copy, Paste, Select all, Find, Replace, Comment, Uncomment, Format.
+- **View:** Object explorer, Results, Plan tree ↔ graph, Next pane, Previous pane.
+- **Query:** Run, Cancel, Estimated plan, Include actual plan (a tick shows when on), Change database, Refresh autocomplete.
+- **Help:** Keyboard shortcuts (a window listing the Keyboard table), About (version, licences, the repository link).
+
+Alt or F10 moves focus to the menu bar and Alt+the underlined letter opens a menu, as in SSMS; arrows, Enter and Escape move through it. No Tools menu in v1, since there are no settings to show. Each later feature adds its own items as it lands: Save as, recent files and query history (File and View), plan files, exports and run to file, grid edit mode, and Check for updates (Help).
 
 ### Formatting
 
