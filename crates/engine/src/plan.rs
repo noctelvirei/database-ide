@@ -1,10 +1,12 @@
 //! Execution plans as data, with original payloads retained independently of parsed operators.
 
 use serde::Serialize;
+use serde_json::Value;
 
 use crate::session::PlanFormat;
 
 pub mod explain;
+pub mod mysql;
 pub mod showplan;
 
 /// A raw inspector property. Paths include child indices; repeated names retain their order.
@@ -34,21 +36,21 @@ pub struct Object {
 pub struct Operator {
     /// Physical operator name; SQL Server statements have a synthetic statement root.
     pub name: String,
-    /// Logical operator name, or PostgreSQL join type/strategy when supplied.
+    /// Logical operator name, or PostgreSQL/MySQL join type/access strategy when supplied.
     pub kind: String,
     /// Estimated rows for one execution, before execution/loop normalization.
     pub estimated_rows: f64,
-    /// Estimated rows multiplied by estimated SQL Server executions or actual PostgreSQL loops.
+    /// Estimated rows multiplied by estimated SQL Server executions or actual PostgreSQL/MySQL loops.
     pub estimated_rows_total: f64,
-    /// Actual rows summed over threads/executions, or multiplied by PostgreSQL loops.
+    /// Actual rows summed over threads/executions, or multiplied by PostgreSQL/MySQL loops.
     pub actual_rows: Option<f64>,
-    /// Estimated inclusive cost; PostgreSQL inner costs use estimated outer cardinalities.
+    /// Estimated inclusive cost; PostgreSQL/MySQL inner costs use estimated outer cardinalities.
     pub subtree_cost: f64,
     /// Estimated operator cost excluding children, bounded below by zero.
     pub own_cost: f64,
     /// Own cost divided by the statement's inclusive cost, in percent; zero for a zero cost.
     pub cost_percent: f64,
-    /// Inclusive milliseconds; maximum thread time on SQL Server, total over PostgreSQL loops.
+    /// Inclusive milliseconds; maximum thread time on SQL Server, total over PostgreSQL/MySQL loops.
     pub elapsed_ms: Option<f64>,
     /// CPU milliseconds summed over SQL Server threads, absent when not reported.
     pub cpu_ms: Option<f64>,
@@ -119,6 +121,9 @@ pub enum Error {
     /// PostgreSQL JSON could not be decoded or interpreted.
     #[error(transparent)]
     Explain(#[from] explain::Error),
+    /// MySQL iterator JSON could not be decoded or interpreted.
+    #[error(transparent)]
+    MySql(#[from] mysql::Error),
 }
 
 /// Parses an Event::Plan payload in one call; malformed payloads return a format-specific error.
@@ -126,6 +131,7 @@ pub fn parse(payload: &str, format: PlanFormat) -> Result<Plan, Error> {
     Ok(match format {
         PlanFormat::ShowplanXml => showplan::parse(payload)?,
         PlanFormat::ExplainJson => explain::parse(payload)?,
+        PlanFormat::MySqlJson => mysql::parse(payload)?,
     })
 }
 
@@ -134,5 +140,37 @@ fn cost_percent(own: f64, statement: f64) -> f64 {
         own / statement * 100.0
     } else {
         0.0
+    }
+}
+
+fn raw_json(node: &Value, path: &str, excluded: Option<&str>, properties: &mut Vec<Property>) {
+    match node {
+        Value::Object(fields) => {
+            for (name, value) in fields {
+                if Some(name.as_str()) != excluded {
+                    let path = if path.is_empty() {
+                        name.clone()
+                    } else {
+                        format!("{path}/{name}")
+                    };
+                    properties.push(Property {
+                        name: path.clone(),
+                        value: value.to_string(),
+                    });
+                    raw_json(value, &path, None, properties);
+                }
+            }
+        }
+        Value::Array(items) => {
+            for (index, value) in items.iter().enumerate() {
+                let path = format!("{path}[{index}]");
+                properties.push(Property {
+                    name: path.clone(),
+                    value: value.to_string(),
+                });
+                raw_json(value, &path, None, properties);
+            }
+        }
+        _ => {}
     }
 }

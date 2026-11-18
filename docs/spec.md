@@ -11,7 +11,7 @@ Targets, each a pass/fail check:
 - Under 100 MB private working set (summed over its processes) for the idle app with every feature loaded, before any database work.
 - Installer under 20 MB.
 
-Out of scope for v1: monitoring (activity, Agent jobs, Query Store), schema designer, admin, MySQL plans, Entra ID sign-in, read-only mode, full context-aware autocomplete, SSH tunnels, Windows sign-in as another account, macOS and Linux builds.
+Out of scope for v1: monitoring (activity, Agent jobs, Query Store), schema designer, admin, Entra ID sign-in, read-only mode, full context-aware autocomplete, SSH tunnels, Windows sign-in as another account, macOS and Linux builds.
 
 ## Build order
 
@@ -52,11 +52,13 @@ Every row of a run streams into a compact temp file as it arrives, with a row-of
 
 ## Plans
 
-- Estimated and actual plans for SQL Server and PostgreSQL ([plan viewer research](https://github.com/noctelvirei/database-ide/issues/6)).
-- The engine returns, per statement, the raw plan payload (showplan XML or EXPLAIN JSON) plus one parsed operator tree shared by both engines: operator name and kind, estimated and actual rows, cost and cost %, timings, I/O, warnings, children, and every raw property for the details panel.
+- Estimated and actual plans for SQL Server, PostgreSQL and MySQL ([plan viewer research](https://github.com/noctelvirei/database-ide/issues/6)).
+- The engine returns, per statement, the raw plan payload (showplan XML or EXPLAIN JSON) plus one parsed operator tree shared by all three engines: operator name and kind, estimated and actual rows, cost and cost %, timings, I/O when reported, warnings, children, and every raw property for the details panel.
 - Parse showplan XML leniently: unknown elements and attributes are kept as raw properties, never errors (Microsoft's published XSD stops at SQL Server 2022).
 - PostgreSQL actual plans use `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)`; for statements that change data, wrap in `BEGIN … ROLLBACK`.
-- Open and save `.sqlplan` files.
+- MySQL 8.4 plans use `EXPLAIN FORMAT=JSON` and `EXPLAIN ANALYZE FORMAT=JSON` with session `explain_json_format_version=2`, restored afterwards ([iterator JSON format](https://dev.mysql.com/blog-archive/new-json-format-for-explain/)). Actual plans run in a transaction rolled back on completion, error or cancellation. They refuse DDL and other non-explainable statements before execution, and refuse an existing transaction or disabled autocommit. Nontransactional effects (such as writes to MyISAM tables or external effects from stored functions) cannot be rolled back. Rows and elapsed times are totals over actual loops; the raw properties retain the per-loop counters and timings.
+- MySQL 8.4 measures joined UPDATE inputs but [suppresses the UPDATE writes](https://github.com/mysql/mysql-server/blob/8.4/sql/sql_update.cc); a single-table UPDATE can return `<not executable by iterator executor>`. The transaction guard still protects transactional side effects from stored functions invoked by an actual plan.
+- Open and save SQL Server `.sqlplan` files only.
 
 ## Exports
 
