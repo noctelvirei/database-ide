@@ -200,3 +200,68 @@ fn ui_mysql_a_million_rows_scroll_copy_and_stay_under_the_memory_target() {
          SELECT 'second' AS name, 2 AS n",
     );
 }
+
+/// Six result sets don't fit the results pane, so it scrolls the one the keyboard moves to
+/// into view; the last holds a 200-line value, which the inspector scrolls from the keyboard.
+#[test]
+fn ui_pg_results_scroll_to_the_focused_grid_and_the_inspector_scrolls_a_long_value() {
+    let postgres = Postgres::start().expect("PostgreSQL test server");
+    let server = Server {
+        engine: Engine::PostgreSql,
+        host: postgres.host(),
+        port: postgres.port(),
+        user: postgres.user(),
+        password: postgres.password(),
+        database: postgres.database(),
+    };
+    let dir = tempfile::tempdir().expect("temp dir");
+    let appdata = dir.path().join("appdata");
+    std::fs::create_dir(&appdata).expect("appdata folder");
+    let _forget = ForgetPasswords(&appdata);
+    server.save_as_lab(&appdata);
+
+    let query = "SELECT 1 AS a; SELECT 2 AS a; SELECT 3 AS a; SELECT 4 AS a; SELECT 5 AS a; \
+                 SELECT string_agg('line ' || g, chr(10)) AS long FROM generate_series(1, 200) AS g";
+    let down = json!({ "key": "ctrl-down" });
+    let steps = json!([
+        { "name": "open a tab", "input": [{ "key": "f8" }, { "key": "ctrl-n" }, "idle"] },
+        { "name": "run", "input": [{ "text": query }, { "key": "f5" }, "idle"] },
+        { "name": "to the results", "input": [{ "key": "f6" }, { "key": "f6" }] },
+        {
+            "name": "to the last result",
+            "input": [down, down, down, down, down, { "shot": "last-result" }],
+        },
+        { "name": "to the inspector", "input": [{ "key": "f6" }] },
+        { "name": "to the value's end", "input": [{ "key": "end" }, { "shot": "value-end" }] },
+        { "name": "back to its start", "input": [{ "key": "home" }] },
+    ]);
+    let script = dir.path().join("script.json");
+    std::fs::write(&script, steps.to_string()).unwrap();
+    let lines = run_script(&script, Some(&appdata));
+
+    let first = state(&lines, "to the results");
+    assert_eq!(first["results"].as_array().unwrap().len(), 6, "{first:#}");
+    assert_eq!(first["results"][0]["on_screen"], true);
+    assert_eq!(first["results"][5]["on_screen"], false, "{first:#}");
+
+    let last = state(&lines, "to the last result");
+    assert_eq!(last["results"][5]["focused"], true);
+    assert_eq!(last["results"][5]["on_screen"], true, "{last:#}");
+    assert_eq!(last["results"][0]["on_screen"], false, "{last:#}");
+    assert_eq!(last["inspector"]["column"], "long");
+
+    let inspecting = state(&lines, "to the inspector");
+    assert_eq!(inspecting["focused_pane"], "Inspector");
+    assert_eq!(inspecting["inspector_scrolled"], 0.0);
+    let scrolled = state(&lines, "to the value's end")["inspector_scrolled"]
+        .as_f64()
+        .unwrap();
+    assert!(
+        scrolled > 1000.0,
+        "200 lines scroll further than {scrolled} px"
+    );
+    assert_eq!(
+        state(&lines, "back to its start")["inspector_scrolled"],
+        0.0
+    );
+}

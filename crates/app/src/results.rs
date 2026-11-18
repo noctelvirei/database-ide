@@ -16,8 +16,8 @@ mod grid;
 use dbide_engine::spill::{Reader, Store};
 use gpui::{
     App, AppContext as _, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
-    Window, div, px,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollHandle, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Window, div, px,
 };
 use gpui_component::ActiveTheme as _;
 use gpui_component::table::{DataTable, TableEvent, TableSelection, TableState};
@@ -50,6 +50,8 @@ pub struct GridState {
     pub visible_rows: std::ops::Range<usize>,
     pub block: Option<Block>,
     pub focused: bool,
+    /// True when some of the grid shows in the pane, which scrolls when the grids don't fit.
+    pub on_screen: bool,
 }
 
 /// What the inspector shows: the selected cell in full.
@@ -71,6 +73,8 @@ pub struct Results {
     maximised: Option<usize>,
     /// Copies still reading their block from the spill file.
     copying: usize,
+    /// The stacked grids' scroll position.
+    scroll: ScrollHandle,
     focus_handle: FocusHandle,
 }
 
@@ -90,6 +94,7 @@ impl Results {
             focused: 0,
             maximised: None,
             copying: 0,
+            scroll: ScrollHandle::new(),
             focus_handle: cx.focus_handle(),
         }
     }
@@ -143,18 +148,34 @@ impl Results {
     }
 
     /// Gives the focused grid keyboard focus, selecting its first cell if nothing is
-    /// selected; with no grids, the pane itself takes focus.
+    /// selected, and scrolls it into view; with no grids, the pane itself takes focus.
     pub fn focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(table) = self.grids.get(self.focused).cloned() else {
             window.focus(&self.focus_handle, cx);
             return;
         };
+        self.scroll
+            .scroll_to_item(self.shown_position(self.focused));
         table.update(cx, |table, cx| {
             if table.selection() == TableSelection::None && table.delegate().row_count() > 0 {
                 table.set_selected_cell(0, 0, cx);
             }
         });
         window.focus(&table.focus_handle(cx), cx);
+    }
+
+    /// Where grid `ix` sits among the grids drawn: a maximised grid is the only one.
+    fn shown_position(&self, ix: usize) -> usize {
+        if self.maximised.is_some() { 0 } else { ix }
+    }
+
+    /// True when some of grid `ix` shows inside the pane.
+    fn is_on_screen(&self, ix: usize) -> bool {
+        if self.maximised.is_some_and(|shown| shown != ix) {
+            return false;
+        }
+        let shown = self.scroll.top_item()..=self.scroll.bottom_item();
+        !self.grids.is_empty() && shown.contains(&self.shown_position(ix))
     }
 
     pub fn state(&self, cx: &App) -> Vec<GridState> {
@@ -176,6 +197,7 @@ impl Results {
                     visible_rows: table.visible_range().rows().clone(),
                     block: grid.block().cloned(),
                     focused: ix == self.focused,
+                    on_screen: self.is_on_screen(ix),
                 }
             })
             .collect()
@@ -407,7 +429,8 @@ impl Render for Results {
             .size_full()
             .flex()
             .flex_col()
-            .overflow_hidden()
+            .overflow_y_scroll()
+            .track_scroll(&self.scroll)
             .children(grids)
             .on_action(cx.listener(|this, _: &ExtendUp, _, cx| this.extend(-1, 0, cx)))
             .on_action(cx.listener(|this, _: &ExtendDown, _, cx| this.extend(1, 0, cx)))

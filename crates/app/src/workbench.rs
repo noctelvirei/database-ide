@@ -8,8 +8,9 @@
 //! built yet say so in the messages strip.
 
 use gpui::{
-    App, AppContext as _, Context, Entity, FocusHandle, Focusable as _, IntoElement,
-    ParentElement as _, Render, SharedString, Styled as _, Window, div, prelude::*, px,
+    App, AppContext as _, Context, Entity, FocusHandle, Focusable as _, IntoElement, KeyDownEvent,
+    ParentElement as _, Render, ScrollHandle, SharedString, Styled as _, Window, div, prelude::*,
+    px,
 };
 use gpui_component::button::Button;
 use gpui_component::input::Editor;
@@ -92,6 +93,8 @@ pub struct VisibleState {
     pub results: Vec<GridState>,
     /// What the inspector shows: the selected cell in full.
     pub inspector: Option<Inspected>,
+    /// How far down the inspector's value is scrolled, in pixels.
+    pub inspector_scrolled: f32,
     /// The text on the system clipboard, so a script can check a copy.
     pub clipboard: Option<String>,
 }
@@ -110,6 +113,8 @@ pub struct Workbench {
     /// Focus handles for the panes that don't own one; the editor and explorer do.
     pane_focus: [FocusHandle; 6],
     results_visible: bool,
+    /// The inspector value's scroll position.
+    inspector_scroll: ScrollHandle,
     last_action: Option<&'static str>,
     /// Called once, from the first `render`.
     on_first_frame: Option<FirstFrameHook>,
@@ -146,6 +151,7 @@ impl Workbench {
             explorer,
             pane_focus,
             results_visible: true,
+            inspector_scroll: ScrollHandle::new(),
             last_action: None,
             on_first_frame: Some(Box::new(on_first_frame)),
         };
@@ -324,6 +330,7 @@ impl Workbench {
             results: tab.results().read(cx).state(cx),
             inspector: tab.results().read(cx).inspected(cx),
             clipboard: cx.read_from_clipboard().and_then(|item| item.text()),
+            inspector_scrolled: f32::from(self.inspector_scroll.offset().y).abs(),
         }
     }
 
@@ -351,6 +358,29 @@ impl Workbench {
             Pane::Editor | Pane::Explorer | Pane::Results => frame,
             other => frame.track_focus(&self.focus_handle_of(other, cx)),
         }
+    }
+
+    /// Scrolls the inspector's value for a key pressed while the inspector has focus:
+    /// Up and Down by a line, Page Up and Page Down by a screen, Home and End to the ends.
+    fn scroll_inspector(&mut self, key: &str, cx: &mut Context<Self>) {
+        const LINE: f32 = 20.;
+        let scroll = &self.inspector_scroll;
+        let page = f32::from(scroll.bounds().size.height).max(LINE);
+        let bottom = -f32::from(scroll.max_offset().y);
+        let offset = scroll.offset();
+        let y = f32::from(offset.y);
+        let y = match key {
+            "up" => y + LINE,
+            "down" => y - LINE,
+            "pageup" => y + page,
+            "pagedown" => y - page,
+            "home" => 0.,
+            "end" => bottom,
+            _ => return,
+        };
+        scroll.set_offset(gpui::point(offset.x, px(y.clamp(bottom, 0.))));
+        cx.stop_propagation();
+        cx.notify();
     }
 
     /// The query tabs pane: one row per tab, marked with its connection's colour.
@@ -510,7 +540,14 @@ impl Render for Workbench {
         let inspector = self
             .pane(Pane::Inspector, focused, cx)
             .w(px(300.))
-            .child(inspector_body(results.read(cx).inspected(cx), cx));
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                this.scroll_inspector(&event.keystroke.key, cx);
+            }))
+            .child(inspector_body(
+                results.read(cx).inspected(cx),
+                &self.inspector_scroll,
+                cx,
+            ));
 
         div()
             .id("workbench")
@@ -590,8 +627,9 @@ impl Render for Workbench {
     }
 }
 
-/// The inspector's contents: the selected cell's column, type and whole value.
-fn inspector_body(inspected: Option<Inspected>, cx: &App) -> gpui::Div {
+/// The inspector's contents: the selected cell's column, type and whole value, the value
+/// scrolling under `scroll`.
+fn inspector_body(inspected: Option<Inspected>, scroll: &ScrollHandle, cx: &App) -> gpui::Div {
     let theme = cx.theme();
     let Some(inspected) = inspected else {
         return div()
@@ -600,15 +638,23 @@ fn inspector_body(inspected: Option<Inspected>, cx: &App) -> gpui::Div {
             .text_color(theme.muted_foreground)
             .child("Select a cell in the results to see it in full.");
     };
+    let value = div()
+        .id("inspector-value")
+        .flex_1()
+        .min_h_0()
+        .overflow_y_scroll()
+        .track_scroll(scroll);
     let value = match inspected.text {
-        Some(text) => div().child(text),
-        None => div()
+        Some(text) => value.child(text),
+        None => value
             .italic()
             .text_color(theme.muted_foreground)
             .child("NULL"),
     };
     div()
         .px_2()
+        .flex_1()
+        .min_h_0()
         .flex()
         .flex_col()
         .gap_1()
