@@ -19,6 +19,7 @@ use gpui_component::input::{EditorState, Position};
 use serde::Serialize;
 
 use crate::messages::{Message, Messages, Tone};
+use crate::results::{Results, ResultsEvent};
 use crate::runtime::{RunUpdate, Runtime};
 
 pub mod dialogs;
@@ -115,12 +116,19 @@ pub struct QueryTab {
     /// The engine confirmed the current run was cancelled, so its end says so. A cancel
     /// pressed after the run finished never confirms, and the run reads as finished.
     run_cancelled: bool,
+    /// Counts the tab's runs, so a task started for one run stops when the next begins.
+    runs: u64,
     /// False while another tab is on screen: a database list that loads then is dropped,
     /// so its picker never opens over another tab's editor.
     shown: bool,
     dialog: Option<dialogs::OpenDialog>,
     messages: Messages,
+    /// The last run's result sets.
+    results: Entity<Results>,
 }
+
+/// How often a running tab redraws its grids' row counts while rows arrive.
+const ROW_COUNT_REFRESH: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// The text the engine gives the error that confirms a cancel (`dbide_engine::session::Event`).
 const CANCELLED: &str = "Run was cancelled";
@@ -139,6 +147,12 @@ impl QueryTab {
                 .language("sql")
                 .searchable(true)
         });
+        let results = cx.new(Results::new);
+        cx.subscribe(&results, |this: &mut Self, _, event: &ResultsEvent, cx| {
+            let ResultsEvent::Message(text) = event;
+            this.say(text.clone(), Tone::Plain, cx);
+        })
+        .detach();
         let mut tab = Self {
             title,
             target,
@@ -150,9 +164,11 @@ impl QueryTab {
             cancel: None,
             cancel_pressed: false,
             run_cancelled: false,
+            runs: 0,
             shown: true,
             dialog: None,
             messages: Messages::default(),
+            results,
         };
         tab.connect(window, cx);
         tab
@@ -167,11 +183,12 @@ impl QueryTab {
     }
 
     /// True while the session is away doing work: connecting, running, switching or listing.
-    pub fn is_busy(&self) -> bool {
+    /// True while the tab waits on the server, or on its results' copies and row counts.
+    pub fn is_busy(&self, cx: &gpui::App) -> bool {
         matches!(
             self.status,
             Status::Connecting | Status::Running | Status::Switching | Status::Listing
-        )
+        ) || self.results.read(cx).is_reading(cx)
     }
 
     pub fn state(&self, cx: &gpui::App) -> TabState {
@@ -220,6 +237,10 @@ impl QueryTab {
 
     pub fn messages(&self) -> &Messages {
         &self.messages
+    }
+
+    pub fn results(&self) -> &Entity<Results> {
+        &self.results
     }
 
     /// Adds one of the app's own notices to the tab's messages strip.
@@ -394,11 +415,28 @@ impl QueryTab {
         self.cancel = None;
         self.cancel_pressed = false;
         self.run_cancelled = false;
+        self.runs += 1;
+        let run = self.runs;
+        self.results.update(cx, |results, cx| results.clear(cx));
         let mut updates = self.runtime.run(session, batch);
+        // Row counts grow on the runtime without an update; read them again while the run lasts.
+        let results = self.results.downgrade();
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(ROW_COUNT_REFRESH).await;
+                let running = this.read_with(cx, |this, _| {
+                    this.runs == run && this.status == Status::Running
+                });
+                if !matches!(running, Ok(true)) || results.update(cx, Results::refresh).is_err() {
+                    return;
+                }
+            }
+        })
+        .detach();
         cx.spawn_in(window, async move |this, cx| {
             while let Some(update) = updates.next().await {
-                let applied = this.update(cx, |this, cx| {
-                    this.apply(update, first_line);
+                let applied = this.update_in(cx, |this, window, cx| {
+                    this.apply(update, first_line, window, cx);
                     cx.notify();
                 });
                 if applied.is_err() {
@@ -419,7 +457,13 @@ impl QueryTab {
         cx.notify();
     }
 
-    fn apply(&mut self, update: RunUpdate, first_line: u32) {
+    fn apply(
+        &mut self,
+        update: RunUpdate,
+        first_line: u32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // The engine counts lines from one within the batch; the editor from zero.
         let editor_line =
             |line: Option<std::num::NonZeroU64>| line.map(|l| first_line + l.get() as u32 - 1);
@@ -431,9 +475,18 @@ impl QueryTab {
                 self.cancel = Some(handle);
                 return;
             }
-            RunUpdate::Finished(session) => {
+            RunUpdate::ResultSet(reader) => {
+                self.results
+                    .update(cx, |results, cx| results.add(reader, window, cx));
+                return;
+            }
+            RunUpdate::Finished { session, results } => {
                 self.cancel = None;
                 self.give_back(session);
+                self.results.update(cx, |pane, cx| {
+                    pane.keep(results, cx);
+                    cx.notify();
+                });
                 return;
             }
             RunUpdate::Event(event) => match event {

@@ -8,8 +8,9 @@
 //! built yet say so in the messages strip.
 
 use gpui::{
-    App, AppContext as _, Context, Entity, FocusHandle, Focusable as _, IntoElement,
-    ParentElement as _, Render, SharedString, Styled as _, Window, div, prelude::*, px,
+    App, AppContext as _, Context, Entity, FocusHandle, Focusable as _, IntoElement, KeyDownEvent,
+    ParentElement as _, Render, ScrollHandle, SharedString, Styled as _, Window, div, prelude::*,
+    px,
 };
 use gpui_component::button::Button;
 use gpui_component::input::Editor;
@@ -27,6 +28,7 @@ use crate::messages::Tone;
 use crate::palette;
 use crate::query_tab::dialogs::DialogState;
 use crate::query_tab::{QueryTab, QueryTarget, TabState};
+use crate::results::{GridState, Inspected};
 use crate::runtime::Runtime;
 
 /// How many of the newest messages the strip renders; it shows as many as fit.
@@ -87,6 +89,14 @@ pub struct VisibleState {
     /// The active tab's open dialog.
     pub tab_dialog: Option<DialogState>,
     pub explorer: ExplorerState,
+    /// The active tab's result grids, top to bottom.
+    pub results: Vec<GridState>,
+    /// What the inspector shows: the selected cell in full.
+    pub inspector: Option<Inspected>,
+    /// How far down the inspector's value is scrolled, in pixels.
+    pub inspector_scrolled: f32,
+    /// The text on the system clipboard, so a script can check a copy.
+    pub clipboard: Option<String>,
 }
 
 /// Work to run when the window first draws.
@@ -103,6 +113,8 @@ pub struct Workbench {
     /// Focus handles for the panes that don't own one; the editor and explorer do.
     pane_focus: [FocusHandle; 6],
     results_visible: bool,
+    /// The inspector value's scroll position.
+    inspector_scroll: ScrollHandle,
     last_action: Option<&'static str>,
     /// Called once, from the first `render`.
     on_first_frame: Option<FirstFrameHook>,
@@ -139,6 +151,7 @@ impl Workbench {
             explorer,
             pane_focus,
             results_visible: true,
+            inspector_scroll: ScrollHandle::new(),
             last_action: None,
             on_first_frame: Some(Box::new(on_first_frame)),
         };
@@ -172,6 +185,9 @@ impl Workbench {
         let tab = cx.new(|cx| QueryTab::new(title, target, runtime, window, cx));
         // The tab list, the strip and the Stop button show the tab's state.
         cx.observe(&tab, |_, _, cx| cx.notify()).detach();
+        // The inspector shows the results' selected cell.
+        let results = tab.read(cx).results().clone();
+        cx.observe(&results, |_, _, cx| cx.notify()).detach();
         cx.on_focus_in(
             &tab.read(cx).editor().focus_handle(cx),
             window,
@@ -220,6 +236,7 @@ impl Workbench {
         match pane {
             Pane::Editor => self.active_tab().read(cx).editor().focus_handle(cx),
             Pane::Explorer => self.explorer.focus_handle(cx),
+            Pane::Results => self.active_tab().read(cx).results().focus_handle(cx),
             other => self.pane_focus[other as usize].clone(),
         }
     }
@@ -246,6 +263,10 @@ impl Workbench {
             Pane::Editor => self
                 .active_tab()
                 .update(cx, |tab, cx| tab.focus(window, cx)),
+            Pane::Results => {
+                let results = self.active_tab().read(cx).results().clone();
+                results.update(cx, |results, cx| results.focus(window, cx));
+            }
             other => window.focus(&self.pane_focus[other as usize], cx),
         }
         cx.notify();
@@ -280,7 +301,7 @@ impl Workbench {
 
     /// True while a connect, a connection test, or a tab's run, switch or list is under way.
     pub fn is_busy(&self, cx: &App) -> bool {
-        self.explorer.read(cx).is_busy(cx) || self.tabs.iter().any(|t| t.read(cx).is_busy())
+        self.explorer.read(cx).is_busy(cx) || self.tabs.iter().any(|t| t.read(cx).is_busy(cx))
     }
 
     /// True once the active tab's run has started on the server.
@@ -306,6 +327,10 @@ impl Workbench {
             active_tab: self.active,
             tab_dialog: tab.dialog_state(cx),
             explorer: self.explorer.read(cx).state(cx),
+            results: tab.results().read(cx).state(cx),
+            inspector: tab.results().read(cx).inspected(cx),
+            clipboard: cx.read_from_clipboard().and_then(|item| item.text()),
+            inspector_scrolled: f32::from(self.inspector_scroll.offset().y).abs(),
         }
     }
 
@@ -330,9 +355,32 @@ impl Workbench {
                     .child(pane.title()),
             );
         match pane {
-            Pane::Editor | Pane::Explorer => frame,
+            Pane::Editor | Pane::Explorer | Pane::Results => frame,
             other => frame.track_focus(&self.focus_handle_of(other, cx)),
         }
+    }
+
+    /// Scrolls the inspector's value for a key pressed while the inspector has focus:
+    /// Up and Down by a line, Page Up and Page Down by a screen, Home and End to the ends.
+    fn scroll_inspector(&mut self, key: &str, cx: &mut Context<Self>) {
+        const LINE: f32 = 20.;
+        let scroll = &self.inspector_scroll;
+        let page = f32::from(scroll.bounds().size.height).max(LINE);
+        let bottom = -f32::from(scroll.max_offset().y);
+        let offset = scroll.offset();
+        let y = f32::from(offset.y);
+        let y = match key {
+            "up" => y + LINE,
+            "down" => y - LINE,
+            "pageup" => y + page,
+            "pagedown" => y - page,
+            "home" => 0.,
+            "end" => bottom,
+            _ => return,
+        };
+        scroll.set_offset(gpui::point(offset.x, px(y.clamp(bottom, 0.))));
+        cx.stop_propagation();
+        cx.notify();
     }
 
     /// The query tabs pane: one row per tab, marked with its connection's colour.
@@ -481,10 +529,25 @@ impl Render for Workbench {
                     .child(Editor::new(&editor).h_full()),
             )
             .child(self.message_strip(focused, cx));
+        let results = self.active_tab().read(cx).results().clone();
         if self.results_visible {
-            middle = middle.child(self.pane(Pane::Results, focused, cx).flex_1());
+            middle = middle.child(
+                self.pane(Pane::Results, focused, cx)
+                    .flex_1()
+                    .child(results.clone()),
+            );
         }
-        let inspector = self.pane(Pane::Inspector, focused, cx).w(px(300.));
+        let inspector = self
+            .pane(Pane::Inspector, focused, cx)
+            .w(px(300.))
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                this.scroll_inspector(&event.keystroke.key, cx);
+            }))
+            .child(inspector_body(
+                results.read(cx).inspected(cx),
+                &self.inspector_scroll,
+                cx,
+            ));
 
         div()
             .id("workbench")
@@ -562,4 +625,44 @@ impl Render for Workbench {
             .child(middle)
             .child(inspector)
     }
+}
+
+/// The inspector's contents: the selected cell's column, type and whole value, the value
+/// scrolling under `scroll`.
+fn inspector_body(inspected: Option<Inspected>, scroll: &ScrollHandle, cx: &App) -> gpui::Div {
+    let theme = cx.theme();
+    let Some(inspected) = inspected else {
+        return div()
+            .px_2()
+            .text_sm()
+            .text_color(theme.muted_foreground)
+            .child("Select a cell in the results to see it in full.");
+    };
+    let value = div()
+        .id("inspector-value")
+        .flex_1()
+        .min_h_0()
+        .overflow_y_scroll()
+        .track_scroll(scroll);
+    let value = match inspected.text {
+        Some(text) => value.child(text),
+        None => value
+            .italic()
+            .text_color(theme.muted_foreground)
+            .child("NULL"),
+    };
+    div()
+        .px_2()
+        .flex_1()
+        .min_h_0()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .text_sm()
+        .child(
+            div()
+                .text_color(theme.muted_foreground)
+                .child(format!("{} ({})", inspected.column, inspected.type_name)),
+        )
+        .child(value)
 }

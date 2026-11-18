@@ -7,29 +7,22 @@
 //! under the tests' Credential Manager service, which the test empties afterwards. Scripts are
 //! written at run time, in a temp folder, because they hold the servers' generated details.
 
+mod lab;
 mod passwords;
 mod support;
 
-use std::path::Path;
-
-use dbide_engine::connections::credentials::Credentials;
-use dbide_engine::connections::{Connection, Connections, SignInMethod, TlsMode};
 use dbide_engine::danger::Engine;
 use dbide_test_servers::mssql::Mssql;
 use dbide_test_servers::mysql::MySql;
 use dbide_test_servers::postgres::Postgres;
+use lab::Server;
 use passwords::ForgetPasswords;
 use serde_json::{Value, json};
 use support::{run_script, state};
 
 /// One server, and what the script types on it.
 struct Lab<'a> {
-    engine: Engine,
-    host: &'a str,
-    port: u16,
-    user: &'a str,
-    password: &'a str,
-    database: &'a str,
+    server: Server<'a>,
     /// The line between `SELECT 1;` and the bad statement: `GO` on SQL Server, so the error
     /// is in the second batch and its line still counts from the top of the tab.
     separator: &'a str,
@@ -51,30 +44,6 @@ fn type_lines(lines: &[&str]) -> Vec<Value> {
         }
     }
     keys
-}
-
-/// Saves a red connection called "Lab" to `lab` in `appdata`, with its password in
-/// Credential Manager.
-fn save_connection(lab: &Lab, appdata: &Path) {
-    let mut details = Connection::new(lab.engine, lab.host);
-    details.name = "Lab".into();
-    details.port = Some(lab.port);
-    details.sign_in = SignInMethod::Password;
-    details.user = Some(lab.user.into());
-    details.database = Some(lab.database.into());
-    details.colour = Some("#d13438".into());
-    // The lab servers' certificates are self-signed.
-    details.tls = TlsMode::Off;
-    details.trust_server_certificate = true;
-    let mut saved = Connections::default();
-    saved.add_connection(details, None).unwrap();
-    saved
-        .save(appdata.join("Database IDE").join("connections.toml"))
-        .unwrap();
-    let credentials = Credentials::new("database-ide-test").unwrap();
-    credentials
-        .store(&saved.connections()[0], lab.password)
-        .unwrap();
 }
 
 /// The newest message starting with `prefix`, and its index in the strip.
@@ -111,7 +80,7 @@ fn drive_a_query_tab(lab: &Lab) -> Vec<Value> {
     let appdata = dir.path().join("appdata");
     std::fs::create_dir(&appdata).expect("appdata folder");
     let _forget = ForgetPasswords(&appdata);
-    save_connection(lab, &appdata);
+    lab.server.save_as_lab(&appdata);
 
     let mut error_batch = type_lines(&["SELECT 1;", lab.separator, "SELECT * FROM WHERE;"]);
     error_batch.extend([json!({ "key": "f5" }), json!("idle")]);
@@ -150,7 +119,7 @@ fn drive_a_query_tab(lab: &Lab) -> Vec<Value> {
     let lines = run_script(&script, Some(&appdata));
     for line in &lines {
         assert!(
-            !line.to_string().contains(lab.password),
+            !line.to_string().contains(lab.server.password),
             "a state line shows the password"
         );
     }
@@ -165,7 +134,7 @@ fn drive_a_query_tab(lab: &Lab) -> Vec<Value> {
         "the tab wears its connection's colour"
     );
     assert_eq!(tab["status"], "ready", "{opened:#}");
-    assert_eq!(tab["database"], lab.database);
+    assert_eq!(tab["database"], lab.server.database);
     assert_eq!(opened["focused_pane"], "Editor");
 
     let errored = state(&lines, "run with an error");
@@ -231,12 +200,14 @@ fn ui_mssql_a_query_tab_runs_jumps_to_errors_cancels_asks_and_switches() {
     let mssql = Mssql::start().expect("SQL Server test database");
     mssql.query(SEED).unwrap();
     drive_a_query_tab(&Lab {
-        engine: Engine::SqlServer,
-        host: mssql.host(),
-        port: mssql.port(),
-        user: mssql.user(),
-        password: mssql.password(),
-        database: mssql.database(),
+        server: Server {
+            engine: Engine::SqlServer,
+            host: mssql.host(),
+            port: mssql.port(),
+            user: mssql.user(),
+            password: mssql.password(),
+            database: mssql.database(),
+        },
         separator: "GO",
         long_query: "WAITFOR DELAY '00:10:00'",
         other_database: "master",
@@ -249,12 +220,14 @@ fn ui_pg_a_query_tab_runs_jumps_to_errors_cancels_asks_and_switches() {
     let postgres = Postgres::start().expect("PostgreSQL test server");
     postgres.query(SEED).unwrap();
     drive_a_query_tab(&Lab {
-        engine: Engine::PostgreSql,
-        host: postgres.host(),
-        port: postgres.port(),
-        user: postgres.user(),
-        password: postgres.password(),
-        database: postgres.database(),
+        server: Server {
+            engine: Engine::PostgreSql,
+            host: postgres.host(),
+            port: postgres.port(),
+            user: postgres.user(),
+            password: postgres.password(),
+            database: postgres.database(),
+        },
         separator: "",
         long_query: "SELECT pg_sleep(600)",
         other_database: "postgres",
@@ -267,12 +240,14 @@ fn ui_mysql_a_query_tab_runs_jumps_to_errors_cancels_asks_and_switches() {
     let mysql = MySql::start().expect("MySQL test server");
     mysql.query(SEED).unwrap();
     drive_a_query_tab(&Lab {
-        engine: Engine::MySql,
-        host: mysql.host(),
-        port: mysql.port(),
-        user: mysql.user(),
-        password: mysql.password(),
-        database: mysql.database(),
+        server: Server {
+            engine: Engine::MySql,
+            host: mysql.host(),
+            port: mysql.port(),
+            user: mysql.user(),
+            password: mysql.password(),
+            database: mysql.database(),
+        },
         separator: "",
         long_query: "SELECT SLEEP(600)",
         other_database: "information_schema",

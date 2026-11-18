@@ -4,6 +4,11 @@
 //! A session moves onto the runtime for each piece of work (a run, a database switch, a
 //! database list) and comes back when the work ends, so the UI thread never blocks on the
 //! network and never holds a session another task is using.
+//!
+//! A run's rows never cross to the UI thread: the runtime writes each result set to a spill
+//! file as it arrives (docs/spec.md, "Results: spill to disk") and the grid reads pages back
+//! from it. So a slow UI never holds up the server, and memory stays flat however many rows
+//! come back.
 
 use std::future::Future;
 use std::sync::Arc;
@@ -12,6 +17,7 @@ use dbide_engine::connections::Connection;
 use dbide_engine::danger::Engine;
 use dbide_engine::objects;
 use dbide_engine::session::{self, CancelHandle, ConnectError, ConnectErrorKind, Event, Session};
+use dbide_engine::spill::{Reader, Store};
 use futures::channel::{mpsc, oneshot};
 use futures::future::BoxFuture;
 use futures::{SinkExt as _, StreamExt as _};
@@ -20,16 +26,23 @@ use futures::{SinkExt as _, StreamExt as _};
 #[derive(Clone)]
 pub struct Runtime(Arc<tokio::runtime::Runtime>);
 
-/// What a run reports to the UI, in order: `Started` once, the run's events, then
-/// `Finished` with the session back.
+/// What a run reports to the UI, in order: `Started` once, the run's result sets and other
+/// events as they come, then `Finished` with the session back.
 pub enum RunUpdate {
     /// The run has begun; the handle cancels it from any thread.
     Started(CancelHandle),
-    /// One engine event. Row batches stay on the runtime and never arrive here: U4 writes
-    /// them to the spill store there.
+    /// A result set has started. Its rows appear in the reader as they arrive, and it is
+    /// complete once the next result set starts or the run finishes.
+    ResultSet(Reader),
+    /// One engine event other than a result set or its rows.
     Event(Event),
-    /// The run is over and the session is free for the next one.
-    Finished(Box<dyn Session>),
+    /// The run is over: the session is free for the next one, and `results` owns the
+    /// run's spill files, in result order. Dropping a store deletes its file and ends its
+    /// readers, so the UI keeps them as long as it shows the results.
+    Finished {
+        session: Box<dyn Session>,
+        results: Vec<Store>,
+    },
 }
 
 /// How many updates may wait for the UI before the run pauses for it to catch up.
@@ -74,10 +87,12 @@ impl Runtime {
     }
 
     /// Runs `batch` on `session`. The receiver yields the run's updates and ends after
-    /// `Finished`; if the UI drops it, the run is cancelled and the session closed.
+    /// `Finished`; if the UI drops it, the run is cancelled, the session closed and the
+    /// spill files deleted.
     pub fn run(&self, mut session: Box<dyn Session>, batch: String) -> mpsc::Receiver<RunUpdate> {
         let (mut updates, receiver) = mpsc::channel(RUN_UPDATES_BUFFERED);
         self.0.spawn(async move {
+            let mut results = Results::default();
             {
                 let mut run = session.run(&batch);
                 if updates
@@ -88,16 +103,25 @@ impl Runtime {
                     return;
                 }
                 while let Some(event) = run.next().await {
-                    if matches!(event, Event::Rows(_)) {
-                        continue;
-                    }
+                    let update = match event {
+                        Event::ResultSetStarted { columns } => match results.start(columns) {
+                            Ok(reader) => RunUpdate::ResultSet(reader),
+                            Err(error) => RunUpdate::Event(error),
+                        },
+                        Event::Rows(rows) => match results.append(rows) {
+                            Some(error) => RunUpdate::Event(error),
+                            None => continue,
+                        },
+                        other => RunUpdate::Event(other),
+                    };
                     // A UI that went away drops the run, which cancels it.
-                    if updates.send(RunUpdate::Event(event)).await.is_err() {
+                    if updates.send(update).await.is_err() {
                         return;
                     }
                 }
             }
-            let _ = updates.send(RunUpdate::Finished(session)).await;
+            let results = results.finish();
+            let _ = updates.send(RunUpdate::Finished { session, results }).await;
         });
         receiver
     }
@@ -166,5 +190,70 @@ impl Runtime {
                 Err(_) => std::future::pending().await,
             }
         }
+    }
+}
+
+/// A run's spill files, written on the runtime as rows arrive.
+#[derive(Default)]
+struct Results {
+    stores: Vec<Store>,
+    /// Set once writing the current result set failed: its later rows are dropped, and
+    /// the user has been told once.
+    failed: bool,
+}
+
+impl Results {
+    /// Completes the current result set and opens a file for the next. On failure, returns
+    /// the error to show; that result set's rows are then dropped.
+    fn start(&mut self, columns: Vec<dbide_engine::session::Column>) -> Result<Reader, Event> {
+        self.complete_current();
+        self.failed = false;
+        let store = blocking(|| Store::new(columns, None)).map_err(|error| {
+            self.failed = true;
+            spill_error(&error)
+        })?;
+        let reader = store.reader();
+        self.stores.push(store);
+        Ok(reader)
+    }
+
+    /// Writes a batch of rows to the current result set. Returns an error to show the first
+    /// time a write fails.
+    fn append(&mut self, rows: Vec<Vec<dbide_engine::session::Value>>) -> Option<Event> {
+        if self.failed {
+            return None;
+        }
+        let store = self.stores.last_mut()?;
+        let error = blocking(|| store.append(rows)).err()?;
+        self.failed = true;
+        Some(spill_error(&error))
+    }
+
+    /// Completes the last result set and hands every store over.
+    fn finish(mut self) -> Vec<Store> {
+        self.complete_current();
+        self.stores
+    }
+
+    fn complete_current(&mut self) {
+        if let Some(store) = self.stores.last_mut() {
+            // A store that failed to write still shows the rows it kept.
+            let _ = blocking(|| store.complete());
+        }
+    }
+}
+
+/// Spill reads and writes block on the disk; this lets the runtime move its other tasks
+/// to another worker meanwhile.
+fn blocking<T>(work: impl FnOnce() -> T) -> T {
+    tokio::task::block_in_place(work)
+}
+
+/// A spill failure as an error in the messages strip. The run itself carries on.
+fn spill_error(error: &dbide_engine::spill::Error) -> Event {
+    Event::Error {
+        text: format!("Couldn't keep this result's rows on disk: {error}"),
+        line: None,
+        code: None,
     }
 }

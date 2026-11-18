@@ -14,6 +14,7 @@ mod keymap;
 mod messages;
 mod palette;
 mod query_tab;
+mod results;
 mod runtime;
 mod ui_script;
 mod workbench;
