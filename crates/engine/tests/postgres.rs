@@ -462,12 +462,15 @@ async fn pg_wrong_password_is_clear_and_redacted() {
     let error = postgres::connect(&details(&database), Some("invented-wrong-password"))
         .await
         .unwrap_err();
-    assert!(error.to_string().contains("password authentication failed"));
+    assert_eq!(
+        error.to_string(),
+        "Sign-in failed: the user name or password is wrong."
+    );
     assert!(!format!("{error:?}").contains("invented-wrong-password"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn pg_windows_sign_in_to_a_password_only_server_reports_password_missing() {
+async fn pg_windows_sign_in_to_a_password_only_server_reports_windows_sign_in_failed() {
     let database = database().await;
     let mut connection = details(&database);
     connection.sign_in = SignInMethod::Windows;
@@ -480,7 +483,7 @@ async fn pg_windows_sign_in_to_a_password_only_server_reports_password_missing()
     .unwrap_err();
     assert_eq!(
         error.to_string(),
-        "PostgreSQL: Windows sign-in failed: password missing"
+        "Windows sign-in failed: the server didn't accept this Windows account."
     );
 }
 
@@ -533,7 +536,7 @@ async fn pg_windows_sign_in_to_a_missing_database_is_not_reported_as_a_sign_in_f
     let error = postgres::connect(&connection, None).await.unwrap_err();
     assert_eq!(
         error.to_string(),
-        "PostgreSQL: database \"no_such_database\" does not exist"
+        "Signed in, but database no_such_database doesn't exist or this login can't open it."
     );
 }
 
@@ -658,7 +661,12 @@ async fn pg_mandatory_tls_rejects_a_server_without_tls() {
     let error = postgres::connect(&connection, Some(database.password()))
         .await
         .unwrap_err();
-    assert!(error.to_string().contains("TLS"));
+    assert_eq!(error.kind, dbide_engine::session::ConnectErrorKind::Other);
+    assert_eq!(
+        error.message,
+        "error performing TLS handshake: server does not support TLS"
+    );
+    assert!(!error.message.contains(database.password()));
 }
 
 #[tokio::test(flavor = "multi_thread")]

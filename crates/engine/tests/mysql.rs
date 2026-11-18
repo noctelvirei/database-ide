@@ -528,7 +528,10 @@ async fn mysql_wrong_password_is_clear_and_redacted() {
     let error = mysql::connect(&details(&database), Some("invented-wrong-password"))
         .await
         .unwrap_err();
-    assert!(error.to_string().contains("Access denied"), "{error}");
+    assert_eq!(
+        error.to_string(),
+        "Sign-in failed: the user name or password is wrong."
+    );
     assert!(!format!("{error:?}").contains("invented-wrong-password"));
     assert!(!error.to_string().contains("invented-wrong-password"));
 }

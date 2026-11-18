@@ -410,7 +410,10 @@ async fn mssql_wrong_password_reports_login_failure_without_the_password() {
     let error = mssql::connect(&details(&database), Some("wrong-password-never-report"))
         .await
         .unwrap_err();
-    assert!(error.to_string().contains("Login failed"), "{error}");
+    assert_eq!(
+        error.to_string(),
+        "Sign-in failed: the user name or password is wrong."
+    );
     assert!(!format!("{error:?}").contains("wrong-password-never-report"));
 }
 

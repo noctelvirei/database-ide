@@ -21,6 +21,181 @@ use tokio_util::sync::CancellationToken;
 /// Text representations validated without introducing a date/time dependency.
 pub mod temporal;
 
+/// The action a caller can offer after connection establishment fails.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectErrorKind {
+    /// Ask for a different database user name or password.
+    BadCredentials,
+    /// The current Windows account could not sign in.
+    WindowsSignInFailed,
+    /// Check the address, server availability or network route.
+    Unreachable,
+    /// The saved connect timeout expired.
+    Timeout,
+    /// Certificate validation failed; verify the server before changing trust.
+    Tls,
+    /// Choose an existing database this login can open.
+    /// Named databases: "Signed in, but database <name> doesn't exist or this login can't open it."
+    /// SQL Server/MySQL without a database: "Signed in, but this login's default database
+    /// doesn't exist or it can't open it."
+    DatabaseUnavailable,
+    /// Correct invalid or unsupported saved connection details.
+    InvalidDetails,
+    /// No more specific action is known; show the redacted diagnostic.
+    Other,
+}
+
+/// A failed connection with an actionable category and credential-free display text.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{message}")]
+pub struct ConnectError {
+    /// The category to branch on, independent of the server's wording.
+    pub kind: ConnectErrorKind,
+    /// Display unchanged; supplied credentials have been removed.
+    pub message: String,
+}
+
+impl ConnectError {
+    pub(crate) fn new(
+        kind: ConnectErrorKind,
+        details: &crate::connections::Connection,
+        password: Option<&str>,
+        diagnostic: &str,
+    ) -> Self {
+        use ConnectErrorKind::*;
+        let mut message = match kind {
+            BadCredentials => "Sign-in failed: the user name or password is wrong.".into(),
+            WindowsSignInFailed => "Windows sign-in failed: the server didn't accept this Windows account.".into(),
+            Unreachable => format!("Can't reach {}: {diagnostic}.", connect_address(details)),
+            Timeout => format!("No answer from {} within {} s.", connect_address(details), details.connect_timeout),
+            Tls => "The server's certificate isn't trusted. Turn on Trust server certificate only if you know this server.".into(),
+            DatabaseUnavailable => {
+                let database = details.database.as_deref().or(match details.engine {
+                    crate::danger::Engine::PostgreSql => details.user.as_deref(),
+                    _ => None,
+                });
+                match database {
+                    Some(database) => format!("Signed in, but database {database} doesn't exist or this login can't open it."),
+                    None => "Signed in, but this login's default database doesn't exist or it can't open it.".into(),
+                }
+            }
+            InvalidDetails | Other => diagnostic.into(),
+        };
+        // Redact the final message too: a supplied name/address may contain the password.
+        if let Some(password) = password.filter(|value| !value.is_empty()) {
+            message = message.replace(password, "[redacted]");
+        }
+        Self { kind, message }
+    }
+
+    pub(crate) fn io(
+        error: &std::io::Error,
+        details: &crate::connections::Connection,
+        password: Option<&str>,
+    ) -> Self {
+        use std::io::ErrorKind;
+        let reason = match error.kind() {
+            ErrorKind::ConnectionRefused => "the connection was refused",
+            ErrorKind::HostUnreachable | ErrorKind::NetworkUnreachable => {
+                "there's no network route"
+            }
+            ErrorKind::NotFound | ErrorKind::AddrNotAvailable => "the host name wasn't found",
+            ErrorKind::TimedOut => {
+                return Self::new(ConnectErrorKind::Timeout, details, password, "");
+            }
+            _ if matches!(error.raw_os_error(), Some(11001 | 11004)) => {
+                "the host name wasn't found"
+            }
+            _ => {
+                return Self::new(
+                    ConnectErrorKind::Other,
+                    details,
+                    password,
+                    &error.to_string(),
+                );
+            }
+        };
+        Self::new(ConnectErrorKind::Unreachable, details, password, reason)
+    }
+}
+
+fn connect_address(details: &crate::connections::Connection) -> String {
+    if let Some(instance) = &details.instance {
+        return format!("{}\\{instance}", details.host);
+    }
+    let default = match details.engine {
+        crate::danger::Engine::SqlServer => 1433,
+        crate::danger::Engine::PostgreSql => 5432,
+        crate::danger::Engine::MySql => 3306,
+    };
+    format!("{}:{}", details.host, details.port.unwrap_or(default))
+}
+
+// native-tls hides Schannel's status; mssql-tds also erases it on its direct TLS path.
+// Match only certificate diagnostics when no structured certificate error is exposed.
+pub(crate) fn certificate_failure(error: &(dyn std::error::Error + 'static)) -> bool {
+    if let Some(io) = error.downcast_ref::<std::io::Error>()
+        && io.raw_os_error().is_some_and(|code| {
+            matches!(
+                code as u32,
+                0x800B0101
+                    | 0x800B0109
+                    | 0x800B010A
+                    | 0x800B010F
+                    | 0x80090322
+                    | 0x80090325
+                    | 0x80090327
+                    | 0x80090328
+            )
+        })
+    {
+        return true;
+    }
+    let text = error.to_string().to_ascii_lowercase();
+    [
+        "certificate verify failed",
+        "certificate validation failed",
+        "certificate chain",
+        "cert_e_",
+        "sec_e_untrusted_root",
+        "sec_e_wrong_principal",
+        "sec_e_cert_expired",
+        "sec_e_cert_unknown",
+        "80090325",
+        "80090322",
+        "80090328",
+        "800b0109",
+        "800b010f",
+        // native-tls exposes these statuses only in the formatted io::Error.
+        "(os error -2146762495)",
+        "(os error -2146762487)",
+        "(os error -2146762486)",
+        "(os error -2146762481)",
+    ]
+    .iter()
+    .any(|marker| text.contains(marker))
+        || error.source().is_some_and(certificate_failure)
+}
+
+/// Opens the saved connection with its engine and separately supplied password.
+/// Returns a credential-free, actionable error if validation, transport or sign-in fails.
+pub async fn connect(
+    details: &crate::connections::Connection,
+    password: Option<&str>,
+) -> Result<Box<dyn Session>, ConnectError> {
+    match details.engine {
+        crate::danger::Engine::SqlServer => {
+            Ok(Box::new(crate::mssql::connect(details, password).await?))
+        }
+        crate::danger::Engine::PostgreSql => {
+            Ok(Box::new(crate::postgres::connect(details, password).await?))
+        }
+        crate::danger::Engine::MySql => {
+            Ok(Box::new(crate::mysql::connect(details, password).await?))
+        }
+    }
+}
+
 /// A coarse formatting and alignment hint, independent of the server's type spelling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TypeCategory {
@@ -364,5 +539,60 @@ impl Stream for Run<'_> {
 impl Drop for Run<'_> {
     fn drop(&mut self) {
         self.cancel.cancel();
+    }
+}
+
+#[cfg(test)]
+mod connect_tests {
+    use super::certificate_failure;
+
+    #[test]
+    fn unavailable_default_database_uses_the_user_name_only_for_postgres() {
+        use super::{ConnectError, ConnectErrorKind};
+        use crate::connections::Connection;
+        use crate::danger::Engine;
+
+        for (engine, expected) in [
+            (
+                Engine::SqlServer,
+                "Signed in, but this login's default database doesn't exist or it can't open it.",
+            ),
+            (
+                Engine::MySql,
+                "Signed in, but this login's default database doesn't exist or it can't open it.",
+            ),
+            (
+                Engine::PostgreSql,
+                "Signed in, but database dbide_test doesn't exist or this login can't open it.",
+            ),
+        ] {
+            let mut details = Connection::new(engine, "127.0.0.1");
+            details.user = Some("dbide_test".into());
+            let error =
+                ConnectError::new(ConnectErrorKind::DatabaseUnavailable, &details, None, "");
+            assert_eq!(error.message, expected, "{engine:?}");
+        }
+    }
+
+    #[test]
+    fn expired_certificate_is_recognised_after_native_tls_erases_its_status() {
+        let error = std::io::Error::other(
+            std::io::Error::from_raw_os_error(0x800B0101_u32 as i32).to_string(),
+        );
+        assert!(certificate_failure(&error));
+    }
+
+    #[test]
+    fn certificate_name_mismatch_is_recognised_after_native_tls_erases_its_status() {
+        let error = std::io::Error::other(
+            std::io::Error::from_raw_os_error(0x800B010F_u32 as i32).to_string(),
+        );
+        assert!(certificate_failure(&error));
+    }
+
+    #[test]
+    fn tls_protocol_failure_is_not_a_certificate_failure() {
+        let error = std::io::Error::other("TLS handshake failed: unsupported protocol");
+        assert!(!certificate_failure(&error));
     }
 }

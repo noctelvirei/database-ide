@@ -3,7 +3,7 @@ use dbide_engine::connections::connection_string;
 use dbide_engine::danger::Engine;
 use dbide_engine::export;
 use dbide_engine::format;
-use dbide_engine::session::{Event, Session};
+use dbide_engine::session::{self, Event};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
@@ -49,11 +49,7 @@ enum Error {
     #[error(transparent)]
     Connection(#[from] connection_string::Error),
     #[error(transparent)]
-    Postgres(#[from] dbide_engine::postgres::Error),
-    #[error(transparent)]
-    Mssql(#[from] dbide_engine::mssql::Error),
-    #[error(transparent)]
-    MySql(#[from] dbide_engine::mysql::Error),
+    Connect(#[from] session::ConnectError),
     #[error(transparent)]
     Export(#[from] export::Error),
     #[error(transparent)]
@@ -107,17 +103,7 @@ async fn run() -> Result<(), Error> {
                 Some(file) => std::fs::read_to_string(file)?,
                 None => batch.expect("clap requires batch or file"),
             };
-            let mut session: Box<dyn Session> = match parsed.connection.engine {
-                dbide_engine::danger::Engine::PostgreSql => {
-                    Box::new(dbide_engine::postgres::connect(&parsed.connection, password).await?)
-                }
-                dbide_engine::danger::Engine::SqlServer => {
-                    Box::new(dbide_engine::mssql::connect(&parsed.connection, password).await?)
-                }
-                dbide_engine::danger::Engine::MySql => {
-                    Box::new(dbide_engine::mysql::connect(&parsed.connection, password).await?)
-                }
-            };
+            let mut session = session::connect(&parsed.connection, password).await?;
             let report =
                 export::run_to_file(session.run(&batch), &output, &export::Format::default())
                     .await?;
