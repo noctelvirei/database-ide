@@ -295,6 +295,13 @@ impl QueryTab {
                 self.ask_before_running(batch, first_line, check, window, cx);
                 return;
             }
+            if !check.fully_checked {
+                self.say(
+                    "The danger check couldn't parse this batch, so it was checked by keywords only.",
+                    Tone::Warning,
+                    cx,
+                );
+            }
         }
         self.start_run(batch, first_line, window, cx);
     }

@@ -165,6 +165,8 @@ fn drive_a_query_tab(lab: &Lab) -> Vec<Value> {
 
     let errored = state(&lines, "run with an error");
     let (error_ix, _) = newest_starting(errored, "Line 3: ");
+    // The bad statement stops the parser, so the run says the check was by keywords only.
+    newest_starting(errored, "The danger check couldn't parse this batch");
     assert_eq!(active_tab(errored)["status"], "ready");
 
     assert_eq!(

@@ -72,9 +72,10 @@ fn matches(databases: &[String], typed: &str) -> Vec<String> {
         .collect()
 }
 
-/// The database Enter picks: an exact match (ignoring case), else the first name containing
-/// the typed text, else the typed name itself, which the server may still accept (system
-/// databases aren't listed). `None` when nothing is typed.
+/// The database Enter picks: the exact name, else an exact match ignoring case, else the
+/// first name containing the typed text, else the typed name itself, which the server may
+/// still accept (system databases aren't listed). `None` when nothing is typed. PostgreSQL
+/// names are case-sensitive, so `orders` must pick `orders` even when `Orders` comes first.
 fn pick(databases: &[String], typed: &str) -> Option<String> {
     let typed = typed.trim();
     if typed.is_empty() {
@@ -82,7 +83,12 @@ fn pick(databases: &[String], typed: &str) -> Option<String> {
     }
     let exact = databases
         .iter()
-        .find(|name| name.eq_ignore_ascii_case(typed))
+        .find(|name| *name == typed)
+        .or_else(|| {
+            databases
+                .iter()
+                .find(|name| name.eq_ignore_ascii_case(typed))
+        })
         .cloned();
     exact
         .or_else(|| matches(databases, typed).into_iter().next())
@@ -251,6 +257,12 @@ mod tests {
     #[test]
     fn enter_picks_an_exact_name_before_a_partial_one() {
         assert_eq!(pick(&names(), "ORDERS"), Some("orders".into()));
+    }
+
+    #[test]
+    fn enter_picks_the_name_typed_exactly_before_one_differing_in_case() {
+        let names = ["Orders", "orders"].map(String::from);
+        assert_eq!(pick(&names, "orders"), Some("orders".into()));
     }
 
     #[test]
