@@ -21,7 +21,8 @@ Each ticket runs the factory loop (start, plan, build, verify, review, record, m
 
 | Parameter | Value |
 |---|---|
-| Tracker | Linear, team "Database-ide" (key `DAT`), projects "Engine v1" and "UI v1" (implementation tickets). GitHub Issues hold the planning map only. |
+| Tracker | Linear, team "Database-ide" (key `DAT`), projects "Engine v1" and "UI v1" (implementation tickets). GitHub Issues hold the planning map and a public mirror of every open ticket, for contributors. |
+| Public mirror | Each open Linear ticket has a GitHub issue titled `[DAT-<n>] <title>`, linked from the Linear ticket. File the mirror when the ticket is filed, with no Linear links or writer/reviewer lines in its body; mark small, fully specified ones `good first issue`. Before starting a ticket, read its mirror: if a contributor has claimed it or opened a pull request, leave the ticket to them. On starting, comment on the mirror that it is taken. The merge message carries `Closes #<mirror>` beside the Linear ID. A contributor's pull request gets the same checks and review as an agent's. |
 | Merge | Claude, the orchestrator, merges once the checks, the E2E harness and review pass. |
 | Writer and reviewer | Engine tickets: Codex writes, Claude reviews. UI tickets: Claude writes, Codex reviews. Each review is of the branch against `main`. |
 | Checks | The commands in [CODE_STANDARDS.md](CODE_STANDARDS.md#verification). |
