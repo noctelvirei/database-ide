@@ -25,9 +25,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
 use dbide_engine::connections::{self, credentials::Credentials};
-use gpui::{
-    App, AppContext as _, Bounds, TitlebarOptions, WindowBounds, WindowOptions, point, px, size,
-};
+use gpui::{App, AppContext as _, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size};
 use gpui_component::Root;
 
 use crate::explorer::Explorer;
@@ -54,6 +52,7 @@ struct Args {
 
 fn main() -> ExitCode {
     let args = Args::parse();
+    let shots = args.ui_shots;
     let script = match (args.ui_script, args.ui_state) {
         (Some(script), Some(state)) => match UiScript::load(&script, state, args.ui_shots) {
             Ok(script) => Some(script),
@@ -92,16 +91,11 @@ fn main() -> ExitCode {
         .run(move |cx: &mut App| {
             gpui_component::init(cx);
             keymap::bind(cx);
-            let window_size = size(px(1400.), px(900.));
-            // A scripted run opens its window far off every screen and leaves the foreground
-            // alone, so the user's own clicks and keys can't land in it mid-script (DAT-51).
-            // Screenshots still work: ui-run.ps1 captures with PrintWindow.
+            // A scripted run keeps its window hidden and out of the foreground, so the user's
+            // own clicks and keys can't land in it mid-script (DAT-51). A run taking
+            // screenshots shows it, because the capture needs a visible window.
             let scripted = script.is_some();
-            let bounds = if scripted {
-                Bounds::new(point(px(-20000.), px(-20000.)), window_size)
-            } else {
-                Bounds::centered(None, window_size, cx)
-            };
+            let bounds = Bounds::centered(None, size(px(1400.), px(900.)), cx);
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(TitlebarOptions {
@@ -109,6 +103,7 @@ fn main() -> ExitCode {
                     ..Default::default()
                 }),
                 focus: !scripted,
+                show: !scripted || shots,
                 ..Default::default()
             };
             let opened = cx.open_window(options, |window, cx| {
