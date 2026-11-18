@@ -31,7 +31,7 @@ impl Writer {
     }
 
     pub(super) fn row(&mut self, row: &[Value]) -> Result<(), Error> {
-        self.0.write_record(row.iter().map(super::text::cell))?;
+        self.0.write_record(row.iter().map(super::cell_text))?;
         Ok(())
     }
 

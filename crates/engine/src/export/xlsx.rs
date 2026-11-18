@@ -94,7 +94,7 @@ impl Writer {
                     worksheet.write_number(self.row, column, *value)?;
                 }
                 Value::Integer(_) | Value::UnsignedInteger(_) | Value::Decimal(_) => {
-                    let text = super::text::cell(value);
+                    let text = super::cell_text(value);
                     if let Some(number) = exact_number(&text) {
                         worksheet.write_number(self.row, column, number)?;
                     } else {
@@ -102,7 +102,7 @@ impl Writer {
                     }
                 }
                 Value::Date(_) | Value::Timestamp(_) => {
-                    let text = super::text::cell(value);
+                    let text = super::cell_text(value);
                     match ExcelDateTime::parse_from_str(&text) {
                         Ok(date) => {
                             let format = if matches!(value, Value::Date(_)) {
@@ -119,7 +119,7 @@ impl Writer {
                     }
                 }
                 _ => {
-                    worksheet.write_string(self.row, column, super::text::cell(value))?;
+                    worksheet.write_string(self.row, column, super::cell_text(value))?;
                 }
             }
         }

@@ -1,5 +1,7 @@
 //! Bounded, quoted TSV text for pasting complete cells into Excel.
 
+use std::ops::Range;
+
 use crate::spill::Reader;
 
 /// Clipboard output was unavailable or larger than a caller's limits.
@@ -55,20 +57,40 @@ fn record(
     push(output, "\r\n", limit)
 }
 
-pub(super) fn write(reader: &Reader, max_rows: usize, max_bytes: usize) -> Result<String, Error> {
+pub(super) fn write(
+    reader: &Reader,
+    rows: Range<usize>,
+    columns: Range<usize>,
+    include_headers: bool,
+    max_rows: usize,
+    max_bytes: usize,
+) -> Result<String, Error> {
     let count = reader.row_count()?;
-    if count > max_rows {
+    let rows = rows.start.min(count)..rows.end.min(count);
+    let width = reader.columns().len();
+    let end = columns.end.min(width);
+    let columns = columns.start.min(end)..end;
+    if rows.end.saturating_sub(rows.start) > max_rows {
         return Err(Error::Rows { limit: max_rows });
     }
     let mut output = String::new();
-    record(
-        &mut output,
-        reader.columns().iter().map(|column| column.name.clone()),
-        max_bytes,
-    )?;
-    for start in (0..count).step_by(super::PAGE_ROWS) {
-        for row in reader.rows(start..start.saturating_add(super::PAGE_ROWS))? {
-            record(&mut output, row.iter().map(super::text::cell), max_bytes)?;
+    if include_headers {
+        record(
+            &mut output,
+            reader.columns()[columns.clone()]
+                .iter()
+                .map(|column| column.name.clone()),
+            max_bytes,
+        )?;
+    }
+    for start in (rows.start..rows.end).step_by(super::PAGE_ROWS) {
+        let end = start.saturating_add(super::PAGE_ROWS).min(rows.end);
+        for row in reader.rows(start..end)? {
+            record(
+                &mut output,
+                row[columns.clone()].iter().map(super::cell_text),
+                max_bytes,
+            )?;
         }
     }
     Ok(output)
