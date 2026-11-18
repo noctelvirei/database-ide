@@ -10,8 +10,9 @@ mod support;
 
 use std::path::Path;
 
-use dbide_engine::connections::Connections;
 use dbide_engine::connections::credentials::Credentials;
+use dbide_engine::connections::{Connection, Connections, SignInMethod};
+use dbide_engine::danger::Engine;
 use dbide_test_servers::mssql::Mssql;
 use dbide_test_servers::mysql::MySql;
 use dbide_test_servers::postgres::Postgres;
@@ -275,6 +276,55 @@ fn ui_a_folder_that_cant_be_saved_keeps_its_dialog_open_and_adds_no_row() {
         "{refused:#}"
     );
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "");
+}
+
+#[test]
+fn ui_a_delete_that_cant_be_saved_keeps_the_connection_and_its_password() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let folder = dir.path().join("Database IDE");
+    let file = folder.join("connections.toml");
+    let mut saved = Connections::default();
+    let mut details = Connection::new(Engine::PostgreSql, "db.example.test");
+    details.name = "Kept".into();
+    details.sign_in = SignInMethod::Password;
+    details.user = Some("reader".into());
+    let id = saved.add_connection(details, None).unwrap();
+    saved.save(&file).unwrap();
+    let _forget = ForgetPasswords(dir.path());
+    let credentials = Credentials::new("database-ide-test").unwrap();
+    let kept = saved.connections()[0].clone();
+    credentials.store(&kept, "invented-password").unwrap();
+    let written = std::fs::read_to_string(&file).unwrap();
+    set_readonly(&file, true);
+    set_readonly(&folder, true);
+    let steps = json!([{
+        "name": "delete Kept",
+        "input": [{ "key": "f8" }, { "key": "delete" }, { "key": "enter" }],
+    }]);
+    let script = dir.path().join("script.json");
+    std::fs::write(&script, steps.to_string()).unwrap();
+    let lines = run_script(&script, Some(dir.path()));
+    set_readonly(&folder, false);
+    set_readonly(&file, false);
+
+    let refused = state(&lines, "delete Kept");
+    assert_eq!(row(refused, "Kept")["kind"], "connection");
+    assert!(
+        refused["messages"]
+            .as_array()
+            .unwrap()
+            .last()
+            .and_then(Value::as_str)
+            .is_some_and(|m| m.starts_with("Couldn't delete: ")),
+        "{refused:#}"
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), written);
+    let password = credentials
+        .read(&kept)
+        .unwrap()
+        .expect("the saved password");
+    assert_eq!(password.expose(), "invented-password");
+    assert_eq!(kept.id, id);
 }
 
 /// Each explorer row as (depth, name), top to bottom.

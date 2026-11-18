@@ -215,8 +215,11 @@ impl ConnectionForm {
         cx.notify();
         let connection = result.ok()?;
         let password = self.password.read(cx).value().to_string();
-        let password = (connection.sign_in == SignInMethod::Password && !password.is_empty())
-            .then_some(password);
+        // While editing, a blank field keeps the saved password; a new connection saves
+        // what was typed, even a blank password.
+        let keep_saved = self.editing.is_some() && password.is_empty();
+        let password =
+            (connection.sign_in == SignInMethod::Password && !keep_saved).then_some(password);
         Some(FormOutput {
             connection,
             password,
