@@ -49,6 +49,9 @@ pub struct GridState {
     /// The rows on screen, zero-based and end-exclusive.
     pub visible_rows: std::ops::Range<usize>,
     pub block: Option<Block>,
+    /// The highlighted cell the keyboard moves, as (row, column), when one cell is selected;
+    /// the inspector shows its value.
+    pub active_cell: Option<(usize, usize)>,
     pub focused: bool,
     /// True when some of the grid shows in the pane, which scrolls when the grids don't fit.
     pub on_screen: bool,
@@ -148,24 +151,22 @@ impl Results {
             },
         )
         .detach();
-        table.update(cx, |table, cx| table.delegate_mut().refresh(cx));
         self.grids.push(table);
         cx.notify();
     }
 
-    /// Reads the row counts of grids still receiving rows again, for their headings.
-    pub fn refresh(&mut self, cx: &mut Context<Self>) {
+    /// Redraws the grids, whose row counts grow on the runtime without telling the UI.
+    pub fn show_arrived_rows(&mut self, cx: &mut Context<Self>) {
         for table in &self.grids {
-            table.update(cx, |table, cx| table.delegate_mut().refresh(cx));
+            table.update(cx, |_, cx| cx.notify());
         }
+        cx.notify();
     }
 
-    /// Takes over the run's spill files when the run ends, and reads the final row counts.
+    /// Takes over the run's spill files when the run ends, and shows the final row counts.
     pub fn keep(&mut self, stores: Vec<Store>, cx: &mut Context<Self>) {
         self.stores = stores;
-        for table in &self.grids {
-            table.update(cx, |table, cx| table.delegate_mut().run_ended(cx));
-        }
+        self.show_arrived_rows(cx);
     }
 
     /// Gives the focused grid keyboard focus, selecting its first cell if nothing is
@@ -216,7 +217,11 @@ impl Results {
                     rows: grid.row_count(),
                     complete: grid.is_complete(),
                     visible_rows: table.visible_range().rows().clone(),
-                    block: grid.block().cloned(),
+                    block: grid.block(),
+                    active_cell: match table.selection() {
+                        TableSelection::Cell(row, column) => Some((row, column)),
+                        _ => None,
+                    },
                     focused: ix == self.focused,
                     on_screen: self.is_on_screen(ix),
                 }
@@ -244,17 +249,8 @@ impl Results {
     }
 
     /// True while a copy is still reading its block.
-    fn is_copying(&self) -> bool {
+    pub fn is_copying(&self) -> bool {
         self.copying > 0
-    }
-
-    /// True while a copy or a row count is still being read.
-    pub fn is_reading(&self, cx: &App) -> bool {
-        self.is_copying()
-            || self
-                .grids
-                .iter()
-                .any(|table| table.read(cx).delegate().is_refreshing())
     }
 
     fn focused_table(&self) -> Option<Entity<TableState<Grid>>> {
@@ -336,7 +332,7 @@ impl Results {
             return;
         };
         let grid = table.read(cx).delegate();
-        let Some(block) = grid.block().cloned() else {
+        let Some(block) = grid.block() else {
             cx.emit(ResultsEvent::Message("Select cells to copy first.".into()));
             return;
         };
@@ -449,8 +445,7 @@ impl Results {
     }
 }
 
-/// Deletes spill files on the background executor: dropping a store waits for any read of
-/// it still under way.
+/// Deletes spill files on the background executor, keeping the disk I/O off the UI thread.
 fn delete(stores: Vec<Store>, cx: &App) {
     if !stores.is_empty() {
         cx.background_spawn(async move { drop(stores) }).detach();
