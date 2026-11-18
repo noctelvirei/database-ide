@@ -2,7 +2,12 @@
 //! table, plus the pane keys. Not remappable in v1.
 //!
 //! Find and replace (Ctrl+F, Ctrl+H, and Alt+R / Alt+A in the find panel) and the editor's
-//! own keys are bound by gpui-component.
+//! own keys are bound by gpui-component, as are a dialog's keys: Tab and Shift+Tab between
+//! fields, Enter for its action and Escape to cancel.
+//!
+//! The explorer's keys work while it has focus, so they don't take keys from the editor.
+//! They follow Windows' file explorer where it has one: F2 renames, Delete deletes,
+//! Alt+Enter opens properties, Ctrl+Shift+N makes a folder, Ctrl+X and Ctrl+V move.
 
 use gpui::{App, KeyBinding, actions};
 
@@ -48,6 +53,36 @@ actions!(
     ]
 );
 
+actions!(
+    explorer,
+    [
+        /// Adds a connection in the selected folder (Insert).
+        NewConnection,
+        /// Adds a folder in the selected folder (Ctrl+Shift+N).
+        NewFolder,
+        /// Opens the selected connection or folder's dialog (Alt+Enter).
+        EditItem,
+        /// Renames the selected connection or folder (F2).
+        RenameItem,
+        /// Deletes the selected connection, or folder and all it holds, after asking (Delete).
+        DeleteItem,
+        /// Picks up the selected item to move it (Ctrl+X).
+        CutItem,
+        /// Moves the picked-up item into the selected folder (Ctrl+V).
+        PasteItem,
+        /// Moves the picked-up item to the top level (Ctrl+Shift+V).
+        PasteItemAtTop,
+        /// Connects the selected connection, or opens or closes a folder (Enter).
+        ConnectItem,
+        /// Disconnects the selected connection (Ctrl+Shift+D).
+        DisconnectItem,
+        /// Tests the connection dialog's details (Alt+T).
+        TestConnection,
+        /// Presses a dialog's action from a closed drop-down (Enter).
+        ConfirmFromChoice,
+    ]
+);
+
 /// Binds every key above for the whole app. Call once, after `gpui_component::init`.
 ///
 /// Alt+Break is bound as `alt-pause`, but gpui 0.3.12 does not translate the Windows
@@ -73,5 +108,18 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("ctrl-u", PickDatabase, None),
         KeyBinding::new("ctrl-o", OpenFile, None),
         KeyBinding::new("ctrl-s", SaveFile, None),
+        KeyBinding::new("insert", NewConnection, Some("Explorer")),
+        KeyBinding::new("ctrl-shift-n", NewFolder, Some("Explorer")),
+        KeyBinding::new("alt-enter", EditItem, Some("Explorer")),
+        KeyBinding::new("f2", RenameItem, Some("Explorer")),
+        KeyBinding::new("delete", DeleteItem, Some("Explorer")),
+        KeyBinding::new("ctrl-x", CutItem, Some("Explorer")),
+        KeyBinding::new("ctrl-v", PasteItem, Some("Explorer")),
+        KeyBinding::new("ctrl-shift-v", PasteItemAtTop, Some("Explorer")),
+        KeyBinding::new("enter", ConnectItem, Some("Explorer")),
+        KeyBinding::new("ctrl-shift-d", DisconnectItem, Some("Explorer")),
+        KeyBinding::new("alt-t", TestConnection, Some("ConnectionForm")),
+        // Bound after gpui-component's own Enter on a select, so this one wins.
+        KeyBinding::new("enter", ConfirmFromChoice, Some("Dialog > Select")),
     ]);
 }

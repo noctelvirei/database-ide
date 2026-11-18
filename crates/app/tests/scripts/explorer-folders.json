@@ -1,0 +1,10 @@
+[
+  { "name": "make A", "input": [{ "key": "f8" }, { "key": "ctrl-shift-n" }, { "text": "A" }, { "key": "enter" }] },
+  { "name": "make B in A", "input": [{ "key": "ctrl-shift-n" }, { "text": "B" }, { "key": "enter" }] },
+  { "name": "move B to the top level", "input": [{ "key": "ctrl-x" }, { "key": "ctrl-shift-v" }] },
+  { "name": "rename B", "input": [{ "key": "f2" }, { "key": "ctrl-a" }, { "text": "Archive" }, { "key": "enter" }] },
+  { "name": "move A into Archive", "input": [{ "key": "up" }, { "key": "ctrl-x" }, { "key": "down" }, { "key": "ctrl-v" }] },
+  { "name": "move Archive into A", "input": [{ "key": "up" }, { "key": "ctrl-x" }, { "key": "down" }, { "key": "ctrl-v" }] },
+  { "name": "ask before deleting Archive", "input": [{ "key": "up" }, { "key": "delete" }] },
+  { "name": "delete Archive", "input": [{ "key": "enter" }] }
+]

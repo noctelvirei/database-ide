@@ -1,0 +1,897 @@
+//! The explorer pane's connections: saved folders and connections as one tree, the dialogs
+//! that edit them, and connecting and disconnecting. U5 adds each connection's objects below
+//! it.
+//!
+//! The tree is `connections.toml` (docs/spec.md, "Connections"). Every edit is saved at once.
+//! If the file can't be read, the explorer shows why and refuses edits, so a file the user can
+//! still repair is never overwritten. Results and failures go to the messages strip as
+//! `ExplorerEvent::Message`.
+
+use std::cell::Cell;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::rc::Rc;
+
+use dbide_engine::connections::credentials::Credentials;
+use dbide_engine::connections::{self, Connections, SavedConnection};
+use dbide_engine::session::Session;
+use gpui::{
+    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
+    ParentElement as _, Render, SharedString, Styled as _, Window, div, prelude::*, px,
+};
+use gpui_component::dialog::DialogEntrance;
+use gpui_component::input::{Input, InputState};
+use gpui_component::list::ListItem;
+use gpui_component::tree::{TreeEvent, TreeItem, TreeState, tree};
+use gpui_component::{ActiveTheme as _, WindowExt as _};
+use serde::Serialize;
+
+use crate::connection_dialog::{ConnectionForm, FormState};
+use crate::folder_dialog::{FolderForm, FolderState};
+use crate::keymap::{
+    ConnectItem, CutItem, DeleteItem, DisconnectItem, EditItem, NewConnection, NewFolder,
+    PasteItem, PasteItemAtTop, RenameItem,
+};
+use crate::palette;
+use crate::runtime::Runtime;
+
+mod connect;
+
+/// Something for the messages strip.
+pub enum ExplorerEvent {
+    Message(SharedString),
+}
+
+/// One explorer row as the user sees it, top to bottom.
+#[derive(Debug, Serialize)]
+pub struct RowState {
+    pub depth: usize,
+    pub kind: Kind,
+    pub name: String,
+    /// The colour's name: the folder's own, or the connection's after inheritance.
+    pub colour: Option<&'static str>,
+    pub status: Status,
+    pub selected: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Kind {
+    Folder,
+    Connection,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Status {
+    Disconnected,
+    Connecting,
+    Connected,
+}
+
+/// The open dialog, as the UI script records it. The password prompt reports only whether
+/// a password is typed.
+#[derive(Debug, Serialize)]
+#[serde(tag = "dialog", rename_all = "snake_case")]
+pub enum DialogState {
+    Connection(FormState),
+    Folder(FolderState),
+    Rename { name: String },
+    Password { connection: String, typed: bool },
+    Delete { name: String },
+}
+
+/// What a user can see of the explorer.
+#[derive(Debug, Serialize)]
+pub struct ExplorerState {
+    pub rows: Vec<RowState>,
+    /// Why connections can't be changed, when `connections.toml` couldn't be read.
+    pub problem: Option<SharedString>,
+    pub dialog: Option<DialogState>,
+}
+
+enum OpenDialog {
+    Connection(Entity<ConnectionForm>),
+    Folder(Entity<FolderForm>),
+    Rename(Entity<InputState>),
+    Password {
+        connection: SharedString,
+        input: Entity<InputState>,
+    },
+    Delete(SharedString),
+}
+
+pub struct Explorer {
+    focus: FocusHandle,
+    tree: Entity<TreeState>,
+    path: PathBuf,
+    saved: Connections,
+    /// Set when `connections.toml` couldn't be read; edits are refused while it is.
+    problem: Option<SharedString>,
+    credentials: Rc<Credentials>,
+    runtime: Runtime,
+    sessions: HashMap<String, Box<dyn Session>>,
+    /// Connections being connected, each with its attempt number. A finished attempt keeps
+    /// its session only while its number is still here: editing, deleting or disconnecting
+    /// the connection removes the entry, and the late session is closed.
+    connecting: HashMap<String, u64>,
+    /// The number the next connect attempt gets.
+    next_attempt: u64,
+    /// Folders the user has opened, by ID.
+    expanded: HashSet<String>,
+    /// The item Ctrl+X picked up, waiting for Ctrl+V.
+    cut: Option<String>,
+    dialog: Option<OpenDialog>,
+}
+
+impl EventEmitter<ExplorerEvent> for Explorer {}
+
+impl Explorer {
+    /// Loads the connections saved at `path`; a missing file is an empty tree.
+    pub fn new(
+        path: PathBuf,
+        credentials: Credentials,
+        runtime: Runtime,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let (saved, problem) = match Connections::load(&path) {
+            Ok(saved) => (saved, None),
+            Err(error) => (
+                Connections::default(),
+                Some(SharedString::from(format!(
+                    "Can't read {}: {error}. Fix or move the file, then restart; until then \
+                     connections can't be changed.",
+                    path.display()
+                ))),
+            ),
+        };
+        let tree = cx.new(|cx| TreeState::new(cx));
+        cx.subscribe(
+            &tree,
+            |this: &mut Self, _, event: &TreeEvent, _| match event {
+                TreeEvent::Expanded(id) => {
+                    this.expanded.insert(id.to_string());
+                }
+                TreeEvent::Collapsed(id) => {
+                    this.expanded.remove(id.as_ref());
+                }
+            },
+        )
+        .detach();
+        let focus = cx.focus_handle();
+        // A click on the pane's empty space focuses the pane itself.
+        cx.on_focus(&focus, window, |this, window, cx| this.focus(window, cx))
+            .detach();
+        let this = Self {
+            focus,
+            tree,
+            path,
+            saved,
+            problem,
+            credentials: Rc::new(credentials),
+            runtime,
+            sessions: HashMap::new(),
+            connecting: HashMap::new(),
+            next_attempt: 0,
+            expanded: HashSet::new(),
+            cut: None,
+            dialog: None,
+        };
+        this.rebuild(None, cx);
+        this
+    }
+
+    /// Gives the explorer keyboard focus. The tree owns the arrow keys, so focus goes to the
+    /// tree, with the first row selected if none is, so the arrows have somewhere to start.
+    ///
+    /// Callers use this rather than focusing the pane's handle: gpui runs focus listeners
+    /// only while the window is active, so a listener alone misses a focus change made while
+    /// another window is in front.
+    pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
+        self.tree.update(cx, |tree, cx| {
+            if tree.selected_index().is_none() && tree.entry(0).is_some() {
+                tree.set_selected_index(Some(0), cx);
+            }
+            tree.focus(window, cx);
+        });
+    }
+
+    /// True while a connection is connecting or the open dialog is testing one.
+    pub fn is_busy(&self, cx: &App) -> bool {
+        !self.connecting.is_empty()
+            || matches!(&self.dialog, Some(OpenDialog::Connection(form)) if form.read(cx).is_testing())
+    }
+
+    pub fn state(&self, cx: &App) -> ExplorerState {
+        let tree = self.tree.read(cx);
+        let selected = tree.selected_index();
+        let rows = (0..)
+            .map_while(|ix| tree.entry(ix).map(|entry| (ix, entry)))
+            .filter_map(|(ix, entry)| {
+                let id = entry.item().id.as_ref();
+                let (kind, name, colour) = self.describe(id)?;
+                Some(RowState {
+                    depth: entry.depth(),
+                    kind,
+                    name,
+                    colour: palette::name(colour),
+                    status: self.status(id),
+                    selected: selected == Some(ix),
+                })
+            })
+            .collect();
+        let dialog = self.dialog.as_ref().map(|dialog| match dialog {
+            OpenDialog::Connection(form) => DialogState::Connection(form.read(cx).state(cx)),
+            OpenDialog::Folder(form) => DialogState::Folder(form.read(cx).state(cx)),
+            OpenDialog::Rename(input) => DialogState::Rename {
+                name: input.read(cx).value().to_string(),
+            },
+            OpenDialog::Password { connection, input } => DialogState::Password {
+                connection: connection.to_string(),
+                typed: !input.read(cx).value().is_empty(),
+            },
+            OpenDialog::Delete(name) => DialogState::Delete {
+                name: name.to_string(),
+            },
+        });
+        ExplorerState {
+            rows,
+            problem: self.problem.clone(),
+            dialog,
+        }
+    }
+
+    /// A row's kind, name and drawn colour, or `None` for an ID no longer saved.
+    fn describe(&self, id: &str) -> Option<(Kind, String, Option<&str>)> {
+        if let Some(folder) = self.saved.folders().iter().find(|f| f.id == id) {
+            return Some((Kind::Folder, folder.name.clone(), folder.colour.as_deref()));
+        }
+        let saved = self.connection(id)?;
+        let colour = self
+            .saved
+            .effective_settings(id)
+            .ok()
+            .and_then(|settings| settings.colour);
+        Some((Kind::Connection, saved.connection.name.clone(), colour))
+    }
+
+    fn status(&self, id: &str) -> Status {
+        if self.sessions.contains_key(id) {
+            Status::Connected
+        } else if self.connecting.contains_key(id) {
+            Status::Connecting
+        } else {
+            Status::Disconnected
+        }
+    }
+
+    fn connection(&self, id: &str) -> Option<&SavedConnection> {
+        self.saved.connections().iter().find(|c| c.id == id)
+    }
+
+    fn is_folder(&self, id: &str) -> bool {
+        self.saved.folders().iter().any(|f| f.id == id)
+    }
+
+    fn selected(&self, cx: &App) -> Option<String> {
+        self.tree
+            .read(cx)
+            .selected_item()
+            .map(|item| item.id.to_string())
+    }
+
+    /// The folder a new or pasted item goes in: the selected folder, or the selected
+    /// connection's folder, or the top level.
+    fn target_folder(&self, cx: &App) -> Option<String> {
+        let id = self.selected(cx)?;
+        if self.is_folder(&id) {
+            Some(id)
+        } else {
+            self.connection(&id).and_then(|c| c.parent.clone())
+        }
+    }
+
+    /// Rebuilds the tree from the saved connections, keeping the open folders, and selects
+    /// `select` (or keeps the current selection).
+    fn rebuild(&self, select: Option<&str>, cx: &mut Context<Self>) {
+        let select = select.map(str::to_owned).or_else(|| self.selected(cx));
+        let items = self.items(None);
+        self.tree.update(cx, |tree, cx| {
+            tree.set_items(items, cx);
+            let ix = select.and_then(|id| tree.index_of(&id.into()));
+            tree.set_selected_index(ix, cx);
+        });
+        cx.notify();
+    }
+
+    /// The tree items under `parent`: folders first, then connections, in saved order.
+    fn items(&self, parent: Option<&str>) -> Vec<TreeItem> {
+        let folders = self
+            .saved
+            .folders()
+            .iter()
+            .filter(|f| f.parent.as_deref() == parent)
+            .map(|f| {
+                TreeItem::new(f.id.clone(), f.name.clone())
+                    .children(self.items(Some(&f.id)))
+                    .expanded(self.expanded.contains(&f.id))
+            });
+        let connections = self
+            .saved
+            .connections()
+            .iter()
+            .filter(|c| c.parent.as_deref() == parent)
+            .map(|c| TreeItem::new(c.id.clone(), c.connection.name.clone()));
+        folders.chain(connections).collect()
+    }
+
+    fn message(&self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
+        cx.emit(ExplorerEvent::Message(text.into()));
+    }
+
+    /// True when edits may be saved; otherwise says why not.
+    fn editable(&self, cx: &mut Context<Self>) -> bool {
+        match &self.problem {
+            None => true,
+            Some(problem) => {
+                self.message(problem.clone(), cx);
+                false
+            }
+        }
+    }
+
+    /// Applies `edit` to a copy of the tree and writes the copy to `connections.toml`. The
+    /// explorer takes the copy only once the file is written, so a failed edit or save leaves
+    /// the screen, the file and the saved passwords as they were. `under` names the item
+    /// whose connections' passwords the edit may delete: the connection itself, or a folder
+    /// and everything in it.
+    fn commit<T>(
+        &mut self,
+        under: Option<&str>,
+        cx: &mut Context<Self>,
+        edit: impl FnOnce(&mut Connections) -> Result<T, connections::Error>,
+    ) -> Result<T, connections::Error> {
+        // The engine's `update_connection` and `delete` remove passwords before the file is
+        // written, so those passwords are read first and put back if the edit fails. One
+        // that can't be read couldn't be put back, so it stops the edit. DAT-44 moves the
+        // deletion after the save in the engine; this backup goes once that lands.
+        let mut passwords = Vec::new();
+        if let Some(under) = under {
+            for saved in self.saved.connections() {
+                if self.is_within(&saved.id, saved.parent.as_deref(), under)
+                    && let Some(password) = self.credentials.read(saved)?
+                {
+                    passwords.push((saved.clone(), password));
+                }
+            }
+        }
+        let mut next = self.saved.clone();
+        let outcome = edit(&mut next).and_then(|value| next.save(&self.path).map(|()| value));
+        if outcome.is_err() {
+            for (saved, password) in passwords {
+                if let Ok(None) = self.credentials.read(&saved)
+                    && let Err(error) = self.credentials.store(&saved, password.expose())
+                {
+                    let name = &saved.connection.name;
+                    self.message(
+                        format!("Couldn't put back the saved password for {name}: {error}."),
+                        cx,
+                    );
+                }
+            }
+        } else {
+            self.saved = next;
+        }
+        outcome
+    }
+
+    /// True when the item `id`, whose folder is `parent`, is `under` or inside it.
+    fn is_within<'a>(&'a self, id: &str, mut parent: Option<&'a str>, under: &str) -> bool {
+        if id == under {
+            return true;
+        }
+        while let Some(folder) = parent {
+            if folder == under {
+                return true;
+            }
+            parent = self
+                .saved
+                .folders()
+                .iter()
+                .find(|f| f.id == folder)
+                .and_then(|f| f.parent.as_deref());
+        }
+        false
+    }
+
+    fn new_connection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.editable(cx) {
+            let parent = self.target_folder(cx);
+            self.open_connection_dialog(None, parent, window, cx);
+        }
+    }
+
+    fn open_connection_dialog(
+        &mut self,
+        editing: Option<SavedConnection>,
+        parent: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let title = if editing.is_some() {
+            "Edit connection"
+        } else {
+            "New connection"
+        };
+        let id = editing.as_ref().map(|c| c.id.clone());
+        let credentials = self.credentials.clone();
+        let runtime = self.runtime.clone();
+        let form = cx.new(|cx| ConnectionForm::new(editing, credentials, runtime, window, cx));
+        self.dialog = Some(OpenDialog::Connection(form.clone()));
+        let explorer = cx.entity();
+        let first_open = Cell::new(true);
+        window.open_dialog(cx, move |dialog, window, cx| {
+            if first_open.replace(false) {
+                form.read(cx).first_field(cx).focus(window, cx);
+            }
+            let save = {
+                let (explorer, form, id, parent) =
+                    (explorer.clone(), form.clone(), id.clone(), parent.clone());
+                move |_: &gpui::ClickEvent, _: &mut Window, cx: &mut App| {
+                    explorer.update(cx, |this, cx| {
+                        this.save_connection(&form, id.as_deref(), parent.as_deref(), cx)
+                    })
+                }
+            };
+            dialog
+                .title(title)
+                .entrance(DialogEntrance::None)
+                .w(px(520.))
+                .child(form.clone())
+                .footer(footer("Save (Enter)"))
+                .on_ok(save)
+                .on_close(closer(&explorer))
+        });
+    }
+
+    /// Saves the dialog's connection and its password. Returns false to keep the dialog
+    /// open, with the reason shown, when the fields are wrong or the save fails. Saving an
+    /// edit disconnects the connection, so the next connect uses the new details.
+    fn save_connection(
+        &mut self,
+        form: &Entity<ConnectionForm>,
+        editing: Option<&str>,
+        parent: Option<&str>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(output) = form.update(cx, |form, cx| form.output(cx)) else {
+            return false;
+        };
+        let name = output.connection.name.clone();
+        let credentials = self.credentials.clone();
+        let saved = self.commit(editing, cx, |saved| match editing {
+            Some(id) => saved
+                .update_connection(id, output.connection, &credentials)
+                .map(|()| id.to_owned()),
+            None => saved.add_connection(output.connection, parent),
+        });
+        let id = match saved {
+            Ok(id) => id,
+            Err(error) => {
+                let text = format!("Couldn't save {name}: {error}.").into();
+                form.update(cx, |form, cx| form.show_error(text, cx));
+                return false;
+            }
+        };
+        if editing.is_some() && self.forget_session(&id) {
+            self.message(
+                format!("Disconnected from {name}, because its details changed."),
+                cx,
+            );
+        }
+        if let (Some(password), Some(saved)) = (output.password, self.connection(&id))
+            && let Err(error) = self.credentials.store(saved, &password)
+        {
+            self.message(format!("Saved {name}, but not its password: {error}."), cx);
+        }
+        if let Some(parent) = parent {
+            self.expanded.insert(parent.to_owned());
+        }
+        self.rebuild(Some(&id), cx);
+        true
+    }
+
+    fn new_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.editable(cx) {
+            let parent = self.target_folder(cx);
+            self.open_folder_dialog(None, parent, window, cx);
+        }
+    }
+
+    fn open_folder_dialog(
+        &mut self,
+        editing: Option<String>,
+        parent: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let folder = editing
+            .as_deref()
+            .and_then(|id| self.saved.folders().iter().find(|f| f.id == id).cloned());
+        let title = if folder.is_some() {
+            "Edit folder"
+        } else {
+            "New folder"
+        };
+        let form = cx.new(|cx| FolderForm::new(folder.as_ref(), window, cx));
+        self.dialog = Some(OpenDialog::Folder(form.clone()));
+        let explorer = cx.entity();
+        let first_open = Cell::new(true);
+        window.open_dialog(cx, move |dialog, window, cx| {
+            if first_open.replace(false) {
+                form.read(cx).first_field(cx).focus(window, cx);
+            }
+            let save = {
+                let (explorer, form, editing, parent) = (
+                    explorer.clone(),
+                    form.clone(),
+                    editing.clone(),
+                    parent.clone(),
+                );
+                move |_: &gpui::ClickEvent, _: &mut Window, cx: &mut App| {
+                    explorer.update(cx, |this, cx| {
+                        this.save_folder(&form, editing.as_deref(), parent.as_deref(), cx)
+                    })
+                }
+            };
+            dialog
+                .title(title)
+                .entrance(DialogEntrance::None)
+                .w(px(420.))
+                .child(form.clone())
+                .footer(footer("Save (Enter)"))
+                .on_ok(save)
+                .on_close(closer(&explorer))
+        });
+    }
+
+    fn save_folder(
+        &mut self,
+        form: &Entity<FolderForm>,
+        editing: Option<&str>,
+        parent: Option<&str>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(output) = form.update(cx, |form, cx| form.output(cx)) else {
+            return false;
+        };
+        let name = output.name.clone();
+        let saved = self.commit(None, cx, |saved| {
+            let id = match editing {
+                Some(id) => saved.rename(id, &output.name).map(|()| id.to_owned()),
+                None => saved.add_folder(&output.name, parent),
+            }?;
+            saved.set_folder_settings(&id, output.colour, output.danger_check)?;
+            Ok(id)
+        });
+        match saved {
+            Ok(id) => {
+                if let Some(parent) = parent {
+                    self.expanded.insert(parent.to_owned());
+                }
+                self.rebuild(Some(&id), cx);
+                true
+            }
+            Err(error) => {
+                let text = format!("Couldn't save folder {name}: {error}.").into();
+                form.update(cx, |form, cx| form.show_error(text, cx));
+                false
+            }
+        }
+    }
+
+    fn edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.selected(cx) else { return };
+        if !self.editable(cx) {
+            return;
+        }
+        if self.is_folder(&id) {
+            self.open_folder_dialog(Some(id), None, window, cx);
+        } else if let Some(saved) = self.connection(&id).cloned() {
+            self.open_connection_dialog(Some(saved), None, window, cx);
+        }
+    }
+
+    fn rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.selected(cx) else { return };
+        let Some((_, name, _)) = self.describe(&id) else {
+            return;
+        };
+        if !self.editable(cx) {
+            return;
+        }
+        let input = cx.new(|cx| {
+            let mut state = InputState::new(window, cx);
+            state.set_value(name, window, cx);
+            state
+        });
+        self.dialog = Some(OpenDialog::Rename(input.clone()));
+        let explorer = cx.entity();
+        let first_open = Cell::new(true);
+        window.open_dialog(cx, move |dialog, window, cx| {
+            if first_open.replace(false) {
+                input.focus_handle(cx).focus(window, cx);
+            }
+            let save = {
+                let (explorer, input, id) = (explorer.clone(), input.clone(), id.clone());
+                move |_: &gpui::ClickEvent, _: &mut Window, cx: &mut App| {
+                    let name = input.read(cx).value().trim().to_string();
+                    explorer.update(cx, |this, cx| {
+                        if name.is_empty() {
+                            return false;
+                        }
+                        if let Err(error) = this.commit(None, cx, |saved| saved.rename(&id, name)) {
+                            // The dialog stays open with the name, so the user can retry.
+                            this.message(format!("Couldn't rename: {error}."), cx);
+                            return false;
+                        }
+                        this.rebuild(Some(&id), cx);
+                        true
+                    })
+                }
+            };
+            dialog
+                .title("Rename")
+                .entrance(DialogEntrance::None)
+                .w(px(420.))
+                .child(Input::new(&input))
+                .footer(footer("Rename (Enter)"))
+                .on_ok(save)
+                .on_close(closer(&explorer))
+        });
+    }
+
+    fn delete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.selected(cx) else { return };
+        let Some((kind, name, _)) = self.describe(&id) else {
+            return;
+        };
+        if !self.editable(cx) {
+            return;
+        }
+        let question: SharedString = match kind {
+            Kind::Folder => format!("Delete folder {name} and every folder and connection in it?"),
+            Kind::Connection => format!("Delete connection {name} and its saved password?"),
+        }
+        .into();
+        self.dialog = Some(OpenDialog::Delete(name.into()));
+        let explorer = cx.entity();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let confirm = {
+                let (explorer, id) = (explorer.clone(), id.clone());
+                move |_: &gpui::ClickEvent, _: &mut Window, cx: &mut App| {
+                    explorer.update(cx, |this, cx| this.delete_now(&id, cx));
+                    true
+                }
+            };
+            alert
+                .title("Delete")
+                .entrance(DialogEntrance::None)
+                .description(question.clone())
+                .ok_text("Delete")
+                .show_cancel(true)
+                .on_ok(confirm)
+                .on_close(closer(&explorer))
+        });
+    }
+
+    fn delete_now(&mut self, id: &str, cx: &mut Context<Self>) {
+        let before: HashSet<String> = self
+            .saved
+            .connections()
+            .iter()
+            .map(|c| c.id.clone())
+            .collect();
+        let credentials = self.credentials.clone();
+        if let Err(error) = self.commit(Some(id), cx, |saved| saved.delete(id, &credentials)) {
+            self.message(format!("Couldn't delete: {error}."), cx);
+            return;
+        }
+        // Close the sessions of every deleted connection.
+        let kept: HashSet<String> = self
+            .saved
+            .connections()
+            .iter()
+            .map(|c| c.id.clone())
+            .collect();
+        for gone in before.difference(&kept) {
+            self.forget_session(gone);
+        }
+        self.rebuild(None, cx);
+    }
+
+    fn cut(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.selected(cx) else { return };
+        let Some((_, name, _)) = self.describe(&id) else {
+            return;
+        };
+        self.cut = Some(id);
+        self.message(
+            format!("Cut {name}. Select a folder and press Ctrl+V to move it there, or Ctrl+Shift+V for the top level."),
+            cx,
+        );
+    }
+
+    fn paste(&mut self, at_top: bool, cx: &mut Context<Self>) {
+        let Some(id) = self.cut.clone() else {
+            self.message(
+                "Nothing is cut. Select a folder or connection and press Ctrl+X first.",
+                cx,
+            );
+            return;
+        };
+        if !self.editable(cx) {
+            return;
+        }
+        let target = if at_top { None } else { self.target_folder(cx) };
+        match self.commit(None, cx, |saved| saved.move_to(&id, target.as_deref())) {
+            Ok(()) => {
+                self.cut = None;
+                if let Some(target) = &target {
+                    self.expanded.insert(target.clone());
+                }
+                self.rebuild(Some(&id), cx);
+            }
+            Err(connections::Error::Invalid(_)) => {
+                self.message("A folder can't move into itself or a folder inside it.", cx);
+            }
+            Err(error) => self.message(format!("Couldn't move: {error}."), cx),
+        }
+    }
+}
+
+/// The dialog footer: Cancel and the dialog's own action, both reachable with Tab.
+fn footer(action: &'static str) -> impl IntoElement {
+    use gpui_component::button::{Button, ButtonVariants as _};
+    use gpui_component::dialog::{DialogAction, DialogClose, DialogFooter};
+    DialogFooter::new()
+        .child(DialogClose::new().child(Button::new("cancel").label("Cancel (Esc)")))
+        .child(DialogAction::new().child(Button::new("ok").primary().label(action)))
+}
+
+/// Forgets the open dialog once it closes, however it closed, and gives focus back to the
+/// explorer, which opened it.
+fn closer(
+    explorer: &Entity<Explorer>,
+) -> impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static {
+    let explorer = explorer.clone();
+    move |_, window, cx| {
+        explorer.update(cx, |this, cx| {
+            this.dialog = None;
+            this.focus(window, cx);
+        })
+    }
+}
+
+impl Focusable for Explorer {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
+/// What one row draws besides its label.
+#[derive(Clone, Copy)]
+struct RowLook {
+    kind: Kind,
+    colour: Option<gpui::Hsla>,
+    status: Status,
+}
+
+impl Render for Explorer {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        // The rows draw from a snapshot, because the tree's row closure outlives this call.
+        let rows: Rc<HashMap<String, RowLook>> = Rc::new(
+            self.saved
+                .folders()
+                .iter()
+                .map(|f| f.id.clone())
+                .chain(self.saved.connections().iter().map(|c| c.id.clone()))
+                .filter_map(|id| {
+                    let (kind, _, colour) = self.describe(&id)?;
+                    let colour = colour.and_then(palette::hsla);
+                    let status = self.status(&id);
+                    Some((
+                        id,
+                        RowLook {
+                            kind,
+                            colour,
+                            status,
+                        },
+                    ))
+                })
+                .collect(),
+        );
+        let empty = self.saved.folders().is_empty() && self.saved.connections().is_empty();
+        let muted = theme.muted_foreground;
+        let success = theme.success;
+
+        div()
+            .id("explorer")
+            .key_context("Explorer")
+            .track_focus(&self.focus)
+            .size_full()
+            .flex()
+            .flex_col()
+            .on_action(cx.listener(|this, _: &NewConnection, w, cx| this.new_connection(w, cx)))
+            .on_action(cx.listener(|this, _: &NewFolder, w, cx| this.new_folder(w, cx)))
+            .on_action(cx.listener(|this, _: &EditItem, w, cx| this.edit(w, cx)))
+            .on_action(cx.listener(|this, _: &RenameItem, w, cx| this.rename(w, cx)))
+            .on_action(cx.listener(|this, _: &DeleteItem, w, cx| this.delete(w, cx)))
+            .on_action(cx.listener(|this, _: &CutItem, _, cx| this.cut(cx)))
+            .on_action(cx.listener(|this, _: &PasteItem, _, cx| this.paste(false, cx)))
+            .on_action(cx.listener(|this, _: &PasteItemAtTop, _, cx| this.paste(true, cx)))
+            .on_action(cx.listener(|this, _: &ConnectItem, w, cx| this.activate(w, cx)))
+            .on_action(cx.listener(|this, _: &DisconnectItem, _, cx| this.disconnect(cx)))
+            .children(self.problem.clone().map(|problem| {
+                div()
+                    .px_2()
+                    .text_sm()
+                    .text_color(theme.danger)
+                    .child(problem)
+            }))
+            .when(empty && self.problem.is_none(), |this| {
+                this.child(
+                    div().px_2().text_sm().text_color(muted).child(
+                        "No connections yet. Insert adds a connection, Ctrl+Shift+N a folder.",
+                    ),
+                )
+            })
+            .child(
+                tree(&self.tree, move |ix, entry, selected, _, _| {
+                    let id = entry.item().id.to_string();
+                    // A row always has its look: both come from the same saved tree.
+                    let RowLook {
+                        kind,
+                        colour,
+                        status,
+                    } = rows.get(&id).copied().unwrap_or(RowLook {
+                        kind: Kind::Connection,
+                        colour: None,
+                        status: Status::Disconnected,
+                    });
+                    let marker = match (kind, entry.is_expanded()) {
+                        (Kind::Folder, true) => "▾",
+                        (Kind::Folder, false) => "▸",
+                        (Kind::Connection, _) => "",
+                    };
+                    let status = match status {
+                        Status::Connected => Some(("connected", success)),
+                        Status::Connecting => Some(("connecting…", muted)),
+                        Status::Disconnected => None,
+                    };
+                    ListItem::new(ix).selected(selected).child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_1()
+                            .pl(px(12. * entry.depth() as f32))
+                            .child(div().w(px(10.)).child(marker))
+                            .child(
+                                div()
+                                    .size(px(8.))
+                                    .rounded_full()
+                                    .when_some(colour, |dot, colour| dot.bg(colour)),
+                            )
+                            .child(entry.item().label.clone())
+                            .children(status.map(|(text, colour)| {
+                                div().text_xs().text_color(colour).child(text)
+                            })),
+                    )
+                })
+                .flex_1(),
+            )
+    }
+}

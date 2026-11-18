@@ -3,7 +3,8 @@
 //!
 //! Keys go through gpui's `Window::dispatch_keystroke`, the path a real key takes once
 //! Windows has turned it into a keystroke: the keymap, the focused element's actions and its
-//! text input. Synthetic OS input is not used because it lands in whatever window is in
+//! text input. Each key is then released with a key-up event, because gpui clicks a focused
+//! button or checkbox on the release of Enter or Space, not on the press. Synthetic OS input is not used because it lands in whatever window is in
 //! front. What this skips is Windows' own key translation, so a key gpui does not
 //! translate (Pause/Break) passes here but not at a real keyboard.
 //!
@@ -20,11 +21,17 @@
 //! A `shot` input writes `<state file>.shot` holding the shot's name and waits, up to 10 s,
 //! for an outside script (`scripts/ui-run.ps1`) to capture the window and delete the file.
 //! Shots are taken only with `--ui-shots`; otherwise they are skipped.
+//!
+//! An `"idle"` input waits, up to 30 s, until nothing is connecting or testing, so a script
+//! can check the outcome of a connect without guessing how long it takes.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use gpui::{AsyncWindowContext, Keystroke, Modifiers, OperatingSystem, WeakEntity};
+use gpui::{
+    AsyncWindowContext, KeyUpEvent, Keystroke, Modifiers, OperatingSystem, PlatformInput,
+    WeakEntity,
+};
 use serde::Deserialize;
 
 use crate::workbench::Workbench;
@@ -47,6 +54,8 @@ enum Input {
     Text(String),
     /// A window screenshot saved under this name.
     Shot(String),
+    /// Waits until no connect or test is under way. Written as the string `"idle"`.
+    Idle,
 }
 
 /// A script read from disk, ready to play.
@@ -100,14 +109,13 @@ impl UiScript {
                                 self.append(&line);
                                 break 'steps;
                             };
-                            let _ =
-                                cx.update(|window, cx| window.dispatch_keystroke(keystroke, cx));
+                            press(&mut cx, keystroke);
                             pause(30).await;
                         }
                     }
                     Input::Text(text) => {
                         for c in text.chars() {
-                            let _ = cx.update(|window, cx| window.dispatch_keystroke(typed(c), cx));
+                            press(&mut cx, typed(c));
                             pause(10).await;
                         }
                     }
@@ -126,6 +134,19 @@ impl UiScript {
                         }
                     }
                     Input::Shot(_) => {}
+                    Input::Idle => {
+                        for _ in 0..300 {
+                            let busy = cx
+                                .update(|_, cx| workbench.read_with(cx, |wb, cx| wb.is_busy(cx)))
+                                .ok()
+                                .and_then(Result::ok)
+                                .unwrap_or(false);
+                            if !busy {
+                                break;
+                            }
+                            pause(100).await;
+                        }
+                    }
                 }
                 pause(50).await;
             }
@@ -153,6 +174,14 @@ impl UiScript {
             let _ = writeln!(file, "{line}");
         }
     }
+}
+
+/// Presses and releases one key, as a real keyboard does.
+fn press(cx: &mut AsyncWindowContext, keystroke: Keystroke) {
+    let _ = cx.update(|window, cx| {
+        window.dispatch_keystroke(keystroke.clone(), cx);
+        window.dispatch_event(PlatformInput::KeyUp(KeyUpEvent { keystroke }), cx);
+    });
 }
 
 /// The keystroke a character produces with no modifiers held.
