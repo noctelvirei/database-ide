@@ -109,7 +109,12 @@ pub struct Explorer {
     credentials: Rc<Credentials>,
     runtime: Runtime,
     sessions: HashMap<String, Box<dyn Session>>,
-    connecting: HashSet<String>,
+    /// Connections being connected, each with its attempt number. A finished attempt keeps
+    /// its session only while its number is still here: editing, deleting or disconnecting
+    /// the connection removes the entry, and the late session is closed.
+    connecting: HashMap<String, u64>,
+    /// The number the next connect attempt gets.
+    next_attempt: u64,
     /// Folders the user has opened, by ID.
     expanded: HashSet<String>,
     /// The item Ctrl+X picked up, waiting for Ctrl+V.
@@ -173,7 +178,8 @@ impl Explorer {
             credentials: Rc::new(credentials),
             runtime,
             sessions: HashMap::new(),
-            connecting: HashSet::new(),
+            connecting: HashMap::new(),
+            next_attempt: 0,
             expanded: HashSet::new(),
             cut: None,
             dialog: None,
@@ -244,7 +250,7 @@ impl Explorer {
     fn status(&self, id: &str) -> Status {
         if self.sessions.contains_key(id) {
             Status::Connected
-        } else if self.connecting.contains(id) {
+        } else if self.connecting.contains_key(id) {
             Status::Connecting
         } else {
             Status::Disconnected
@@ -326,13 +332,34 @@ impl Explorer {
         }
     }
 
-    /// Writes the tree to `connections.toml`, reporting a failure.
-    fn persist(&self, cx: &mut Context<Self>) {
-        if let Err(error) = self.saved.save(&self.path) {
-            self.message(
-                format!("Couldn't save {}: {error}.", self.path.display()),
-                cx,
-            );
+    /// Applies `edit` to a copy of the tree and writes the copy to `connections.toml`. The
+    /// explorer takes the copy only once the file is written, so a failed edit or save leaves
+    /// both the screen and the file as they were.
+    ///
+    /// shortcut: the engine's `update_connection` and `delete` remove saved passwords before
+    /// the file is written, so a failed save can still lose a password; fixing that needs the
+    /// engine to delete credentials after the caller saves.
+    fn commit<T>(
+        &mut self,
+        edit: impl FnOnce(&mut Connections) -> Result<T, connections::Error>,
+    ) -> Result<T, connections::Error> {
+        let mut next = self.saved.clone();
+        let value = edit(&mut next)?;
+        next.save(&self.path)?;
+        self.saved = next;
+        Ok(value)
+    }
+
+    /// Drops the connection's session and any connect still under way, so the next connect
+    /// uses its current details. Returns true if a session was open.
+    fn forget_session(&mut self, id: &str) -> bool {
+        self.connecting.remove(id);
+        match self.sessions.remove(id) {
+            Some(session) => {
+                self.runtime.close(session);
+                true
+            }
+            None => false,
         }
     }
 
@@ -387,7 +414,8 @@ impl Explorer {
     }
 
     /// Saves the dialog's connection and its password. Returns false to keep the dialog
-    /// open when the fields are wrong.
+    /// open, with the reason shown, when the fields are wrong or the save fails. Saving an
+    /// edit disconnects the connection, so the next connect uses the new details.
     fn save_connection(
         &mut self,
         form: &Entity<ConnectionForm>,
@@ -399,20 +427,27 @@ impl Explorer {
             return false;
         };
         let name = output.connection.name.clone();
-        let saved = match editing {
-            Some(id) => self
-                .saved
-                .update_connection(id, output.connection, &self.credentials)
+        let credentials = self.credentials.clone();
+        let saved = self.commit(|saved| match editing {
+            Some(id) => saved
+                .update_connection(id, output.connection, &credentials)
                 .map(|()| id.to_owned()),
-            None => self.saved.add_connection(output.connection, parent),
-        };
+            None => saved.add_connection(output.connection, parent),
+        });
         let id = match saved {
             Ok(id) => id,
             Err(error) => {
-                self.message(format!("Couldn't save {name}: {error}."), cx);
-                return true;
+                let text = format!("Couldn't save {name}: {error}.").into();
+                form.update(cx, |form, cx| form.show_error(text, cx));
+                return false;
             }
         };
+        if editing.is_some() && self.forget_session(&id) {
+            self.message(
+                format!("Disconnected from {name}, because its details changed."),
+                cx,
+            );
+        }
         if let (Some(password), Some(saved)) = (output.password, self.connection(&id))
             && let Err(error) = self.credentials.store(saved, &password)
         {
@@ -421,7 +456,6 @@ impl Explorer {
         if let Some(parent) = parent {
             self.expanded.insert(parent.to_owned());
         }
-        self.persist(cx);
         self.rebuild(Some(&id), cx);
         true
     }
@@ -490,29 +524,29 @@ impl Explorer {
         let Some(output) = form.update(cx, |form, cx| form.output(cx)) else {
             return false;
         };
-        let saved = match editing {
-            Some(id) => self.saved.rename(id, &output.name).map(|()| id.to_owned()),
-            None => self.saved.add_folder(&output.name, parent),
-        }
-        .and_then(|id| {
-            self.saved
-                .set_folder_settings(&id, output.colour, output.danger_check)
-                .map(|()| id)
+        let name = output.name.clone();
+        let saved = self.commit(|saved| {
+            let id = match editing {
+                Some(id) => saved.rename(id, &output.name).map(|()| id.to_owned()),
+                None => saved.add_folder(&output.name, parent),
+            }?;
+            saved.set_folder_settings(&id, output.colour, output.danger_check)?;
+            Ok(id)
         });
         match saved {
             Ok(id) => {
                 if let Some(parent) = parent {
                     self.expanded.insert(parent.to_owned());
                 }
-                self.persist(cx);
                 self.rebuild(Some(&id), cx);
+                true
             }
-            Err(error) => self.message(
-                format!("Couldn't save folder {}: {error}.", output.name),
-                cx,
-            ),
+            Err(error) => {
+                let text = format!("Couldn't save folder {name}: {error}.").into();
+                form.update(cx, |form, cx| form.show_error(text, cx));
+                false
+            }
         }
-        true
     }
 
     fn edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -555,9 +589,10 @@ impl Explorer {
                         if name.is_empty() {
                             return false;
                         }
-                        match this.saved.rename(&id, name) {
-                            Ok(()) => this.persist(cx),
-                            Err(error) => this.message(format!("Couldn't rename: {error}."), cx),
+                        if let Err(error) = this.commit(|saved| saved.rename(&id, name)) {
+                            // The dialog stays open with the name, so the user can retry.
+                            this.message(format!("Couldn't rename: {error}."), cx);
+                            return false;
                         }
                         this.rebuild(Some(&id), cx);
                         true
@@ -616,23 +651,21 @@ impl Explorer {
             .iter()
             .map(|c| c.id.clone())
             .collect();
-        if let Err(error) = self.saved.delete(id, &self.credentials) {
+        let credentials = self.credentials.clone();
+        if let Err(error) = self.commit(|saved| saved.delete(id, &credentials)) {
             self.message(format!("Couldn't delete: {error}."), cx);
             return;
         }
         // Close the sessions of every deleted connection.
-        let kept: HashSet<&str> = self
+        let kept: HashSet<String> = self
             .saved
             .connections()
             .iter()
-            .map(|c| c.id.as_str())
+            .map(|c| c.id.clone())
             .collect();
-        for gone in before.iter().filter(|id| !kept.contains(id.as_str())) {
-            if let Some(session) = self.sessions.remove(gone) {
-                self.runtime.close(session);
-            }
+        for gone in before.difference(&kept) {
+            self.forget_session(gone);
         }
-        self.persist(cx);
         self.rebuild(None, cx);
     }
 
@@ -660,13 +693,12 @@ impl Explorer {
             return;
         }
         let target = if at_top { None } else { self.target_folder(cx) };
-        match self.saved.move_to(&id, target.as_deref()) {
+        match self.commit(|saved| saved.move_to(&id, target.as_deref())) {
             Ok(()) => {
                 self.cut = None;
                 if let Some(target) = &target {
                     self.expanded.insert(target.clone());
                 }
-                self.persist(cx);
                 self.rebuild(Some(&id), cx);
             }
             Err(connections::Error::Invalid(_)) => {
@@ -762,17 +794,25 @@ impl Explorer {
     ) {
         let id = saved.id.clone();
         let name = saved.connection.name.clone();
-        self.connecting.insert(id.clone());
+        let attempt = self.next_attempt;
+        self.next_attempt += 1;
+        self.connecting.insert(id.clone(), attempt);
         self.message(format!("Connecting to {name}…"), cx);
         cx.notify();
-        let attempt = self.runtime.connect(saved.connection.clone(), password);
+        let connecting = self.runtime.connect(saved.connection.clone(), password);
         cx.spawn_in(window, async move |this, cx| {
-            let outcome = attempt.await;
+            let outcome = connecting.await;
             let _ = this.update(cx, |this, cx| {
+                if this.connecting.get(&id) != Some(&attempt) {
+                    // The connection was edited or deleted while connecting: its details
+                    // are out of date, so a session from them is closed, not kept.
+                    if let Ok(session) = outcome {
+                        this.runtime.close(session);
+                    }
+                    return;
+                }
                 this.connecting.remove(&id);
                 match outcome {
-                    // The connection was deleted while connecting.
-                    Ok(session) if this.connection(&id).is_none() => this.runtime.close(session),
                     Ok(session) => {
                         this.sessions.insert(id, session);
                         this.message(format!("Connected to {name}."), cx);
@@ -789,8 +829,7 @@ impl Explorer {
 
     fn disconnect(&mut self, cx: &mut Context<Self>) {
         let Some(id) = self.selected(cx) else { return };
-        if let Some(session) = self.sessions.remove(&id) {
-            self.runtime.close(session);
+        if self.forget_session(&id) {
             let name = self
                 .describe(&id)
                 .map(|(_, name, _)| name)

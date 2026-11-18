@@ -223,6 +223,12 @@ impl ConnectionForm {
         })
     }
 
+    /// Shows `text` under the fields, for a save the explorer couldn't finish.
+    pub fn show_error(&mut self, text: SharedString, cx: &mut Context<Self>) {
+        self.error = Some(text);
+        cx.notify();
+    }
+
     pub fn is_testing(&self) -> bool {
         self.test == TestStatus::Testing
     }

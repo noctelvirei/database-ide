@@ -237,6 +237,46 @@ fn ui_connections_in_a_coloured_folder_connect_survive_a_restart_and_report_a_wr
     }
 }
 
+/// Sets or clears the read-only flag on `path`.
+fn set_readonly(path: &Path, readonly: bool) {
+    let mut permissions = std::fs::metadata(path).unwrap().permissions();
+    permissions.set_readonly(readonly);
+    std::fs::set_permissions(path, permissions).unwrap();
+}
+
+#[test]
+fn ui_a_folder_that_cant_be_saved_keeps_its_dialog_open_and_adds_no_row() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let folder = dir.path().join("Database IDE");
+    std::fs::create_dir(&folder).unwrap();
+    let file = folder.join("connections.toml");
+    std::fs::write(&file, "").unwrap();
+    // A read-only file stops the save on Windows, and a read-only folder on other systems.
+    set_readonly(&file, true);
+    set_readonly(&folder, true);
+    let steps = json!([{
+        "name": "save folder",
+        "input": [{ "key": "f8" }, { "key": "ctrl-shift-n" }, { "text": "Lab" }, { "key": "enter" }],
+    }]);
+    let script = dir.path().join("script.json");
+    std::fs::write(&script, steps.to_string()).unwrap();
+    let lines = run_script(&script, Some(dir.path()));
+    set_readonly(&folder, false);
+    set_readonly(&file, false);
+
+    let refused = state(&lines, "save folder");
+    assert_eq!(refused["explorer"]["rows"], json!([]));
+    let dialog = &refused["explorer"]["dialog"];
+    assert_eq!(dialog["name"], "Lab", "{refused:#}");
+    assert!(
+        dialog["error"]
+            .as_str()
+            .is_some_and(|e| e.starts_with("Couldn't save folder Lab: ")),
+        "{refused:#}"
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "");
+}
+
 /// Each explorer row as (depth, name), top to bottom.
 fn rows(state: &Value) -> Vec<(u64, String)> {
     state["explorer"]["rows"]
