@@ -118,7 +118,8 @@ fn drive_a_million_rows(server: &Server, query: &str) {
     let copied = state(&lines, "copy with headers");
     assert_eq!(
         copied["clipboard"],
-        "label\todd\r\nrow 999998\t\r\nrow 999999\t999999\r\nrow 1000000\t\r\n"
+        "label\todd\r\nrow 999998\t\r\nrow 999999\t999999\r\nrow 1000000\t\r\n",
+        "{copied:#}"
     );
     assert_eq!(
         copied["messages"].as_array().unwrap().last().unwrap(),
