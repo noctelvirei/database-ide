@@ -3,7 +3,8 @@
 //!
 //! Keys go through gpui's `Window::dispatch_keystroke`, the path a real key takes once
 //! Windows has turned it into a keystroke: the keymap, the focused element's actions and its
-//! text input. Synthetic OS input is not used because it lands in whatever window is in
+//! text input. Each key is then released with a key-up event, because gpui clicks a focused
+//! button or checkbox on the release of Enter or Space, not on the press. Synthetic OS input is not used because it lands in whatever window is in
 //! front. What this skips is Windows' own key translation, so a key gpui does not
 //! translate (Pause/Break) passes here but not at a real keyboard.
 //!
@@ -20,11 +21,23 @@
 //! A `shot` input writes `<state file>.shot` holding the shot's name and waits, up to 10 s,
 //! for an outside script (`.claude/skills/verify/ui-run.ps1`) to capture the window and delete the file.
 //! Shots are taken only with `--ui-shots`; otherwise they are skipped.
+//!
+//! A `mark` input does the same with `<state file>.mark`, always, so the test running the
+//! script can sample the app (its memory, say) at that point; the test deletes the file to
+//! let the script go on.
+//!
+//! An `"idle"` input waits, up to 30 s, until nothing is connecting, testing, running,
+//! switching or listing, so a script can check an outcome without guessing how long it takes.
+//! A `"running"` input waits, up to 30 s, until the active tab's run has started, so a script
+//! can cancel a run that is under way rather than one still being set up.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use gpui::{AsyncWindowContext, Keystroke, Modifiers, OperatingSystem, WeakEntity};
+use gpui::{
+    AsyncWindowContext, KeyUpEvent, Keystroke, Modifiers, OperatingSystem, PlatformInput,
+    WeakEntity,
+};
 use serde::Deserialize;
 
 use crate::workbench::Workbench;
@@ -47,6 +60,13 @@ enum Input {
     Text(String),
     /// A window screenshot saved under this name.
     Shot(String),
+    /// A pause for the test running the script to sample the app, under this name.
+    Mark(String),
+    /// Waits until no connect, test, run, switch or list is under way. Written as the string
+    /// `"idle"`.
+    Idle,
+    /// Waits until the active tab's run has started. Written as the string `"running"`.
+    Running,
 }
 
 /// A script read from disk, ready to play.
@@ -67,7 +87,7 @@ impl UiScript {
             .map_err(|e| format!("{} is not a valid UI script: {e}", script.display()))?;
         std::fs::write(&state_file, "")
             .map_err(|e| format!("can't write {}: {e}", state_file.display()))?;
-        for suffix in ["done", "shot", "shot.partial"] {
+        for suffix in ["done", "shot", "shot.partial", "mark", "mark.partial"] {
             // Leftovers from an earlier run would end a waiting runner early.
             let _ = std::fs::remove_file(with_suffix(&state_file, suffix));
         }
@@ -100,24 +120,19 @@ impl UiScript {
                                 self.append(&line);
                                 break 'steps;
                             };
-                            let _ =
-                                cx.update(|window, cx| window.dispatch_keystroke(keystroke, cx));
+                            press(&mut cx, keystroke);
                             pause(30).await;
                         }
                     }
                     Input::Text(text) => {
                         for c in text.chars() {
-                            let _ = cx.update(|window, cx| window.dispatch_keystroke(typed(c), cx));
+                            press(&mut cx, typed(c));
                             pause(10).await;
                         }
                     }
                     Input::Shot(name) if self.take_shots => {
                         pause(300).await;
-                        let marker = with_suffix(&self.state_file, "shot");
-                        // Renamed into place, so the runner never reads a half-written marker.
-                        let partial = with_suffix(&self.state_file, "shot.partial");
-                        let _ = std::fs::write(&partial, name)
-                            .and_then(|()| std::fs::rename(&partial, &marker));
+                        let marker = self.hand_over("shot", name);
                         for _ in 0..200 {
                             if !marker.exists() {
                                 break;
@@ -126,6 +141,19 @@ impl UiScript {
                         }
                     }
                     Input::Shot(_) => {}
+                    Input::Mark(name) => {
+                        let marker = self.hand_over("mark", name);
+                        for _ in 0..600 {
+                            if !marker.exists() {
+                                break;
+                            }
+                            pause(50).await;
+                        }
+                    }
+                    Input::Idle => wait_until(&mut cx, &workbench, |wb, cx| !wb.is_busy(cx)).await,
+                    Input::Running => {
+                        wait_until(&mut cx, &workbench, Workbench::is_running).await;
+                    }
                 }
                 pause(50).await;
             }
@@ -144,6 +172,16 @@ impl UiScript {
         let _ = cx.update(|_, cx| cx.quit());
     }
 
+    /// Writes `<state file>.<suffix>` holding `name` for the outside runner, and returns
+    /// its path; the runner deletes it when done. Renamed into place, so the runner never
+    /// reads a half-written marker.
+    fn hand_over(&self, suffix: &str, name: &str) -> PathBuf {
+        let marker = with_suffix(&self.state_file, suffix);
+        let partial = with_suffix(&self.state_file, &format!("{suffix}.partial"));
+        let _ = std::fs::write(&partial, name).and_then(|()| std::fs::rename(&partial, &marker));
+        marker
+    }
+
     fn append(&self, line: &serde_json::Value) {
         use std::io::Write as _;
         if let Ok(mut file) = std::fs::OpenOptions::new()
@@ -153,6 +191,14 @@ impl UiScript {
             let _ = writeln!(file, "{line}");
         }
     }
+}
+
+/// Presses and releases one key, as a real keyboard does.
+fn press(cx: &mut AsyncWindowContext, keystroke: Keystroke) {
+    let _ = cx.update(|window, cx| {
+        window.dispatch_keystroke(keystroke.clone(), cx);
+        window.dispatch_event(PlatformInput::KeyUp(KeyUpEvent { keystroke }), cx);
+    });
 }
 
 /// The keystroke a character produces with no modifiers held.
@@ -169,4 +215,24 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     name.push(".");
     name.push(suffix);
     PathBuf::from(name)
+}
+
+/// Polls `done` every 100 ms for up to 30 s, or until the window has gone.
+async fn wait_until(
+    cx: &mut AsyncWindowContext,
+    workbench: &WeakEntity<Workbench>,
+    done: impl Fn(&Workbench, &gpui::App) -> bool,
+) {
+    for _ in 0..300 {
+        let finished = cx
+            .update(|_, cx| workbench.read_with(cx, |wb, cx| done(wb, cx)))
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or(true);
+        if finished {
+            return;
+        }
+        let executor = cx.background_executor().clone();
+        executor.timer(Duration::from_millis(100)).await;
+    }
 }

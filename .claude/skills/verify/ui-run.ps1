@@ -8,7 +8,10 @@ Starts the app with --ui-script, --ui-state and --ui-shots. The app plays the sc
 gpui's own keystroke dispatch (CODE_STANDARDS.md, "UI E2E harness") and appends one JSON line
 of visible state per step. At a screenshot step the app writes "<state>.shot" holding the
 shot's name; this script saves a PNG of the app's window with PrintWindow (the window need
-not be in front) and deletes the marker. No input goes through the operating system.
+not be in front) and deletes the marker. At a mark step it writes "<state>.mark" the same way;
+this script adds the app's private working set to state.jsonl as
+{"mark": name, "private_ws_mb": n}, as the UI tests' runner does. No input goes through the
+operating system.
 
 Outputs, in -OutDir: state.jsonl and one PNG per shot. A rerun overwrites them.
 #>
@@ -57,10 +60,11 @@ function Save-WindowShot([IntPtr] $Handle, [string] $Path) {
 $OutDir = (New-Item -ItemType Directory -Force -Path $OutDir).FullName
 $state = Join-Path $OutDir 'state.jsonl'
 $marker = "$state.shot"
+$mark = "$state.mark"
 $done = "$state.done"
 
 # A previous run's markers would end this run's wait before the app clears them.
-Remove-Item -LiteralPath $marker, $done -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $marker, $mark, $done -ErrorAction SilentlyContinue
 # Start-Process joins arguments with spaces, so quote the paths. Windows paths cannot contain '"'.
 $argList = '--ui-script "{0}" --ui-state "{1}" --ui-shots' -f (Resolve-Path -LiteralPath $Script).Path, $state
 $app = Start-Process -FilePath $Exe -ArgumentList $argList -PassThru
@@ -73,6 +77,13 @@ try {
             $app.Refresh()
             Save-WindowShot $app.MainWindowHandle (Join-Path $OutDir "$name.png")
             Remove-Item -LiteralPath $marker
+        }
+        if (Test-Path -LiteralPath $mark) {
+            $name = (Get-Content -LiteralPath $mark -Raw).Trim()
+            $bytes = (Get-CimInstance Win32_PerfFormattedData_PerfProc_Process -Filter "IDProcess=$($app.Id)").WorkingSetPrivate
+            $line = @{ mark = $name; private_ws_mb = $bytes / 1MB } | ConvertTo-Json -Compress
+            Add-Content -LiteralPath $state -Value $line
+            Remove-Item -LiteralPath $mark
         }
         Start-Sleep -Milliseconds 50
     }

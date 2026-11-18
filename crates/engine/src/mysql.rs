@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::connections::{Connection, SignInMethod, TlsMode};
 use crate::danger::Engine;
-use crate::session::{Event, PlanMode, Run, Session};
+use crate::session::{ConnectError, ConnectErrorKind, Event, PlanMode, Run, Session};
 
 mod diagnostics;
 mod execution;
@@ -79,17 +79,25 @@ struct DatabaseChanges {
 /// Connect with saved details and a separately supplied password. TLS uses the native
 /// certificate store; Optional falls back only when the server has no TLS capability.
 /// UPDATE row counts include matched rows whose values did not change.
-pub async fn connect(details: &Connection, password: Option<&str>) -> Result<MySql, Error> {
+pub async fn connect(details: &Connection, password: Option<&str>) -> Result<MySql, ConnectError> {
+    let invalid = |error: Error| {
+        ConnectError::new(
+            ConnectErrorKind::InvalidDetails,
+            details,
+            password,
+            &error.to_string(),
+        )
+    };
     if details.sign_in == SignInMethod::Windows {
-        return Err(Error::WindowsSignIn);
+        return Err(invalid(Error::WindowsSignIn));
     }
     let user = details
         .user
         .as_deref()
         .filter(|user| !user.is_empty())
-        .ok_or(Error::InvalidConnection)?;
+        .ok_or_else(|| invalid(Error::InvalidConnection))?;
     if details.engine != Engine::MySql || details.instance.is_some() {
-        return Err(Error::InvalidConnection);
+        return Err(invalid(Error::InvalidConnection));
     }
     let ssl = (details.tls != TlsMode::Off).then(|| {
         SslOpts::default()
@@ -127,9 +135,9 @@ pub async fn connect(details: &Connection, password: Option<&str>) -> Result<MyS
             establish,
         )
         .await
-        .map_err(|_| Error::ConnectTimeout)?
+        .map_err(|_| ConnectError::new(ConnectErrorKind::Timeout, details, password, ""))?
     }
-    .map_err(|error| Error::Server(diagnostics::redact(&error.to_string(), password)))?;
+    .map_err(|error| connect_error(&error, details, password))?;
     let (requests, receiver) = mpsc::channel(1);
     tokio::spawn(worker(conn, options, receiver, details.query_timeout));
     let database = details.database.clone().unwrap_or_default();
@@ -138,6 +146,26 @@ pub async fn connect(details: &Connection, password: Option<&str>) -> Result<MyS
         database_changes: Vec::new(),
         requests,
     })
+}
+
+fn connect_error(
+    error: &mysql_async::Error,
+    details: &Connection,
+    password: Option<&str>,
+) -> ConnectError {
+    use mysql_async::{Error as DriverError, IoError};
+    let kind = match error {
+        DriverError::Server(error) if error.code == 1045 => ConnectErrorKind::BadCredentials,
+        DriverError::Server(error) if matches!(error.code, 1049 | 1044) => {
+            ConnectErrorKind::DatabaseUnavailable
+        }
+        DriverError::Io(IoError::Io(error)) => return ConnectError::io(error, details, password),
+        DriverError::Io(IoError::Tls(_)) if crate::session::certificate_failure(error) => {
+            ConnectErrorKind::Tls
+        }
+        _ => ConnectErrorKind::Other,
+    };
+    ConnectError::new(kind, details, password, &error.to_string())
 }
 
 impl MySql {

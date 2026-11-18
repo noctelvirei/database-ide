@@ -1,0 +1,6 @@
+[
+  { "name": "type", "input": [{ "text": "select 1 union select 2" }] },
+  { "name": "find", "input": [{ "key": "ctrl-f" }, { "text": "select" }, { "shot": "find" }] },
+  { "name": "find and replace", "input": [{ "key": "ctrl-h" }, { "shot": "replace" }] },
+  { "name": "close", "input": [{ "key": "escape" }] }
+]

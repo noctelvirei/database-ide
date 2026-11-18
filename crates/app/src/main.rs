@@ -6,7 +6,16 @@
 // Release builds open no console window; debug builds keep one for panics and logs.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod choice;
+mod connection_dialog;
+mod explorer;
+mod folder_dialog;
 mod keymap;
+mod messages;
+mod palette;
+mod query_tab;
+mod results;
+mod runtime;
 mod ui_script;
 mod workbench;
 
@@ -15,9 +24,12 @@ use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
+use dbide_engine::connections::{self, credentials::Credentials};
 use gpui::{App, AppContext as _, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size};
 use gpui_component::Root;
 
+use crate::explorer::Explorer;
+use crate::runtime::Runtime;
 use crate::ui_script::UiScript;
 use crate::workbench::Workbench;
 
@@ -50,6 +62,27 @@ fn main() -> ExitCode {
         },
         _ => None,
     };
+    // UI scripts keep their passwords apart from the user's, under the tests' service name.
+    let service = if script.is_some() {
+        "database-ide-test"
+    } else {
+        "database-ide"
+    };
+    let setup = Credentials::new(service)
+        .map_err(|e| format!("Can't open Windows Credential Manager: {e}"))
+        .and_then(|credentials| {
+            let runtime = Runtime::new().map_err(|e| format!("Can't start the engine: {e}"))?;
+            let path = connections::default_path()
+                .map_err(|e| format!("Can't find the connections file: {e}"))?;
+            Ok((credentials, runtime, path))
+        });
+    let (credentials, runtime, path) = match setup {
+        Ok(setup) => setup,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
 
     // The component icons gpui-component draws (the find panel's buttons among them).
     gpui_platform::application()
@@ -67,8 +100,12 @@ fn main() -> ExitCode {
                 ..Default::default()
             };
             let opened = cx.open_window(options, |window, cx| {
+                let explorer =
+                    cx.new(|cx| Explorer::new(path, credentials, runtime.clone(), window, cx));
                 let workbench = cx.new(|cx| {
                     Workbench::new(
+                        explorer,
+                        runtime,
                         move |window, cx| {
                             // Next-frame callbacks run once this frame has been drawn and presented.
                             window.on_next_frame(|_, _| write_first_frame_time());
