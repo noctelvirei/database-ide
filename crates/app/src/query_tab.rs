@@ -116,6 +116,8 @@ pub struct QueryTab {
     /// The engine confirmed the current run was cancelled, so its end says so. A cancel
     /// pressed after the run finished never confirms, and the run reads as finished.
     run_cancelled: bool,
+    /// Counts the tab's runs, so a task started for one run stops when the next begins.
+    runs: u64,
     /// False while another tab is on screen: a database list that loads then is dropped,
     /// so its picker never opens over another tab's editor.
     shown: bool,
@@ -162,6 +164,7 @@ impl QueryTab {
             cancel: None,
             cancel_pressed: false,
             run_cancelled: false,
+            runs: 0,
             shown: true,
             dialog: None,
             messages: Messages::default(),
@@ -412,6 +415,8 @@ impl QueryTab {
         self.cancel = None;
         self.cancel_pressed = false;
         self.run_cancelled = false;
+        self.runs += 1;
+        let run = self.runs;
         self.results.update(cx, |results, cx| results.clear(cx));
         let mut updates = self.runtime.run(session, batch);
         // Row counts grow on the runtime without an update; read them again while the run lasts.
@@ -419,7 +424,9 @@ impl QueryTab {
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(ROW_COUNT_REFRESH).await;
-                let running = this.read_with(cx, |this, _| this.status == Status::Running);
+                let running = this.read_with(cx, |this, _| {
+                    this.runs == run && this.status == Status::Running
+                });
                 if !matches!(running, Ok(true)) || results.update(cx, Results::refresh).is_err() {
                     return;
                 }

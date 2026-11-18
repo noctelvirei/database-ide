@@ -63,9 +63,14 @@ pub struct Grid {
     /// True while the grid itself moves the table's selection to grow the block, so the
     /// selection event that follows keeps the anchor.
     extending: bool,
-    /// The selected block, kept here because cells draw inside the table's update, where
-    /// the table's own selection can't be read.
+    /// The table's selection, and the block it makes, kept here because cells draw inside
+    /// the table's update, where the table's own selection can't be read. A whole column's
+    /// block grows with the rows that arrive.
+    selection: TableSelection,
     block: Option<Block>,
+    /// True once the run has ended: a result still incomplete then lost rows on the way to
+    /// disk.
+    run_ended: bool,
     /// Rows published, as of the last `refresh`.
     rows: usize,
     /// Whether the result was complete at the last `refresh`.
@@ -89,7 +94,9 @@ impl Grid {
             loading: None,
             anchor: None,
             extending: false,
+            selection: TableSelection::None,
             block: None,
+            run_ended: false,
             rows: 0,
             complete: false,
             refreshing: false,
@@ -151,6 +158,12 @@ impl Grid {
                     Ok((rows, complete)) => {
                         grid.rows = rows;
                         grid.complete = complete;
+                        grid.block = grid.block_for(grid.selection);
+                        if grid.run_ended && !complete {
+                            // The runtime said why in the messages strip.
+                            grid.failure = Some("some rows couldn't be kept on disk".into());
+                            grid.complete = true;
+                        }
                     }
                     Err(error) => grid.fail(&error),
                 }
@@ -161,6 +174,13 @@ impl Grid {
             });
         })
         .detach();
+    }
+
+    /// Takes the final row count once the run has ended; the result is complete by then
+    /// unless writing its rows failed.
+    pub fn run_ended(&mut self, cx: &mut Context<TableState<Self>>) {
+        self.run_ended = true;
+        self.refresh(cx);
     }
 
     /// Stops reading after `error` and keeps it to show.
@@ -193,6 +213,7 @@ impl Grid {
         {
             self.anchor = Some((row, column));
         }
+        self.selection = selection;
         self.block = self.block_for(selection);
         self.selected = None;
         if let TableSelection::Cell(row, column) = selection {
