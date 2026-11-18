@@ -1,6 +1,6 @@
 //! Database IDE's desktop app: the gpui UI over the engine (docs/spec.md, "UI").
 //!
-//! Environment variables used by the measurement script (`scripts/measure-app.ps1`):
+//! Environment variables used by the measurement script (`.claude/skills/verify/measure-app.ps1`):
 //! - `DBIDE_FIRST_FRAME`: a file the app writes the Unix time in milliseconds of its first
 //!   frame to.
 // Release builds open no console window; debug builds keep one for panics and logs.
@@ -45,7 +45,7 @@ struct Args {
     /// The file the UI script's per-step state lines are written to.
     #[arg(long, requires = "ui_script")]
     ui_state: Option<PathBuf>,
-    /// Pause at the script's screenshot steps for `scripts/ui-run.ps1` to capture the window.
+    /// Pause at the script's screenshot steps for `.claude/skills/verify/ui-run.ps1` to capture the window.
     #[arg(long, requires = "ui_script")]
     ui_shots: bool,
 }

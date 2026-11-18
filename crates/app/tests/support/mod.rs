@@ -12,7 +12,7 @@ use serde_json::Value;
 /// connections file there instead of the user's. At each `mark` step the app's private
 /// working set is sampled and added as a line `{"mark": name, "private_ws_mb": n}`.
 ///
-/// With `DBIDE_UI_SHOTS` set to a folder, the script runs through `scripts/ui-run.ps1`
+/// With `DBIDE_UI_SHOTS` set to a folder, the script runs through `.claude/skills/verify/ui-run.ps1`
 /// instead, which also saves the script's screenshots in a subfolder named after the test.
 pub fn run_script(script: &Path, appdata: Option<&Path>) -> Vec<Value> {
     if let Some(shots) = std::env::var_os("DBIDE_UI_SHOTS") {
@@ -62,7 +62,7 @@ pub fn run_script(script: &Path, appdata: Option<&Path>) -> Vec<Value> {
         .collect()
 }
 
-/// Plays `script` through `scripts/ui-run.ps1`, saving its state lines and screenshots in
+/// Plays `script` through `.claude/skills/verify/ui-run.ps1`, saving its state lines and screenshots in
 /// `shots/<test name>`.
 fn run_with_shots(script: &Path, appdata: Option<&Path>, shots: &Path) -> Vec<Value> {
     let test = std::thread::current()
@@ -70,7 +70,8 @@ fn run_with_shots(script: &Path, appdata: Option<&Path>, shots: &Path) -> Vec<Va
         .unwrap_or("ui")
         .replace("::", "-");
     let out = shots.join(test);
-    let runner = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/ui-run.ps1");
+    let runner =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.claude/skills/verify/ui-run.ps1");
     let mut command = Command::new("pwsh");
     command
         .args(["-NoProfile", "-File"])
@@ -84,7 +85,9 @@ fn run_with_shots(script: &Path, appdata: Option<&Path>, shots: &Path) -> Vec<Va
     if let Some(appdata) = appdata {
         command.env("APPDATA", appdata);
     }
-    let output = command.output().expect("run scripts/ui-run.ps1");
+    let output = command
+        .output()
+        .expect("run .claude/skills/verify/ui-run.ps1");
     assert!(
         output.status.success(),
         "ui-run.ps1 failed: {}",
@@ -98,7 +101,7 @@ fn run_with_shots(script: &Path, appdata: Option<&Path>, shots: &Path) -> Vec<Va
 }
 
 /// Memory only the process uses, as Task Manager's "Memory" column and
-/// scripts/measure-app.ps1 report it.
+/// .claude/skills/verify/measure-app.ps1 report it.
 fn private_working_set_mb(pid: u32) -> f64 {
     let output = Command::new("pwsh")
         .args(["-NoProfile", "-Command"])

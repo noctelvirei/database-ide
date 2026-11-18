@@ -19,7 +19,7 @@
 //! script. When the script ends the app writes `<state file>.done` and quits.
 //!
 //! A `shot` input writes `<state file>.shot` holding the shot's name and waits, up to 10 s,
-//! for an outside script (`scripts/ui-run.ps1`) to capture the window and delete the file.
+//! for an outside script (`.claude/skills/verify/ui-run.ps1`) to capture the window and delete the file.
 //! Shots are taken only with `--ui-shots`; otherwise they are skipped.
 //!
 //! A `mark` input does the same with `<state file>.mark`, always, so the test running the
