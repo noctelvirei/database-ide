@@ -15,6 +15,8 @@
 //! The explorer's keys work while it has focus, so they don't take keys from the editor.
 //! They follow Windows' file explorer where it has one: F2 renames, Delete deletes,
 //! Alt+Enter opens properties, Ctrl+Shift+N makes a folder, Ctrl+X and Ctrl+V move.
+//! Ctrl+F filters the objects by name, and the context-menu key (or Shift+F10) opens the
+//! selected row's menu: Script as, and Refresh.
 
 use gpui::{App, KeyBinding, actions};
 
@@ -83,6 +85,19 @@ actions!(
         ConnectItem,
         /// Disconnects the selected connection (Ctrl+Shift+D).
         DisconnectItem,
+        /// Moves focus to the explorer's filter box (Ctrl+F).
+        FilterObjects,
+        /// Opens the selected row's menu (the context-menu key, Shift+F10).
+        ItemMenu,
+        /// Opens the selected object's CREATE script in a new query tab.
+        ScriptCreate,
+        /// Opens the selected object's ALTER script in a new query tab.
+        ScriptAlter,
+        /// Opens a SELECT of the selected table or view in a new query tab.
+        ScriptSelect,
+        /// Loads the selected connection's databases, database's objects or table's indexes
+        /// again.
+        RefreshItem,
         /// Tests the connection dialog's details (Alt+T).
         TestConnection,
         /// Presses a dialog's action from a closed drop-down (Enter).
@@ -171,6 +186,9 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("ctrl-shift-v", PasteItemAtTop, Some("Explorer")),
         KeyBinding::new("enter", ConnectItem, Some("Explorer")),
         KeyBinding::new("ctrl-shift-d", DisconnectItem, Some("Explorer")),
+        KeyBinding::new("ctrl-f", FilterObjects, Some("Explorer")),
+        KeyBinding::new("menu", ItemMenu, Some("Explorer")),
+        KeyBinding::new("shift-f10", ItemMenu, Some("Explorer")),
         KeyBinding::new("alt-t", TestConnection, Some("ConnectionForm")),
         KeyBinding::new("shift-up", ExtendUp, Some("Results")),
         KeyBinding::new("shift-down", ExtendDown, Some("Results")),

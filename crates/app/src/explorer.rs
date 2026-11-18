@@ -1,6 +1,6 @@
-//! The explorer pane's connections: saved folders and connections as one tree, the dialogs
-//! that edit them, and connecting and disconnecting. U5 adds each connection's objects below
-//! it.
+//! The explorer pane: saved folders and connections as one tree, the dialogs that edit them,
+//! connecting and disconnecting (`connect.rs`), and each connected connection's databases and
+//! objects below it (`objects.rs`).
 //!
 //! The tree is `connections.toml` (docs/spec.md, "Connections"). Every edit is saved at once.
 //! If the file can't be read, the explorer shows why and refuses edits, so a file the user can
@@ -14,7 +14,7 @@ use std::rc::Rc;
 
 use dbide_engine::connections::credentials::Credentials;
 use dbide_engine::connections::{self, Connections, SavedConnection};
-use dbide_engine::session::Session;
+use dbide_engine::objects::Script;
 use gpui::{
     App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
     ParentElement as _, Render, SharedString, Styled as _, Window, div, prelude::*, px,
@@ -29,14 +29,18 @@ use serde::Serialize;
 use crate::connection_dialog::{ConnectionForm, FormState};
 use crate::folder_dialog::{FolderForm, FolderState};
 use crate::keymap::{
-    ConnectItem, CutItem, DeleteItem, DisconnectItem, EditItem, NewConnection, NewFolder,
-    PasteItem, PasteItemAtTop, RenameItem,
+    ConnectItem, CutItem, DeleteItem, DisconnectItem, EditItem, FilterObjects, ItemMenu,
+    NewConnection, NewFolder, PasteItem, PasteItemAtTop, RefreshItem, RenameItem, ScriptAlter,
+    ScriptCreate, ScriptSelect,
 };
 use crate::palette;
 use crate::query_tab::QueryTarget;
 use crate::runtime::Runtime;
 
 mod connect;
+mod objects;
+
+use objects::{Branch, OpenMenu, Server, filtered};
 
 /// What the explorer asks of the workbench.
 pub enum ExplorerEvent {
@@ -44,6 +48,11 @@ pub enum ExplorerEvent {
     Message(SharedString),
     /// Open a query tab on this connection; the password is already resolved.
     OpenQuery(Box<QueryTarget>),
+    /// Open a query tab on this target holding `text`, from Script as.
+    OpenScript {
+        target: Box<QueryTarget>,
+        text: String,
+    },
 }
 
 /// One explorer row as the user sees it, top to bottom.
@@ -54,7 +63,9 @@ pub struct RowState {
     pub name: String,
     /// The colour's name: the folder's own, or the connection's after inheritance.
     pub colour: Option<&'static str>,
-    pub status: Status,
+    /// A connection's status; folders show `disconnected`, object rows have none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<Status>,
     pub selected: bool,
 }
 
@@ -63,6 +74,25 @@ pub struct RowState {
 pub enum Kind {
     Folder,
     Connection,
+    Database,
+    /// A database's Tables, Views, Procedures or Functions.
+    Group,
+    Table,
+    View,
+    Procedure,
+    Function,
+    Index,
+    /// A placeholder for a failed load or an empty list.
+    Note,
+    /// A placeholder for a list not loaded yet.
+    Loading,
+}
+
+impl Kind {
+    /// True for the rows that stand in for a list rather than show an item.
+    pub fn is_placeholder(self) -> bool {
+        matches!(self, Kind::Note | Kind::Loading)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -92,6 +122,9 @@ pub struct ExplorerState {
     /// Why connections can't be changed, when `connections.toml` couldn't be read.
     pub problem: Option<SharedString>,
     pub dialog: Option<DialogState>,
+    pub filter: String,
+    /// The open item menu's entries, top to bottom.
+    pub menu: Option<Vec<SharedString>>,
 }
 
 enum OpenDialog {
@@ -114,7 +147,8 @@ pub struct Explorer {
     problem: Option<SharedString>,
     credentials: Rc<Credentials>,
     runtime: Runtime,
-    sessions: HashMap<String, Box<dyn Session>>,
+    /// Connected connections, by ID.
+    servers: HashMap<String, Server>,
     /// Connections being connected, each with its attempt number. A finished attempt keeps
     /// its session only while its number is still here: editing, deleting or disconnecting
     /// the connection removes the entry, and the late session is closed.
@@ -126,6 +160,10 @@ pub struct Explorer {
     /// The item Ctrl+X picked up, waiting for Ctrl+V.
     cut: Option<String>,
     dialog: Option<OpenDialog>,
+    /// The kind and label of each object row now in the tree, by ID.
+    object_rows: HashMap<String, (Kind, String)>,
+    filter: Entity<InputState>,
+    menu: Option<OpenMenu>,
 }
 
 impl EventEmitter<ExplorerEvent> for Explorer {}
@@ -153,9 +191,10 @@ impl Explorer {
         let tree = cx.new(|cx| TreeState::new(cx));
         cx.subscribe(
             &tree,
-            |this: &mut Self, _, event: &TreeEvent, _| match event {
+            |this: &mut Self, _, event: &TreeEvent, cx| match event {
                 TreeEvent::Expanded(id) => {
                     this.expanded.insert(id.to_string());
+                    this.row_opened(id, cx);
                 }
                 TreeEvent::Collapsed(id) => {
                     this.expanded.remove(id.as_ref());
@@ -167,7 +206,8 @@ impl Explorer {
         // A click on the pane's empty space focuses the pane itself.
         cx.on_focus(&focus, window, |this, window, cx| this.focus(window, cx))
             .detach();
-        let this = Self {
+        let filter = Self::new_filter(window, cx);
+        let mut this = Self {
             focus,
             tree,
             path,
@@ -175,12 +215,15 @@ impl Explorer {
             problem,
             credentials: Rc::new(credentials),
             runtime,
-            sessions: HashMap::new(),
+            servers: HashMap::new(),
             connecting: HashMap::new(),
             next_attempt: 0,
             expanded: HashSet::new(),
             cut: None,
             dialog: None,
+            object_rows: HashMap::new(),
+            filter,
+            menu: None,
         };
         this.rebuild(None, cx);
         this
@@ -201,9 +244,11 @@ impl Explorer {
         });
     }
 
-    /// True while a connection is connecting or the open dialog is testing one.
+    /// True while a connection is connecting, the tree is loading, or the open dialog is
+    /// testing a connection.
     pub fn is_busy(&self, cx: &App) -> bool {
         !self.connecting.is_empty()
+            || self.servers.values().any(Server::is_busy)
             || matches!(&self.dialog, Some(OpenDialog::Connection(form)) if form.read(cx).is_testing())
     }
 
@@ -214,13 +259,19 @@ impl Explorer {
             .map_while(|ix| tree.entry(ix).map(|entry| (ix, entry)))
             .filter_map(|(ix, entry)| {
                 let id = entry.item().id.as_ref();
-                let (kind, name, colour) = self.describe(id)?;
+                let (kind, name, colour, status) = match self.describe(id) {
+                    Some((kind, name, colour)) => (kind, name, colour, Some(self.status(id))),
+                    None => {
+                        let (kind, name) = self.object_rows.get(id)?.clone();
+                        (kind, name, None, None)
+                    }
+                };
                 Some(RowState {
                     depth: entry.depth(),
                     kind,
                     name,
                     colour: palette::name(colour),
-                    status: self.status(id),
+                    status,
                     selected: selected == Some(ix),
                 })
             })
@@ -243,6 +294,8 @@ impl Explorer {
             rows,
             problem: self.problem.clone(),
             dialog,
+            filter: self.filter.read(cx).value().to_string(),
+            menu: self.menu.as_ref().map(|open| open.labels.clone()),
         }
     }
 
@@ -261,7 +314,7 @@ impl Explorer {
     }
 
     fn status(&self, id: &str) -> Status {
-        if self.sessions.contains_key(id) {
+        if self.servers.contains_key(id) {
             Status::Connected
         } else if self.connecting.contains_key(id) {
             Status::Connecting
@@ -296,11 +349,14 @@ impl Explorer {
         }
     }
 
-    /// Rebuilds the tree from the saved connections, keeping the open folders, and selects
-    /// `select` (or keeps the current selection).
-    fn rebuild(&self, select: Option<&str>, cx: &mut Context<Self>) {
+    /// Rebuilds the tree from the saved connections and what each connected one has loaded,
+    /// keeping the open rows and showing only what the filter keeps, and selects `select`
+    /// (or keeps the current selection).
+    fn rebuild(&mut self, select: Option<&str>, cx: &mut Context<Self>) {
         let select = select.map(str::to_owned).or_else(|| self.selected(cx));
-        let items = self.items(None);
+        let branches = filtered(self.items(None), &self.needle(cx));
+        self.object_rows.clear();
+        let items = self.tree_items(branches);
         self.tree.update(cx, |tree, cx| {
             tree.set_items(items, cx);
             let ix = select.and_then(|id| tree.index_of(&id.into()));
@@ -309,25 +365,50 @@ impl Explorer {
         cx.notify();
     }
 
-    /// The tree items under `parent`: folders first, then connections, in saved order.
-    fn items(&self, parent: Option<&str>) -> Vec<TreeItem> {
+    /// The rows under `parent`: folders first, then connections, in saved order.
+    fn items(&self, parent: Option<&str>) -> Vec<Branch> {
         let folders = self
             .saved
             .folders()
             .iter()
             .filter(|f| f.parent.as_deref() == parent)
-            .map(|f| {
-                TreeItem::new(f.id.clone(), f.name.clone())
-                    .children(self.items(Some(&f.id)))
-                    .expanded(self.expanded.contains(&f.id))
+            .map(|f| Branch {
+                id: f.id.clone(),
+                label: f.name.clone(),
+                kind: Kind::Folder,
+                children: self.items(Some(&f.id)),
+                expanded: self.expanded.contains(&f.id),
             });
         let connections = self
             .saved
             .connections()
             .iter()
             .filter(|c| c.parent.as_deref() == parent)
-            .map(|c| TreeItem::new(c.id.clone(), c.connection.name.clone()));
+            .map(|c| Branch {
+                id: c.id.clone(),
+                label: c.connection.name.clone(),
+                kind: Kind::Connection,
+                children: self.object_branches(&c.id),
+                expanded: self.expanded.contains(&c.id),
+            });
         folders.chain(connections).collect()
+    }
+
+    /// The tree's items for `branches`, noting each object row's kind and label.
+    fn tree_items(&mut self, branches: Vec<Branch>) -> Vec<TreeItem> {
+        branches
+            .into_iter()
+            .map(|branch| {
+                if !matches!(branch.kind, Kind::Folder | Kind::Connection) {
+                    self.object_rows
+                        .insert(branch.id.clone(), (branch.kind, branch.label.clone()));
+                }
+                let children = self.tree_items(branch.children);
+                TreeItem::new(branch.id, branch.label)
+                    .children(children)
+                    .expanded(branch.expanded)
+            })
+            .collect()
     }
 
     fn message(&self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
@@ -629,7 +710,8 @@ impl Explorer {
         }
         let question: SharedString = match kind {
             Kind::Folder => format!("Delete folder {name} and every folder and connection in it?"),
-            Kind::Connection => format!("Delete connection {name} and its saved password?"),
+            // `describe` covers saved rows only, so anything else is a connection.
+            _ => format!("Delete connection {name} and its saved password?"),
         }
         .into();
         self.dialog = Some(OpenDialog::Delete(name.into()));
@@ -767,7 +849,7 @@ impl Focusable for Explorer {
 struct RowLook {
     kind: Kind,
     colour: Option<gpui::Hsla>,
-    status: Status,
+    status: Option<Status>,
 }
 
 impl Render for Explorer {
@@ -783,7 +865,7 @@ impl Render for Explorer {
                 .filter_map(|id| {
                     let (kind, _, colour) = self.describe(&id)?;
                     let colour = colour.and_then(palette::hsla);
-                    let status = self.status(&id);
+                    let status = (kind == Kind::Connection).then(|| self.status(&id));
                     Some((
                         id,
                         RowLook {
@@ -793,6 +875,14 @@ impl Render for Explorer {
                         },
                     ))
                 })
+                .chain(self.object_rows.iter().map(|(id, (kind, _))| {
+                    let look = RowLook {
+                        kind: *kind,
+                        colour: None,
+                        status: None,
+                    };
+                    (id.clone(), look)
+                }))
                 .collect(),
         );
         let empty = self.saved.folders().is_empty() && self.saved.connections().is_empty();
@@ -803,6 +893,7 @@ impl Render for Explorer {
             .id("explorer")
             .key_context("Explorer")
             .track_focus(&self.focus)
+            .relative()
             .size_full()
             .flex()
             .flex_col()
@@ -814,8 +905,21 @@ impl Render for Explorer {
             .on_action(cx.listener(|this, _: &CutItem, _, cx| this.cut(cx)))
             .on_action(cx.listener(|this, _: &PasteItem, _, cx| this.paste(false, cx)))
             .on_action(cx.listener(|this, _: &PasteItemAtTop, _, cx| this.paste(true, cx)))
-            .on_action(cx.listener(|this, _: &ConnectItem, w, cx| this.activate(w, cx)))
+            .on_action(cx.listener(|this, _: &ConnectItem, w, cx| {
+                // Enter in the filter box or the item menu also bubbles here; it belongs to them.
+                let filtering = this.filter.focus_handle(cx).contains_focused(w, cx);
+                if !filtering && this.menu.is_none() {
+                    this.activate(w, cx)
+                }
+            }))
             .on_action(cx.listener(|this, _: &DisconnectItem, _, cx| this.disconnect(cx)))
+            .on_action(cx.listener(|this, _: &FilterObjects, w, cx| this.focus_filter(w, cx)))
+            .on_action(cx.listener(|this, _: &ItemMenu, w, cx| this.open_menu(w, cx)))
+            .on_action(cx.listener(|this, _: &ScriptCreate, _, cx| this.script(Script::Create, cx)))
+            .on_action(cx.listener(|this, _: &ScriptAlter, _, cx| this.script(Script::Alter, cx)))
+            .on_action(cx.listener(|this, _: &ScriptSelect, _, cx| this.script(Script::Select, cx)))
+            .on_action(cx.listener(|this, _: &RefreshItem, _, cx| this.refresh(cx)))
+            .child(self.filter_box())
             .children(self.problem.clone().map(|problem| {
                 div()
                     .px_2()
@@ -841,17 +945,17 @@ impl Render for Explorer {
                     } = rows.get(&id).copied().unwrap_or(RowLook {
                         kind: Kind::Connection,
                         colour: None,
-                        status: Status::Disconnected,
+                        status: None,
                     });
-                    let marker = match (kind, entry.is_expanded()) {
-                        (Kind::Folder, true) => "▾",
-                        (Kind::Folder, false) => "▸",
-                        (Kind::Connection, _) => "",
+                    let marker = match (entry.is_folder(), entry.is_expanded()) {
+                        (true, true) => "▾",
+                        (true, false) => "▸",
+                        (false, _) => "",
                     };
                     let status = match status {
-                        Status::Connected => Some(("connected", success)),
-                        Status::Connecting => Some(("connecting…", muted)),
-                        Status::Disconnected => None,
+                        Some(Status::Connected) => Some(("connected", success)),
+                        Some(Status::Connecting) => Some(("connecting…", muted)),
+                        Some(Status::Disconnected) | None => None,
                     };
                     ListItem::new(ix).selected(selected).child(
                         div()
@@ -867,7 +971,11 @@ impl Render for Explorer {
                                     .rounded_full()
                                     .when_some(colour, |dot, colour| dot.bg(colour)),
                             )
-                            .child(entry.item().label.clone())
+                            .child(
+                                div()
+                                    .when(kind.is_placeholder(), |label| label.text_color(muted))
+                                    .child(entry.item().label.clone()),
+                            )
                             .children(status.map(|(text, colour)| {
                                 div().text_xs().text_color(colour).child(text)
                             })),
@@ -875,5 +983,6 @@ impl Render for Explorer {
                 })
                 .flex_1(),
             )
+            .children(self.menu_overlay())
     }
 }
