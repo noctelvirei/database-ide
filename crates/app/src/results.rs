@@ -417,6 +417,7 @@ impl Results {
         };
         let note = match grid.failure() {
             Some(failure) => format!("; couldn't read its rows: {failure}"),
+            None if grid.lost_rows() => "; some rows couldn't be kept on disk".to_owned(),
             None if !grid.is_complete() => ", still arriving".to_owned(),
             None => String::new(),
         };

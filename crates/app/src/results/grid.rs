@@ -84,6 +84,9 @@ pub struct Grid {
     selected: Option<((usize, usize), Value)>,
     /// Why reading rows failed; once set, the grid stops reading and says so.
     failure: Option<String>,
+    /// True when the run ended with the result incomplete: writing its rows to disk failed,
+    /// and only the rows kept before that show.
+    lost_rows: bool,
 }
 
 impl Grid {
@@ -103,6 +106,7 @@ impl Grid {
             refresh_again: false,
             selected: None,
             failure: None,
+            lost_rows: false,
         }
     }
 
@@ -125,6 +129,11 @@ impl Grid {
         self.failure.as_deref()
     }
 
+    /// True when some of the result's rows never reached disk.
+    pub fn lost_rows(&self) -> bool {
+        self.lost_rows
+    }
+
     /// True while the row count is being read.
     pub fn is_refreshing(&self) -> bool {
         self.refreshing
@@ -141,6 +150,8 @@ impl Grid {
             return;
         }
         self.refreshing = true;
+        // Only a read begun after the run ended sees the final state.
+        let after_run = self.run_ended;
         let reader = self.reader.clone();
         cx.spawn(async move |table, cx| {
             let counts = cx
@@ -159,9 +170,9 @@ impl Grid {
                         grid.rows = rows;
                         grid.complete = complete;
                         grid.block = grid.block_for(grid.selection);
-                        if grid.run_ended && !complete {
+                        if after_run && !complete {
                             // The runtime said why in the messages strip.
-                            grid.failure = Some("some rows couldn't be kept on disk".into());
+                            grid.lost_rows = true;
                             grid.complete = true;
                         }
                     }
