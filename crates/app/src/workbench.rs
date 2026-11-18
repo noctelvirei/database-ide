@@ -609,7 +609,12 @@ impl Render for Workbench {
             .on_action(
                 cx.listener(|this, _: &UncommentLines, _, cx| this.not_built("UncommentLines", cx)),
             )
-            .on_action(cx.listener(|this, _: &Format, _, cx| this.not_built("Format", cx)))
+            .on_action(cx.listener(|this, _: &Format, w, cx| {
+                this.last_action = Some("Format");
+                this.active_tab()
+                    .clone()
+                    .update(cx, |tab, cx| tab.format(w, cx));
+            }))
             .on_action(cx.listener(|this, _: &RefreshAutocomplete, _, cx| {
                 this.not_built("RefreshAutocomplete", cx)
             }))
