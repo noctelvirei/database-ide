@@ -52,6 +52,7 @@ struct Args {
 
 fn main() -> ExitCode {
     let args = Args::parse();
+    let shots = args.ui_shots;
     let script = match (args.ui_script, args.ui_state) {
         (Some(script), Some(state)) => match UiScript::load(&script, state, args.ui_shots) {
             Ok(script) => Some(script),
@@ -90,6 +91,10 @@ fn main() -> ExitCode {
         .run(move |cx: &mut App| {
             gpui_component::init(cx);
             keymap::bind(cx);
+            // A scripted run keeps its window hidden and out of the foreground, so the user's
+            // own clicks and keys can't land in it mid-script (DAT-51). A run taking
+            // screenshots shows it, because the capture needs a visible window.
+            let scripted = script.is_some();
             let bounds = Bounds::centered(None, size(px(1400.), px(900.)), cx);
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -97,6 +102,8 @@ fn main() -> ExitCode {
                     title: Some("Database IDE".into()),
                     ..Default::default()
                 }),
+                focus: !scripted,
+                show: !scripted || shots,
                 ..Default::default()
             };
             let opened = cx.open_window(options, |window, cx| {
@@ -125,7 +132,9 @@ fn main() -> ExitCode {
             if opened.is_err() {
                 cx.quit();
             }
-            cx.activate(true);
+            if !scripted {
+                cx.activate(true);
+            }
         });
     ExitCode::SUCCESS
 }
