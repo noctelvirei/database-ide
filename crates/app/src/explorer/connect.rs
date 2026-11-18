@@ -1,5 +1,5 @@
 //! Connecting and disconnecting the explorer's connections: Enter connects with the saved
-//! password, Windows sign-in or a typed one, and each session lives until the connection is
+//! password, Windows sign-in or a typed one, and the connection's sessions live until it is
 //! disconnected, edited or deleted. Ctrl+N signs in the same way and hands the connection to
 //! the workbench for a query tab, which opens its own session.
 
@@ -13,7 +13,7 @@ use gpui_component::WindowExt as _;
 use gpui_component::dialog::DialogEntrance;
 use gpui_component::input::{Input, InputState};
 
-use super::{Explorer, ExplorerEvent, OpenDialog, Status, closer, footer};
+use super::{Explorer, ExplorerEvent, OpenDialog, Server, Status, closer, footer};
 use crate::query_tab::{HeldPassword, QueryTarget};
 
 /// What to do once a connection's password is known.
@@ -26,22 +26,26 @@ enum AfterSignIn {
 }
 
 impl Explorer {
-    /// Drops the connection's session and any connect still under way, so the next connect
-    /// uses its current details. Returns true if a session was open.
+    /// Drops the connection's sessions, what its tree loaded, and any connect still under
+    /// way, so the next connect uses its current details. Returns true if it was connected.
     pub(super) fn forget_session(&mut self, id: &str) -> bool {
         self.connecting.remove(id);
-        match self.sessions.remove(id) {
-            Some(session) => {
-                self.runtime.close(session);
+        match self.servers.remove(id) {
+            Some(server) => {
+                server.close(&self.runtime);
                 true
             }
             None => false,
         }
     }
 
-    /// Enter: opens or closes a folder, or connects a connection.
+    /// Enter: opens or closes a folder or object row, or connects a connection.
     pub(super) fn activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(id) = self.selected(cx) else { return };
+        if self.object_rows.contains_key(&id) {
+            self.toggle(&id, cx);
+            return;
+        }
         if self.is_folder(&id) {
             if !self.expanded.remove(&id) {
                 self.expanded.insert(id.clone());
@@ -65,8 +69,12 @@ impl Explorer {
     }
 
     /// Ctrl+N with a connection selected: signs in as Enter does, then asks the workbench
-    /// for a query tab on it. Returns false when no connection is selected.
+    /// for a query tab on it. With a database or object selected, the tab opens on that
+    /// database. Returns false when neither is selected.
     pub(crate) fn open_query(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.query_on_selected_database(cx) {
+            return true;
+        }
         let Some(saved) = self
             .selected(cx)
             .and_then(|id| self.connection(&id).cloned())
@@ -179,7 +187,10 @@ impl Explorer {
         self.connecting.insert(id.clone(), attempt);
         self.message(format!("Connecting to {name}…"), cx);
         cx.notify();
-        let connecting = self.runtime.connect(saved.connection.clone(), password);
+        let connecting = self
+            .runtime
+            .connect(saved.connection.clone(), password.clone());
+        let saved = saved.clone();
         cx.spawn_in(window, async move |this, cx| {
             let outcome = connecting.await;
             let _ = this.update(cx, |this, cx| {
@@ -194,8 +205,10 @@ impl Explorer {
                 this.connecting.remove(&id);
                 match outcome {
                     Ok(session) => {
-                        this.sessions.insert(id, session);
+                        let server = Server::new(attempt, saved, password, session);
+                        this.servers.insert(id, server);
                         this.message(format!("Connected to {name}."), cx);
+                        this.rebuild(None, cx);
                     }
                     Err(error) => {
                         this.message(format!("Couldn't connect to {name}. {}", error.message), cx);
@@ -219,6 +232,6 @@ impl Explorer {
         } else if was_connecting {
             self.message(format!("Stopped connecting to {name}."), cx);
         }
-        cx.notify();
+        self.rebuild(None, cx);
     }
 }
