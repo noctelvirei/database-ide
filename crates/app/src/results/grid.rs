@@ -5,12 +5,9 @@
 //! rows cost the page in memory, not the result (docs/spec.md, "Results: spill to disk").
 //! A row not loaded yet draws empty for the frame or two its page takes.
 //!
-//! The UI thread never touches the spill file: the reader's lock is held while the runtime
-//! writes rows, so the row count and completion are copied in by `refresh`, the page by
-//! `want_row` and the selected cell's value by `selection_changed`, all off the UI thread.
-//! shortcut: the refresh polling and its run-ended bookkeeping stand in for a spill reader
-//! whose row count and completion never wait on disk I/O; read them directly once DAT-49
-//! gives the engine that.
+//! The row count and completion are read straight from the reader on every frame: they
+//! never wait on disk I/O. Rows themselves are read off the UI thread, the page by
+//! `want_row` and the selected cell's value by `selection_changed`.
 //!
 //! The table selects one cell, row or column at a time; the grid adds a block on top of
 //! that. The table's own selection is the block's active corner, and the grid keeps the
@@ -66,30 +63,14 @@ pub struct Grid {
     /// True while the grid itself moves the table's selection to grow the block, so the
     /// selection event that follows keeps the anchor.
     extending: bool,
-    /// The table's selection, and the block it makes, kept here because cells draw inside
-    /// the table's update, where the table's own selection can't be read. A whole column's
-    /// block grows with the rows that arrive.
+    /// The table's selection, kept here because cells draw inside the table's update, where
+    /// the table's own selection can't be read.
     selection: TableSelection,
-    block: Option<Block>,
-    /// True once the run has ended: a result still incomplete then lost rows on the way to
-    /// disk.
-    run_ended: bool,
-    /// Rows published, as of the last `refresh`.
-    rows: usize,
-    /// Whether the result was complete at the last `refresh`.
-    complete: bool,
-    /// True while a `refresh` is reading.
-    refreshing: bool,
-    /// Set when a `refresh` was asked for during another, which then reads again.
-    refresh_again: bool,
     /// The selected cell and its whole value, kept apart from the page so the inspector
     /// still shows it once the grid scrolls away.
     selected: Option<((usize, usize), Value)>,
     /// Why reading rows failed; once set, the grid stops reading and says so.
     failure: Option<String>,
-    /// True when the run ended with the result incomplete: writing its rows to disk failed,
-    /// and only the rows kept before that show.
-    lost_rows: bool,
 }
 
 impl Grid {
@@ -101,15 +82,8 @@ impl Grid {
             anchor: None,
             extending: false,
             selection: TableSelection::None,
-            block: None,
-            run_ended: false,
-            rows: 0,
-            complete: false,
-            refreshing: false,
-            refresh_again: false,
             selected: None,
             failure: None,
-            lost_rows: false,
         }
     }
 
@@ -117,14 +91,16 @@ impl Grid {
         &self.reader
     }
 
-    /// Rows published so far, as of the last `refresh`; it grows while the run streams.
+    /// Rows published so far; it grows while the run streams. A poisoned spill index counts
+    /// as no rows, and reading them then fails and says so.
     pub fn row_count(&self) -> usize {
-        self.rows
+        self.reader.row_count().unwrap_or(0)
     }
 
-    /// Whether every row has arrived, as of the last `refresh`.
+    /// Whether no more rows will arrive: every row has, writing them to disk failed, or the
+    /// grid couldn't read them.
     pub fn is_complete(&self) -> bool {
-        self.complete
+        self.reader.is_complete().unwrap_or(false) || self.lost_rows() || self.failure.is_some()
     }
 
     /// Why the grid couldn't read its rows, if it couldn't.
@@ -132,75 +108,15 @@ impl Grid {
         self.failure.as_deref()
     }
 
-    /// True when some of the result's rows never reached disk.
+    /// True when some of the result's rows never reached disk; the runtime said why in the
+    /// messages strip, and only the rows kept before that show.
     pub fn lost_rows(&self) -> bool {
-        self.lost_rows
-    }
-
-    /// True while the row count is being read.
-    pub fn is_refreshing(&self) -> bool {
-        self.refreshing
-    }
-
-    /// Reads the row count and completion again, off the UI thread, and redraws. Asked
-    /// during a read, it reads once more after; once the result is complete, it does nothing.
-    pub fn refresh(&mut self, cx: &mut Context<TableState<Self>>) {
-        if self.complete {
-            return;
-        }
-        if self.refreshing {
-            self.refresh_again = true;
-            return;
-        }
-        self.refreshing = true;
-        // Only a read begun after the run ended sees the final state.
-        let after_run = self.run_ended;
-        let reader = self.reader.clone();
-        cx.spawn(async move |table, cx| {
-            let counts = cx
-                .background_spawn(async move {
-                    // Completion first: rows can still arrive between the two reads, and a
-                    // count read after completion is final.
-                    let complete = reader.is_complete()?;
-                    Ok::<_, dbide_engine::spill::Error>((reader.row_count()?, complete))
-                })
-                .await;
-            let _ = table.update(cx, |table, cx| {
-                let grid = table.delegate_mut();
-                grid.refreshing = false;
-                match counts {
-                    Ok((rows, complete)) => {
-                        grid.rows = rows;
-                        grid.complete = complete;
-                        grid.block = grid.block_for(grid.selection);
-                        if after_run && !complete {
-                            // The runtime said why in the messages strip.
-                            grid.lost_rows = true;
-                            grid.complete = true;
-                        }
-                    }
-                    Err(error) => grid.fail(&error),
-                }
-                if std::mem::take(&mut grid.refresh_again) {
-                    grid.refresh(cx);
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    /// Takes the final row count once the run has ended; the result is complete by then
-    /// unless writing its rows failed.
-    pub fn run_ended(&mut self, cx: &mut Context<TableState<Self>>) {
-        self.run_ended = true;
-        self.refresh(cx);
+        self.reader.write_failed()
     }
 
     /// Stops reading after `error` and keeps it to show.
     fn fail(&mut self, error: &dbide_engine::spill::Error) {
         self.failure = Some(error.to_string());
-        self.complete = true;
     }
 
     /// The selected cell's whole value, once it is read.
@@ -209,9 +125,28 @@ impl Grid {
         (*cell == (row, column)).then_some(value)
     }
 
-    /// The selected block.
-    pub fn block(&self) -> Option<&Block> {
-        self.block.as_ref()
+    /// The selected block. A whole column's block grows with the rows that arrive.
+    pub fn block(&self) -> Option<Block> {
+        let rows = self.row_count();
+        let columns = self.reader.columns().len();
+        match self.selection {
+            TableSelection::None => None,
+            TableSelection::Row(row) => Some(Block {
+                rows: row..row + 1,
+                columns: 0..columns,
+            }),
+            TableSelection::Column(column) => Some(Block {
+                rows: 0..rows,
+                columns: column..column + 1,
+            }),
+            TableSelection::Cell(row, column) => {
+                let (anchor_row, anchor_column) = self.anchor.unwrap_or((row, column));
+                Some(Block {
+                    rows: row.min(anchor_row)..row.max(anchor_row) + 1,
+                    columns: column.min(anchor_column)..column.max(anchor_column) + 1,
+                })
+            }
+        }
     }
 
     /// The table's selection changed to `selection`: works out the block from it and the
@@ -228,7 +163,6 @@ impl Grid {
             self.anchor = Some((row, column));
         }
         self.selection = selection;
-        self.block = self.block_for(selection);
         self.selected = None;
         if let TableSelection::Cell(row, column) = selection {
             self.read_selected(row, column, cx);
@@ -269,29 +203,6 @@ impl Grid {
             });
         })
         .detach();
-    }
-
-    fn block_for(&self, selection: TableSelection) -> Option<Block> {
-        let rows = self.row_count();
-        let columns = self.reader.columns().len();
-        match selection {
-            TableSelection::None => None,
-            TableSelection::Row(row) => Some(Block {
-                rows: row..row + 1,
-                columns: 0..columns,
-            }),
-            TableSelection::Column(column) => Some(Block {
-                rows: 0..rows,
-                columns: column..column + 1,
-            }),
-            TableSelection::Cell(row, column) => {
-                let (anchor_row, anchor_column) = self.anchor.unwrap_or((row, column));
-                Some(Block {
-                    rows: row.min(anchor_row)..row.max(anchor_row) + 1,
-                    columns: column.min(anchor_column)..column.max(anchor_column) + 1,
-                })
-            }
-        }
     }
 
     /// Marks the next selection change as growing the block.
@@ -405,8 +316,7 @@ impl TableDelegate for Grid {
     ) -> impl IntoElement {
         self.want_row(row_ix, cx);
         let in_block = self
-            .block
-            .as_ref()
+            .block()
             .is_some_and(|b| b.rows.contains(&row_ix) && b.columns.contains(&col_ix));
         let theme = cx.theme();
         let cell = div().size_full().overflow_hidden().whitespace_nowrap();

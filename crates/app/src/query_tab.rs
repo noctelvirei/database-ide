@@ -182,13 +182,12 @@ impl QueryTab {
         self.target.as_ref()
     }
 
-    /// True while the session is away doing work: connecting, running, switching or listing.
-    /// True while the tab waits on the server, or on its results' copies and row counts.
+    /// True while the tab waits on the server, or on a copy from its results.
     pub fn is_busy(&self, cx: &gpui::App) -> bool {
         matches!(
             self.status,
             Status::Connecting | Status::Running | Status::Switching | Status::Listing
-        ) || self.results.read(cx).is_reading(cx)
+        ) || self.results.read(cx).is_copying()
     }
 
     pub fn state(&self, cx: &gpui::App) -> TabState {
@@ -419,7 +418,7 @@ impl QueryTab {
         let run = self.runs;
         self.results.update(cx, |results, cx| results.clear(cx));
         let mut updates = self.runtime.run(session, batch);
-        // Row counts grow on the runtime without an update; read them again while the run lasts.
+        // Row counts grow on the runtime without an update; redraw them while the run lasts.
         let results = self.results.downgrade();
         cx.spawn(async move |this, cx| {
             loop {
@@ -427,7 +426,9 @@ impl QueryTab {
                 let running = this.read_with(cx, |this, _| {
                     this.runs == run && this.status == Status::Running
                 });
-                if !matches!(running, Ok(true)) || results.update(cx, Results::refresh).is_err() {
+                if !matches!(running, Ok(true))
+                    || results.update(cx, Results::show_arrived_rows).is_err()
+                {
                     return;
                 }
             }
@@ -484,7 +485,7 @@ impl QueryTab {
                 self.cancel = None;
                 self.give_back(session);
                 self.results.update(cx, |pane, cx| {
-                    pane.keep(results, cx);
+                    pane.keep(results);
                     cx.notify();
                 });
                 return;
