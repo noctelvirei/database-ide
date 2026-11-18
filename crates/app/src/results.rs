@@ -160,9 +160,10 @@ impl Results {
         cx.notify();
     }
 
-    /// Takes over the run's spill files when the run ends.
-    pub fn keep(&mut self, stores: Vec<Store>) {
+    /// Takes over the run's spill files when the run ends, and shows the final row counts.
+    pub fn keep(&mut self, stores: Vec<Store>, cx: &mut Context<Self>) {
         self.stores = stores;
+        self.show_arrived_rows(cx);
     }
 
     /// Gives the focused grid keyboard focus, selecting its first cell if nothing is

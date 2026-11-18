@@ -484,10 +484,7 @@ impl QueryTab {
             RunUpdate::Finished { session, results } => {
                 self.cancel = None;
                 self.give_back(session);
-                self.results.update(cx, |pane, cx| {
-                    pane.keep(results);
-                    cx.notify();
-                });
+                self.results.update(cx, |pane, cx| pane.keep(results, cx));
                 return;
             }
             RunUpdate::Event(event) => match event {
