@@ -10,7 +10,8 @@
 //!
 //! The results grids' keys work while a grid has focus (results.rs lists them). Plain
 //! arrows, Home, End, Page Up and Page Down are gpui-component's table keys. Ctrl+C and
-//! Ctrl+Shift+C copy as SSMS does, without and with headers.
+//! Ctrl+Shift+C copy as SSMS does, without and with headers. A plan's keys work while it has
+//! focus; its Ctrl+S saves the plan rather than the tab.
 //!
 //! The explorer's keys work while it has focus, so they don't take keys from the editor.
 //! They follow Windows' file explorer where it has one: F2 renames, Delete deletes,
@@ -53,7 +54,7 @@ actions!(
         RefreshAutocomplete,
         /// Picks the tab's current database (Ctrl+U).
         PickDatabase,
-        /// Opens a `.sql` file (Ctrl+O).
+        /// Opens a `.sql` or `.sqlplan` file (Ctrl+O).
         OpenFile,
         /// Saves the tab to its `.sql` file (Ctrl+S).
         SaveFile,
@@ -131,8 +132,19 @@ actions!(
         NextResult,
         /// Moves to the previous result set's grid (Ctrl+Up).
         PreviousResult,
-        /// Fills the results pane with the focused grid, or stacks them again (Alt+Enter).
+        /// Fills the results pane with the focused grid or plan, or stacks them again
+        /// (Alt+Enter).
         ToggleMaximise,
+        /// Selects the plan's previous operator (Up).
+        PreviousOperator,
+        /// Selects the plan's next operator (Down).
+        NextOperator,
+        /// Selects the plan's first operator, the statement (Home).
+        FirstOperator,
+        /// Selects the plan's last operator (End).
+        LastOperator,
+        /// Saves the focused plan as a `.sqlplan` file (Ctrl+S).
+        SavePlan,
     ]
 );
 
@@ -186,6 +198,11 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("ctrl-down", NextResult, Some("Results")),
         KeyBinding::new("ctrl-up", PreviousResult, Some("Results")),
         KeyBinding::new("alt-enter", ToggleMaximise, Some("Results")),
+        KeyBinding::new("up", PreviousOperator, Some("Plan")),
+        KeyBinding::new("down", NextOperator, Some("Plan")),
+        KeyBinding::new("home", FirstOperator, Some("Plan")),
+        KeyBinding::new("end", LastOperator, Some("Plan")),
+        KeyBinding::new("ctrl-s", SavePlan, Some("Plan")),
         KeyBinding::new("up", PreviousError, Some("Messages")),
         KeyBinding::new("down", NextError, Some("Messages")),
         KeyBinding::new("enter", GoToError, Some("Messages")),

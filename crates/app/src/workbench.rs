@@ -4,8 +4,8 @@
 //!
 //! U1 built the frame: the panes, moving focus between them, and every key in the keymap.
 //! U2 put the saved connections in the explorer (`explorer.rs`); U3 the query tabs
-//! (`query_tab.rs`) and the messages strip (`messages.rs`). Actions whose feature is not
-//! built yet say so in the messages strip.
+//! (`query_tab.rs`) and the messages strip (`messages.rs`); U7 the plans (`results/plan.rs`).
+//! Actions whose feature is not built yet say so in the messages strip.
 
 use gpui::{
     App, AppContext as _, Context, Entity, FocusHandle, Focusable as _, IntoElement, KeyDownEvent,
@@ -28,6 +28,7 @@ use crate::messages::Tone;
 use crate::palette;
 use crate::query_tab::dialogs::DialogState;
 use crate::query_tab::{QueryTab, QueryTarget, TabState};
+use crate::results::plan::PlanState;
 use crate::results::{GridState, Inspected};
 use crate::runtime::Runtime;
 
@@ -91,7 +92,9 @@ pub struct VisibleState {
     pub explorer: ExplorerState,
     /// The active tab's result grids, top to bottom.
     pub results: Vec<GridState>,
-    /// What the inspector shows: the selected cell in full.
+    /// The active tab's plans, below its grids, one per statement.
+    pub plans: Vec<PlanState>,
+    /// What the inspector shows: the selected cell in full, or the selected plan operator.
     pub inspector: Option<Inspected>,
     /// How far down the inspector's value is scrolled, in pixels.
     pub inspector_scrolled: f32,
@@ -116,6 +119,8 @@ pub struct Workbench {
     /// The inspector value's scroll position.
     inspector_scroll: ScrollHandle,
     last_action: Option<&'static str>,
+    /// True while Ctrl+O asks for a file or reads it.
+    opening: bool,
     /// Called once, from the first `render`.
     on_first_frame: Option<FirstFrameHook>,
 }
@@ -153,6 +158,7 @@ impl Workbench {
             results_visible: true,
             inspector_scroll: ScrollHandle::new(),
             last_action: None,
+            opening: false,
             on_first_frame: Some(Box::new(on_first_frame)),
         };
         this.open_tab(None, window, cx);
@@ -299,9 +305,54 @@ impl Workbench {
         self.note(format!("{name} is not built yet."), cx);
     }
 
+    /// Ctrl+O: asks for a file and opens a `.sqlplan` in the active tab's results, in place
+    /// of its last run's.
+    fn open_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let asked = crate::file_prompt::open_path(cx);
+        let tab = self.active_tab().clone();
+        self.opening = true;
+        cx.spawn_in(window, async move |this, cx| {
+            let path = asked.await;
+            // The tab says what came of it before the workbench reads as idle again.
+            let finish = |this: &mut Self| this.opening = false;
+            let Some(path) = path else {
+                let _ = this.update(cx, |this, _| finish(this));
+                return;
+            };
+            let shown = path.display().to_string();
+            let is_plan = path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("sqlplan"));
+            if !is_plan {
+                let _ = this.update(cx, |this, cx| {
+                    finish(this);
+                    this.note(
+                        format!("Opening {shown} is not built yet: only .sqlplan files open."),
+                        cx,
+                    );
+                });
+                return;
+            }
+            let opened = cx
+                .background_spawn(async move { dbide_engine::plan::showplan::open(&path) })
+                .await;
+            tab.update(cx, |tab, cx| match opened {
+                Ok(plan) => {
+                    tab.show_plan(plan, cx);
+                    tab.note(format!("Opened {shown}."), cx);
+                }
+                Err(error) => tab.note(format!("Couldn't open {shown}: {error}"), cx),
+            });
+            let _ = this.update(cx, |this, _| finish(this));
+        })
+        .detach();
+    }
+
     /// True while a connect, a connection test, or a tab's run, switch or list is under way.
     pub fn is_busy(&self, cx: &App) -> bool {
-        self.explorer.read(cx).is_busy(cx) || self.tabs.iter().any(|t| t.read(cx).is_busy(cx))
+        self.opening
+            || self.explorer.read(cx).is_busy(cx)
+            || self.tabs.iter().any(|t| t.read(cx).is_busy(cx))
     }
 
     /// True once the active tab's run has started on the server.
@@ -328,6 +379,7 @@ impl Workbench {
             tab_dialog: tab.dialog_state(cx),
             explorer: self.explorer.read(cx).state(cx),
             results: tab.results().read(cx).state(cx),
+            plans: tab.results().read(cx).plan_state(),
             inspector: tab.results().read(cx).inspected(cx),
             clipboard: cx.read_from_clipboard().and_then(|item| item.text()),
             inspector_scrolled: f32::from(self.inspector_scroll.offset().y).abs(),
@@ -585,11 +637,17 @@ impl Render for Workbench {
                     .clone()
                     .update(cx, |tab, cx| tab.cancel(cx));
             }))
-            .on_action(
-                cx.listener(|this, _: &EstimatedPlan, _, cx| this.not_built("EstimatedPlan", cx)),
-            )
+            .on_action(cx.listener(|this, _: &EstimatedPlan, w, cx| {
+                this.last_action = Some("EstimatedPlan");
+                this.active_tab()
+                    .clone()
+                    .update(cx, |tab, cx| tab.estimated_plan(w, cx));
+            }))
             .on_action(cx.listener(|this, _: &ToggleActualPlan, _, cx| {
-                this.not_built("ToggleActualPlan", cx)
+                this.last_action = Some("ToggleActualPlan");
+                this.active_tab()
+                    .clone()
+                    .update(cx, |tab, cx| tab.toggle_actual_plan(cx));
             }))
             .on_action(
                 cx.listener(|this, _: &TogglePlanView, _, cx| this.not_built("TogglePlanView", cx)),
@@ -619,7 +677,10 @@ impl Render for Workbench {
                     .clone()
                     .update(cx, |tab, cx| tab.pick_database(w, cx));
             }))
-            .on_action(cx.listener(|this, _: &OpenFile, _, cx| this.not_built("OpenFile", cx)))
+            .on_action(cx.listener(|this, _: &OpenFile, w, cx| {
+                this.last_action = Some("OpenFile");
+                this.open_file(w, cx);
+            }))
             .on_action(cx.listener(|this, _: &SaveFile, _, cx| this.not_built("SaveFile", cx)))
             .child(left)
             .child(middle)
@@ -627,8 +688,8 @@ impl Render for Workbench {
     }
 }
 
-/// The inspector's contents: the selected cell's column, type and whole value, the value
-/// scrolling under `scroll`.
+/// The inspector's contents, scrolling under `scroll`: the selected cell's column, type and
+/// whole value, or the selected plan operator's name and its details, one per line.
 fn inspector_body(inspected: Option<Inspected>, scroll: &ScrollHandle, cx: &App) -> gpui::Div {
     let theme = cx.theme();
     let Some(inspected) = inspected else {
@@ -636,7 +697,7 @@ fn inspector_body(inspected: Option<Inspected>, scroll: &ScrollHandle, cx: &App)
             .px_2()
             .text_sm()
             .text_color(theme.muted_foreground)
-            .child("Select a cell in the results to see it in full.");
+            .child("Select a cell or a plan operator in the results to see it in full.");
     };
     let value = div()
         .id("inspector-value")
@@ -644,12 +705,37 @@ fn inspector_body(inspected: Option<Inspected>, scroll: &ScrollHandle, cx: &App)
         .min_h_0()
         .overflow_y_scroll()
         .track_scroll(scroll);
-    let value = match inspected.text {
-        Some(text) => value.child(text),
-        None => value
-            .italic()
-            .text_color(theme.muted_foreground)
-            .child("NULL"),
+    let (heading, value) = match inspected {
+        Inspected::Cell {
+            column,
+            type_name,
+            text,
+        } => (
+            format!("{column} ({type_name})"),
+            match text {
+                Some(text) => value.child(text),
+                None => value
+                    .italic()
+                    .text_color(theme.muted_foreground)
+                    .child("NULL"),
+            },
+        ),
+        Inspected::Operator { operator, details } => (
+            operator,
+            value
+                .flex()
+                .flex_col()
+                .children(details.into_iter().map(|detail| {
+                    div()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child(detail.name),
+                        )
+                        .child(detail.value)
+                })),
+        ),
     };
     div()
         .px_2()
@@ -659,10 +745,6 @@ fn inspector_body(inspected: Option<Inspected>, scroll: &ScrollHandle, cx: &App)
         .flex_col()
         .gap_1()
         .text_sm()
-        .child(
-            div()
-                .text_color(theme.muted_foreground)
-                .child(format!("{} ({})", inspected.column, inspected.type_name)),
-        )
+        .child(div().text_color(theme.muted_foreground).child(heading))
         .child(value)
 }
