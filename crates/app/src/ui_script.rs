@@ -22,6 +22,10 @@
 //! for an outside script (`scripts/ui-run.ps1`) to capture the window and delete the file.
 //! Shots are taken only with `--ui-shots`; otherwise they are skipped.
 //!
+//! A `mark` input does the same with `<state file>.mark`, always, so the test running the
+//! script can sample the app (its memory, say) at that point; the test deletes the file to
+//! let the script go on.
+//!
 //! An `"idle"` input waits, up to 30 s, until nothing is connecting, testing, running,
 //! switching or listing, so a script can check an outcome without guessing how long it takes.
 //! A `"running"` input waits, up to 30 s, until the active tab's run has started, so a script
@@ -56,6 +60,8 @@ enum Input {
     Text(String),
     /// A window screenshot saved under this name.
     Shot(String),
+    /// A pause for the test running the script to sample the app, under this name.
+    Mark(String),
     /// Waits until no connect, test, run, switch or list is under way. Written as the string
     /// `"idle"`.
     Idle,
@@ -81,7 +87,7 @@ impl UiScript {
             .map_err(|e| format!("{} is not a valid UI script: {e}", script.display()))?;
         std::fs::write(&state_file, "")
             .map_err(|e| format!("can't write {}: {e}", state_file.display()))?;
-        for suffix in ["done", "shot", "shot.partial"] {
+        for suffix in ["done", "shot", "shot.partial", "mark", "mark.partial"] {
             // Leftovers from an earlier run would end a waiting runner early.
             let _ = std::fs::remove_file(with_suffix(&state_file, suffix));
         }
@@ -126,11 +132,7 @@ impl UiScript {
                     }
                     Input::Shot(name) if self.take_shots => {
                         pause(300).await;
-                        let marker = with_suffix(&self.state_file, "shot");
-                        // Renamed into place, so the runner never reads a half-written marker.
-                        let partial = with_suffix(&self.state_file, "shot.partial");
-                        let _ = std::fs::write(&partial, name)
-                            .and_then(|()| std::fs::rename(&partial, &marker));
+                        let marker = self.hand_over("shot", name);
                         for _ in 0..200 {
                             if !marker.exists() {
                                 break;
@@ -139,6 +141,15 @@ impl UiScript {
                         }
                     }
                     Input::Shot(_) => {}
+                    Input::Mark(name) => {
+                        let marker = self.hand_over("mark", name);
+                        for _ in 0..600 {
+                            if !marker.exists() {
+                                break;
+                            }
+                            pause(50).await;
+                        }
+                    }
                     Input::Idle => wait_until(&mut cx, &workbench, |wb, cx| !wb.is_busy(cx)).await,
                     Input::Running => {
                         wait_until(&mut cx, &workbench, Workbench::is_running).await;
@@ -159,6 +170,16 @@ impl UiScript {
         }
         let _ = std::fs::write(with_suffix(&self.state_file, "done"), "done");
         let _ = cx.update(|_, cx| cx.quit());
+    }
+
+    /// Writes `<state file>.<suffix>` holding `name` for the outside runner, and returns
+    /// its path; the runner deletes it when done. Renamed into place, so the runner never
+    /// reads a half-written marker.
+    fn hand_over(&self, suffix: &str, name: &str) -> PathBuf {
+        let marker = with_suffix(&self.state_file, suffix);
+        let partial = with_suffix(&self.state_file, &format!("{suffix}.partial"));
+        let _ = std::fs::write(&partial, name).and_then(|()| std::fs::rename(&partial, &marker));
+        marker
     }
 
     fn append(&self, line: &serde_json::Value) {

@@ -8,6 +8,10 @@
 //! The messages strip's Up, Down and Enter work while it has focus, to choose an error and
 //! go to its line.
 //!
+//! The results grids' keys work while a grid has focus (results.rs lists them). Plain
+//! arrows, Home, End, Page Up and Page Down are gpui-component's table keys. Ctrl+C and
+//! Ctrl+Shift+C copy as SSMS does, without and with headers.
+//!
 //! The explorer's keys work while it has focus, so they don't take keys from the editor.
 //! They follow Windows' file explorer where it has one: F2 renames, Delete deletes,
 //! Alt+Enter opens properties, Ctrl+Shift+N makes a folder, Ctrl+X and Ctrl+V move.
@@ -98,6 +102,40 @@ actions!(
     ]
 );
 
+actions!(
+    results,
+    [
+        /// Grows the selected block by a row upwards (Shift+Up).
+        ExtendUp,
+        /// Grows the selected block by a row downwards (Shift+Down).
+        ExtendDown,
+        /// Grows the selected block by a column to the left (Shift+Left).
+        ExtendLeft,
+        /// Grows the selected block by a column to the right (Shift+Right).
+        ExtendRight,
+        /// Selects the grid's first cell (Ctrl+Home).
+        FirstCell,
+        /// Selects the grid's last cell: the last column of the last row so far (Ctrl+End).
+        LastCell,
+        /// Selects every cell of the grid (Ctrl+A).
+        SelectAll,
+        /// Selects the selected cell's row (Shift+Space).
+        SelectRow,
+        /// Selects the selected cell's column (Ctrl+Space).
+        SelectColumn,
+        /// Copies the selected block as tab-separated text (Ctrl+C).
+        CopyBlock,
+        /// Copies the selected block with its column names (Ctrl+Shift+C).
+        CopyBlockWithHeaders,
+        /// Moves to the next result set's grid (Ctrl+Down).
+        NextResult,
+        /// Moves to the previous result set's grid (Ctrl+Up).
+        PreviousResult,
+        /// Fills the results pane with the focused grid, or stacks them again (Alt+Enter).
+        ToggleMaximise,
+    ]
+);
+
 /// Binds every key above for the whole app. Call once, after `gpui_component::init`.
 ///
 /// Alt+Break is bound as `alt-pause`, but gpui 0.3.12 does not translate the Windows
@@ -134,6 +172,20 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("enter", ConnectItem, Some("Explorer")),
         KeyBinding::new("ctrl-shift-d", DisconnectItem, Some("Explorer")),
         KeyBinding::new("alt-t", TestConnection, Some("ConnectionForm")),
+        KeyBinding::new("shift-up", ExtendUp, Some("Results")),
+        KeyBinding::new("shift-down", ExtendDown, Some("Results")),
+        KeyBinding::new("shift-left", ExtendLeft, Some("Results")),
+        KeyBinding::new("shift-right", ExtendRight, Some("Results")),
+        KeyBinding::new("ctrl-home", FirstCell, Some("Results")),
+        KeyBinding::new("ctrl-end", LastCell, Some("Results")),
+        KeyBinding::new("ctrl-a", SelectAll, Some("Results")),
+        KeyBinding::new("shift-space", SelectRow, Some("Results")),
+        KeyBinding::new("ctrl-space", SelectColumn, Some("Results")),
+        KeyBinding::new("ctrl-c", CopyBlock, Some("Results")),
+        KeyBinding::new("ctrl-shift-c", CopyBlockWithHeaders, Some("Results")),
+        KeyBinding::new("ctrl-down", NextResult, Some("Results")),
+        KeyBinding::new("ctrl-up", PreviousResult, Some("Results")),
+        KeyBinding::new("alt-enter", ToggleMaximise, Some("Results")),
         KeyBinding::new("up", PreviousError, Some("Messages")),
         KeyBinding::new("down", NextError, Some("Messages")),
         KeyBinding::new("enter", GoToError, Some("Messages")),
