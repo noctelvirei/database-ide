@@ -35,6 +35,9 @@ pub enum ConnectErrorKind {
     /// Certificate validation failed; verify the server before changing trust.
     Tls,
     /// Choose an existing database this login can open.
+    /// Named databases: "Signed in, but database <name> doesn't exist or this login can't open it."
+    /// SQL Server/MySQL without a database: "Signed in, but this login's default database
+    /// doesn't exist or it can't open it."
     DatabaseUnavailable,
     /// Correct invalid or unsupported saved connection details.
     InvalidDetails,
@@ -66,7 +69,16 @@ impl ConnectError {
             Unreachable => format!("Can't reach {}: {diagnostic}.", connect_address(details)),
             Timeout => format!("No answer from {} within {} s.", connect_address(details), details.connect_timeout),
             Tls => "The server's certificate isn't trusted. Turn on Trust server certificate only if you know this server.".into(),
-            DatabaseUnavailable => format!("Signed in, but database {} doesn't exist or this login can't open it.", details.database.as_deref().or(details.user.as_deref()).unwrap_or("(default)")),
+            DatabaseUnavailable => {
+                let database = details.database.as_deref().or(match details.engine {
+                    crate::danger::Engine::PostgreSql => details.user.as_deref(),
+                    _ => None,
+                });
+                match database {
+                    Some(database) => format!("Signed in, but database {database} doesn't exist or this login can't open it."),
+                    None => "Signed in, but this login's default database doesn't exist or it can't open it.".into(),
+                }
+            }
             InvalidDetails | Other => diagnostic.into(),
         };
         // Redact the final message too: a supplied name/address may contain the password.
@@ -533,6 +545,34 @@ impl Drop for Run<'_> {
 #[cfg(test)]
 mod connect_tests {
     use super::certificate_failure;
+
+    #[test]
+    fn unavailable_default_database_uses_the_user_name_only_for_postgres() {
+        use super::{ConnectError, ConnectErrorKind};
+        use crate::connections::Connection;
+        use crate::danger::Engine;
+
+        for (engine, expected) in [
+            (
+                Engine::SqlServer,
+                "Signed in, but this login's default database doesn't exist or it can't open it.",
+            ),
+            (
+                Engine::MySql,
+                "Signed in, but this login's default database doesn't exist or it can't open it.",
+            ),
+            (
+                Engine::PostgreSql,
+                "Signed in, but database dbide_test doesn't exist or this login can't open it.",
+            ),
+        ] {
+            let mut details = Connection::new(engine, "127.0.0.1");
+            details.user = Some("dbide_test".into());
+            let error =
+                ConnectError::new(ConnectErrorKind::DatabaseUnavailable, &details, None, "");
+            assert_eq!(error.message, expected, "{engine:?}");
+        }
+    }
 
     #[test]
     fn expired_certificate_is_recognised_after_native_tls_erases_its_status() {

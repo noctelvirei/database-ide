@@ -108,6 +108,27 @@ async fn mssql_wrong_password_returns_bad_credentials_without_disclosing_passwor
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn pg_missing_password_returns_bad_credentials() {
+    let database = tokio::task::spawn_blocking(dbide_test_servers::postgres::Postgres::start)
+        .await
+        .unwrap()
+        .unwrap();
+    let details = details(
+        Engine::PostgreSql,
+        database.host(),
+        database.port(),
+        database.user(),
+        database.database(),
+    );
+    let error = connect(&details, None).await.unwrap_err();
+    assert_eq!(error.kind, ConnectErrorKind::BadCredentials, "{error:?}");
+    assert_eq!(
+        error.message,
+        "Sign-in failed: the user name or password is wrong."
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn pg_wrong_password_returns_bad_credentials_without_disclosing_password() {
     let database = tokio::task::spawn_blocking(dbide_test_servers::postgres::Postgres::start)
         .await
@@ -202,6 +223,34 @@ async fn pg_missing_database_returns_database_unavailable_without_disclosing_pas
         "Signed in, but database dbide_connect_missing doesn't exist or this login can't open it."
     );
     assert!(!format!("{error:?}").contains(database.password()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_unavailable_default_database_names_the_user() {
+    let database = tokio::task::spawn_blocking(dbide_test_servers::postgres::Postgres::start)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut details = details(
+        Engine::PostgreSql,
+        database.host(),
+        database.port(),
+        database.user(),
+        database.database(),
+    );
+    details.database = None;
+    let error = connect(&details, Some(database.password()))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.kind,
+        ConnectErrorKind::DatabaseUnavailable,
+        "{error:?}"
+    );
+    assert_eq!(
+        error.message,
+        "Signed in, but database dbide_test doesn't exist or this login can't open it."
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

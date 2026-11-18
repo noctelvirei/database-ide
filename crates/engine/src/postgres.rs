@@ -302,13 +302,19 @@ fn connect_error(
                 source.is::<native_tls::Error>() && crate::session::certificate_failure(source)
             }) {
                 ConnectErrorKind::Tls
-            // tokio-postgres keeps its authentication category private, exposing only Display.
-            } else if windows
-                && (error.to_string() == "authentication error"
-                    || error
-                        .source()
-                        .is_some_and(|source| source.to_string() == "password missing"))
+            // tokio-postgres exposes neither its Config kind nor a typed missing-password
+            // cause: SCRAM, MD5 and cleartext all supply only this source text.
+            } else if error
+                .source()
+                .is_some_and(|source| source.to_string() == "password missing")
             {
+                if windows {
+                    ConnectErrorKind::WindowsSignInFailed
+                } else {
+                    ConnectErrorKind::BadCredentials
+                }
+            // tokio-postgres keeps its authentication category private, exposing only Display.
+            } else if windows && error.to_string() == "authentication error" {
                 ConnectErrorKind::WindowsSignInFailed
             } else {
                 ConnectErrorKind::Other

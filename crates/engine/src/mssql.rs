@@ -177,7 +177,14 @@ fn connect_error(
                     return mapped;
                 }
             }
-            ConnectErrorKind::Other
+            // mssql-tds converts SSRP NoAnswer/TimedOut to strings; no typed source survives.
+            if text.contains("SQL Server Browser did not respond within ")
+                || text.contains("for the SQL Server Browser lookup did not complete within ")
+            {
+                ConnectErrorKind::Timeout
+            } else {
+                ConnectErrorKind::Other
+            }
         }
         DriverError::TimeoutError(_) => ConnectErrorKind::Timeout,
         DriverError::CertificateExpired | DriverError::CertificateMismatch => ConnectErrorKind::Tls,
@@ -331,6 +338,25 @@ pub async fn estimate_rows(
 #[cfg(test)]
 mod connect_tests {
     use super::*;
+
+    #[test]
+    fn erased_browser_timeouts_return_timeout_with_the_instance_address() {
+        let mut details = Connection::new(Engine::SqlServer, "127.0.0.1");
+        details.instance = Some("dbide_missing".into());
+        details.connect_timeout = 1;
+        for diagnostic in [
+            "Error Locating Server/Instance Specified [127.0.0.1\\dbide_missing]. Ensure the instance name is correct and SQL Server Browser service is running on the host. (Connection Error: SQL Server Browser did not respond within 1000ms. Verify that the SQL Server Browser service is running on '127.0.0.1:1434'.)",
+            "Error Locating Server/Instance Specified [127.0.0.1\\dbide_missing]. Ensure the instance name is correct and SQL Server Browser service is running on the host. (Connection Error: Resolving '127.0.0.1' for the SQL Server Browser lookup did not complete within 1000ms.)",
+        ] {
+            let driver = mssql_tds::error::Error::ConnectionError(diagnostic.into());
+            let error = connect_error(&driver, &details, None);
+            assert_eq!(error.kind, ConnectErrorKind::Timeout, "{error:?}");
+            assert_eq!(
+                error.message,
+                "No answer from 127.0.0.1\\dbide_missing within 1 s."
+            );
+        }
+    }
 
     #[test]
     fn unclassified_parallel_connect_error_keeps_the_driver_diagnostic_without_the_password() {
