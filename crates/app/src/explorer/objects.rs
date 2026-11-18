@@ -40,7 +40,7 @@ pub(super) struct Server {
     saved: SavedConnection,
     /// The sign-in password, held while connected so database sessions and query tabs
     /// opened from the tree don't ask again.
-    password: Option<String>,
+    password: Option<HeldPassword>,
     /// The session the connection connected with; it lists the databases.
     root: Slot,
     databases: Load<Vec<String>>,
@@ -92,7 +92,7 @@ impl Server {
         Self {
             attempt,
             saved,
-            password,
+            password: password.map(HeldPassword::new),
             root: Slot {
                 session: Some(session),
                 ..Slot::default()
@@ -278,8 +278,7 @@ pub(super) struct Branch {
 }
 
 impl Branch {
-    /// A placeholder row under `parent`: loading, failed or empty. It never matches the
-    /// filter.
+    /// A placeholder row under `parent`: a failed load or an empty list.
     fn note(parent: &str, label: impl Into<String>) -> Branch {
         Branch {
             id: format!("{parent}{SEP}n"),
@@ -290,13 +289,24 @@ impl Branch {
         }
     }
 
+    /// The placeholder under `parent` while its list loads, or before it first does.
+    fn loading(parent: &str) -> Branch {
+        Branch {
+            kind: Kind::Loading,
+            ..Branch::note(parent, "Loading…")
+        }
+    }
+
+    /// True for a real row whose label holds `needle`; placeholders never match.
     fn matches(&self, needle: &str) -> bool {
-        self.kind != Kind::Note && self.label.to_lowercase().contains(needle)
+        !self.kind.is_placeholder() && self.label.to_lowercase().contains(needle)
     }
 }
 
 /// The rows the filter `needle` (lower case) keeps: a row that matches with everything under
-/// it, and a row with a match below it, opened so the match shows. An empty filter keeps all.
+/// it, a row with a match below it, opened so the match shows, and an open row whose list is
+/// loading, so a refresh under the filter keeps its place and selection. An empty filter
+/// keeps all.
 pub(super) fn filtered(branches: Vec<Branch>, needle: &str) -> Vec<Branch> {
     if needle.is_empty() {
         return branches;
@@ -307,8 +317,12 @@ pub(super) fn filtered(branches: Vec<Branch>, needle: &str) -> Vec<Branch> {
             if branch.matches(needle) {
                 return Some(branch);
             }
-            branch.children = filtered(branch.children, needle);
-            branch.expanded = true;
+            let loading = branch.expanded
+                && matches!(branch.children.as_slice(), [only] if only.kind == Kind::Loading);
+            if !loading {
+                branch.children = filtered(branch.children, needle);
+                branch.expanded = true;
+            }
             (!branch.children.is_empty()).then_some(branch)
         })
         .collect()
@@ -322,7 +336,7 @@ fn listed<T>(
     rows: impl FnOnce(&[T]) -> Vec<Branch>,
 ) -> Vec<Branch> {
     match load {
-        None | Some(Load::Unloaded | Load::Loading) => vec![Branch::note(parent, "Loading…")],
+        None | Some(Load::Unloaded | Load::Loading) => vec![Branch::loading(parent)],
         Some(Load::Failed(error)) => vec![Branch::note(
             parent,
             format!("Couldn't list {what}: {error}"),
@@ -407,7 +421,7 @@ impl Explorer {
                 let item = entry.item();
                 let note = rows
                     .get(item.id.as_ref())
-                    .is_some_and(|(k, _)| *k == Kind::Note);
+                    .is_some_and(|(k, _)| k.is_placeholder());
                 !note && item.label.to_lowercase().contains(&needle)
             });
             if first.is_some() {
@@ -594,7 +608,7 @@ impl Explorer {
         };
         let (attempt, engine) = (server.attempt, server.engine());
         let mut details = server.saved.connection.clone();
-        let password = server.password.clone();
+        let password = server.password.as_ref().map(|p| p.expose().to_owned());
         let Some(slot) = server.slot(database) else {
             return;
         };
@@ -618,8 +632,9 @@ impl Explorer {
                 .detach();
             }
             None => {
-                // Only a database's slot starts without a session.
-                let Some(database) = database else { return };
+                let Some(database) = database else {
+                    unreachable!("the connection's own session is away only while it is busy")
+                };
                 details.database = Some(database.clone());
                 let opening = self.runtime.connect(details, password);
                 cx.spawn(async move |this, cx| {
@@ -751,7 +766,18 @@ impl Explorer {
             }
             (Explore::Script(..), _) => unreachable!("Script as is handled above"),
         }
+        // Rows left open below the new list load their own lists now.
+        self.load_open_rows(cx);
         self.rebuild(None, cx);
+    }
+
+    /// Starts loading every open row's list that isn't loaded: after a connect, a refresh,
+    /// or a list arriving under rows that were already open.
+    pub(super) fn load_open_rows(&mut self, cx: &mut Context<Self>) {
+        let open: Vec<String> = self.expanded.iter().cloned().collect();
+        for id in open {
+            self.row_opened(&id, cx);
+        }
     }
 
     /// A query tab's target on `database` of connected connection `connection`.
@@ -764,7 +790,7 @@ impl Explorer {
             saved,
             colour: settings.as_ref().and_then(|s| s.colour).map(str::to_owned),
             danger_check: settings.is_none_or(|s| s.danger_check),
-            password: server.password.clone().map(HeldPassword::new),
+            password: server.password.clone(),
         })
     }
 
@@ -845,10 +871,7 @@ impl Explorer {
                 catalog.forget();
             }
         }
-        let open: Vec<String> = self.expanded.iter().cloned().collect();
-        for id in open {
-            self.row_opened(&id, cx);
-        }
+        self.load_open_rows(cx);
         self.rebuild(None, cx);
     }
 

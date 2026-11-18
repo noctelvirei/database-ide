@@ -82,8 +82,17 @@ pub enum Kind {
     Procedure,
     Function,
     Index,
-    /// A placeholder: loading, a failed load, or an empty list.
+    /// A placeholder for a failed load or an empty list.
     Note,
+    /// A placeholder for a list not loaded yet.
+    Loading,
+}
+
+impl Kind {
+    /// True for the rows that stand in for a list rather than show an item.
+    pub fn is_placeholder(self) -> bool {
+        matches!(self, Kind::Note | Kind::Loading)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -896,7 +905,13 @@ impl Render for Explorer {
             .on_action(cx.listener(|this, _: &CutItem, _, cx| this.cut(cx)))
             .on_action(cx.listener(|this, _: &PasteItem, _, cx| this.paste(false, cx)))
             .on_action(cx.listener(|this, _: &PasteItemAtTop, _, cx| this.paste(true, cx)))
-            .on_action(cx.listener(|this, _: &ConnectItem, w, cx| this.activate(w, cx)))
+            .on_action(cx.listener(|this, _: &ConnectItem, w, cx| {
+                // Enter in the filter box or the item menu also bubbles here; it belongs to them.
+                let filtering = this.filter.focus_handle(cx).contains_focused(w, cx);
+                if !filtering && this.menu.is_none() {
+                    this.activate(w, cx)
+                }
+            }))
             .on_action(cx.listener(|this, _: &DisconnectItem, _, cx| this.disconnect(cx)))
             .on_action(cx.listener(|this, _: &FilterObjects, w, cx| this.focus_filter(w, cx)))
             .on_action(cx.listener(|this, _: &ItemMenu, w, cx| this.open_menu(w, cx)))
@@ -958,7 +973,7 @@ impl Render for Explorer {
                             )
                             .child(
                                 div()
-                                    .when(kind == Kind::Note, |label| label.text_color(muted))
+                                    .when(kind.is_placeholder(), |label| label.text_color(muted))
                                     .child(entry.item().label.clone()),
                             )
                             .children(status.map(|(text, colour)| {

@@ -53,6 +53,16 @@ fn script_a_table_into(server: &Server, scratch: &str) -> Vec<Value> {
                 { "key": "enter" },
             ],
         },
+        { "name": "open the table", "input": [{ "key": "right" }, "idle"] },
+        {
+            "name": "database menu",
+            "input": [{ "key": "up" }, { "key": "up" }, { "key": "menu" }],
+        },
+        {
+            "name": "refresh the database",
+            "input": [{ "key": "down" }, { "key": "enter" }, "idle"],
+        },
+        { "name": "back to the table", "input": [{ "key": "down" }, { "key": "down" }] },
         { "name": "item menu", "input": [{ "key": "menu" }] },
         {
             "name": "script as create",
@@ -91,6 +101,31 @@ fn script_a_table_into(server: &Server, scratch: &str) -> Vec<Value> {
     assert!(
         table["name"].as_str().unwrap().ends_with("pears"),
         "{found:#}"
+    );
+
+    // The table lists its primary key's index, and lists it again after a refresh of its
+    // database, which reloads every open row.
+    let has_index = |state: &Value| {
+        state["explorer"]["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["kind"] == "index")
+    };
+    let table_open = state(&lines, "open the table");
+    assert!(has_index(table_open), "{table_open:#}");
+    let database_menu = state(&lines, "database menu");
+    assert_eq!(
+        database_menu["explorer"]["menu"],
+        json!(["Refresh"]),
+        "{database_menu:#}"
+    );
+    let refreshed = state(&lines, "refresh the database");
+    assert_eq!(selected_row(refreshed)["kind"], "database", "{refreshed:#}");
+    assert!(has_index(refreshed), "{refreshed:#}");
+    assert_eq!(
+        selected_row(state(&lines, "back to the table"))["kind"],
+        "table"
     );
 
     let menu = state(&lines, "item menu");
