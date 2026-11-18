@@ -354,7 +354,8 @@ impl Explorer {
     ) -> Result<T, connections::Error> {
         // The engine's `update_connection` and `delete` remove passwords before the file is
         // written, so those passwords are read first and put back if the edit fails. One
-        // that can't be read couldn't be put back, so it stops the edit.
+        // that can't be read couldn't be put back, so it stops the edit. DAT-44 moves the
+        // deletion after the save in the engine; this backup goes once that lands.
         let mut passwords = Vec::new();
         if let Some(under) = under {
             for saved in self.saved.connections() {

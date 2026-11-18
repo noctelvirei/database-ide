@@ -335,12 +335,14 @@ impl ConnectionForm {
         let connection = match self.read(cx) {
             Ok(connection) => connection,
             Err(error) => {
-                self.tested_with = None;
-                self.test = TestStatus::Failed(error);
+                // A field that is wrong shows under the fields, as it does on Save.
+                self.error = Some(error);
+                self.test = TestStatus::NotRun;
                 cx.notify();
                 return;
             }
         };
+        self.error = None;
         let typed = self.password.read(cx).value().to_string();
         self.tested_with = Some((connection.clone(), typed.clone()));
         let password = match (connection.sign_in, typed.is_empty(), &self.editing) {

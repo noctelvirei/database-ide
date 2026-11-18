@@ -143,6 +143,38 @@ fn assert_connected_in_the_red_folder(lines: &[Value], name: &str) {
     );
 }
 
+/// Plays a second run on the same connections file and Credential Manager: checks the
+/// explorer shows `rows` once the folder is open, then connects the folder's first
+/// connection with its saved password.
+fn reopen_and_connect_the_first(dir: &Path, appdata: &Path, rows: &[&str]) -> Vec<Value> {
+    let steps = json!([
+        { "name": "after restart", "input": [{ "key": "f8" }, { "key": "right" }] },
+        {
+            "name": "connect from the saved password",
+            "input": [{ "key": "down" }, { "key": "enter" }, "idle"],
+        },
+    ]);
+    let script = dir.join("second.json");
+    std::fs::write(&script, steps.to_string()).unwrap();
+    let lines = run_script(&script, Some(appdata));
+
+    let reopened = state(&lines, "after restart");
+    let names: Vec<&str> = reopened["explorer"]["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, rows);
+    let connected = state(&lines, "connect from the saved password");
+    assert_eq!(
+        row(connected, rows[1])["status"],
+        "connected",
+        "{connected:#}"
+    );
+    lines
+}
+
 fn assert_no_password_shown(lines: &[Value], servers: &[Server]) {
     for line in lines {
         let text = line.to_string();
@@ -193,34 +225,17 @@ fn ui_mssql_connections_in_a_coloured_folder_survive_a_restart_and_report_a_wron
         "Couldn't connect to Wrong password. Sign-in failed: the user name or password is wrong."
     );
 
-    // Second run: the same file and Credential Manager, so the saved password connects.
-    let steps = json!([
-        { "name": "after restart", "input": [{ "key": "f8" }, { "key": "right" }] },
-        {
-            "name": "connect from the saved password",
-            "input": [{ "key": "down" }, { "key": "enter" }, "idle"],
-        },
-    ]);
-    let script = dir.path().join("second.json");
-    std::fs::write(&script, steps.to_string()).unwrap();
-    let second = run_script(&script, Some(&appdata));
-
-    let reopened = state(&second, "after restart");
-    let names: Vec<&str> = reopened["explorer"]["rows"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|r| r["name"].as_str().unwrap())
-        .collect();
-    assert_eq!(names, ["Lab", "Lab SQL Server", "Wrong password"]);
-    let connected = state(&second, "connect from the saved password");
-    assert_eq!(row(connected, "Lab SQL Server")["status"], "connected");
+    let second = reopen_and_connect_the_first(
+        dir.path(),
+        &appdata,
+        &["Lab", "Lab SQL Server", "Wrong password"],
+    );
     assert_no_password_shown(&first, &servers);
     assert_no_password_shown(&second, &servers);
 }
 
 #[test]
-fn ui_pg_a_connection_in_a_coloured_folder_connects() {
+fn ui_pg_a_connection_in_a_coloured_folder_survives_a_restart() {
     let postgres = Postgres::start().expect("PostgreSQL test server");
     let servers = [Server {
         name: "Lab PostgreSQL",
@@ -236,9 +251,11 @@ fn ui_pg_a_connection_in_a_coloured_folder_connects() {
     std::fs::create_dir(&appdata).expect("appdata folder");
     let _forget = ForgetPasswords(&appdata);
 
-    let lines = save_in_a_red_folder_and_connect(&servers, dir.path(), &appdata);
-    assert_connected_in_the_red_folder(&lines, "Lab PostgreSQL");
-    assert_no_password_shown(&lines, &servers);
+    let first = save_in_a_red_folder_and_connect(&servers, dir.path(), &appdata);
+    assert_connected_in_the_red_folder(&first, "Lab PostgreSQL");
+    let second = reopen_and_connect_the_first(dir.path(), &appdata, &["Lab", "Lab PostgreSQL"]);
+    assert_no_password_shown(&first, &servers);
+    assert_no_password_shown(&second, &servers);
 }
 
 #[test]
@@ -287,7 +304,7 @@ fn ui_pg_a_test_result_clears_when_a_detail_changes() {
 }
 
 #[test]
-fn ui_mysql_a_connection_in_a_coloured_folder_connects() {
+fn ui_mysql_a_connection_in_a_coloured_folder_survives_a_restart() {
     let mysql = MySql::start().expect("MySQL test server");
     let servers = [Server {
         name: "Lab MySQL",
@@ -303,9 +320,11 @@ fn ui_mysql_a_connection_in_a_coloured_folder_connects() {
     std::fs::create_dir(&appdata).expect("appdata folder");
     let _forget = ForgetPasswords(&appdata);
 
-    let lines = save_in_a_red_folder_and_connect(&servers, dir.path(), &appdata);
-    assert_connected_in_the_red_folder(&lines, "Lab MySQL");
-    assert_no_password_shown(&lines, &servers);
+    let first = save_in_a_red_folder_and_connect(&servers, dir.path(), &appdata);
+    assert_connected_in_the_red_folder(&first, "Lab MySQL");
+    let second = reopen_and_connect_the_first(dir.path(), &appdata, &["Lab", "Lab MySQL"]);
+    assert_no_password_shown(&first, &servers);
+    assert_no_password_shown(&second, &servers);
 }
 
 /// Sets or clears the read-only flag on `path`.
