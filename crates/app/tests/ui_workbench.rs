@@ -41,32 +41,35 @@ fn ui_every_ssms_shortcut_reaches_its_action_from_the_editor() {
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scripts/workbench-keys.json");
     let lines = run_script(&script, None);
     assert_eq!(state(&lines, "type in editor")["editor_text"], "select 1");
+    // Ctrl+N opens an empty second tab; Ctrl+Tab goes back to the first.
     let cases = [
-        ("F5", "Run"),
-        ("Ctrl+E", "Run"),
-        ("Alt+Break", "CancelRun"),
-        ("Ctrl+L", "EstimatedPlan"),
-        ("Ctrl+M", "ToggleActualPlan"),
-        ("F9", "TogglePlanView"),
-        ("Ctrl+N", "NewQueryTab"),
-        ("Ctrl+Tab", "NextQueryTab"),
-        ("Ctrl+K Ctrl+C", "CommentLines"),
-        ("Ctrl+K Ctrl+U", "UncommentLines"),
-        ("Ctrl+K Ctrl+F", "Format"),
-        ("Ctrl+Shift+R", "RefreshAutocomplete"),
-        ("Ctrl+U", "PickDatabase"),
-        ("Ctrl+O", "OpenFile"),
-        ("Ctrl+S", "SaveFile"),
+        ("F5", "Run", "select 1"),
+        ("Ctrl+E", "Run", "select 1"),
+        ("Alt+Break", "CancelRun", "select 1"),
+        ("Ctrl+L", "EstimatedPlan", "select 1"),
+        ("Ctrl+M", "ToggleActualPlan", "select 1"),
+        ("F9", "TogglePlanView", "select 1"),
+        ("Ctrl+N", "NewQueryTab", ""),
+        ("Ctrl+Tab", "NextQueryTab", "select 1"),
+        ("Ctrl+K Ctrl+C", "CommentLines", "select 1"),
+        ("Ctrl+K Ctrl+U", "UncommentLines", "select 1"),
+        ("Ctrl+K Ctrl+F", "Format", "select 1"),
+        ("Ctrl+Shift+R", "RefreshAutocomplete", "select 1"),
+        ("Ctrl+U", "PickDatabase", "select 1"),
+        ("Ctrl+O", "OpenFile", "select 1"),
+        ("Ctrl+S", "SaveFile", "select 1"),
     ];
-    for (step, action) in cases {
+    for (step, action, text) in cases {
         let s = state(&lines, step);
         assert_eq!(s["last_action"], action, "action after {step:?}");
         assert_eq!(s["focused_pane"], "Editor", "focus after {step:?}");
-        assert_eq!(
-            s["editor_text"], "select 1",
-            "{step:?} must not edit the text"
-        );
+        assert_eq!(s["editor_text"], text, "editor text after {step:?}");
     }
+    let unconnected = &state(&lines, "F5")["messages"];
+    assert_eq!(
+        unconnected[unconnected.as_array().unwrap().len() - 1],
+        "This tab has no connection. Select a connection in the explorer (F8) and press Ctrl+N."
+    );
     let messages = &state(&lines, "Ctrl+S")["messages"];
     assert_eq!(
         messages[messages.as_array().unwrap().len() - 1],
