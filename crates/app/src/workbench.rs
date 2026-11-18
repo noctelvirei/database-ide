@@ -338,8 +338,9 @@ impl Workbench {
                 .await;
             tab.update(cx, |tab, cx| match opened {
                 Ok(plan) => {
-                    tab.show_plan(plan, cx);
-                    tab.note(format!("Opened {shown}."), cx);
+                    if tab.show_plan(plan, cx) {
+                        tab.note(format!("Opened {shown}."), cx);
+                    }
                 }
                 Err(error) => tab.note(format!("Couldn't open {shown}: {error}"), cx),
             });

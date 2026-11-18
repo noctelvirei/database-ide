@@ -416,12 +416,22 @@ impl QueryTab {
         }
     }
 
-    /// Shows a plan opened from a file in place of the last run's results.
-    pub fn show_plan(&mut self, plan: Plan, cx: &mut Context<Self>) {
+    /// Shows a plan opened from a file in place of the last run's results. Returns false,
+    /// saying why, while a run is filling the results.
+    pub fn show_plan(&mut self, plan: Plan, cx: &mut Context<Self>) -> bool {
+        if self.status == Status::Running {
+            self.say(
+                "This tab's run is still filling its results. Open the plan when it ends, or in another tab.",
+                Tone::Plain,
+                cx,
+            );
+            return false;
+        }
         self.results.update(cx, |results, cx| {
             results.clear(cx);
             results.add_plan(plan, true, cx);
         });
+        true
     }
 
     /// F5: runs the selection, or the whole tab, after the danger check's confirmation when

@@ -437,6 +437,26 @@ impl Results {
         .detach();
     }
 
+    /// A click on operator `row` of the plan in section `ix`: selects it and focuses the plan.
+    fn click_operator(
+        &mut self,
+        ix: usize,
+        row: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(plan) = ix
+            .checked_sub(self.grids.len())
+            .and_then(|plan| self.plans.get_mut(plan))
+        else {
+            return;
+        };
+        plan.select_row(row);
+        self.focused = ix;
+        self.focus(window, cx);
+        cx.notify();
+    }
+
     /// Moves the focused plan's selected operator.
     fn select_operator(&mut self, step: Step, cx: &mut Context<Self>) {
         if let Some(ix) = self.focused.checked_sub(self.grids.len())

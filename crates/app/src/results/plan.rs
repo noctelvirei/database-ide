@@ -5,17 +5,20 @@
 //! arrives. The selected operator's every raw property shows in the inspector.
 //!
 //! Keys while a plan has focus: Up and Down move the selection, Home and End go to the first
-//! and last operator, Ctrl+S saves the plan as a `.sqlplan` file.
+//! and last operator, Ctrl+S saves the plan as a `.sqlplan` file. A click selects an operator
+//! and gives the plan focus.
 
 use std::sync::Arc;
 
 use dbide_engine::plan::{Object, Operator, Plan, Property};
 use gpui::{
-    App, FocusHandle, InteractiveElement as _, IntoElement, ParentElement as _, ScrollHandle,
-    SharedString, StatefulInteractiveElement as _, Styled as _, div, prelude::*, px,
+    App, Context, FocusHandle, InteractiveElement as _, IntoElement, ParentElement as _,
+    ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, div, prelude::*, px,
 };
 use gpui_component::ActiveTheme as _;
 use serde::Serialize;
+
+use super::Results;
 
 /// An estimate this many times too high or too low, or worse, is flagged.
 const MISESTIMATE: f64 = 10.0;
@@ -27,6 +30,8 @@ const INDENT: f32 = 14.;
 pub struct PlanView {
     /// The whole plan the statement came from: Save writes all of it, as SSMS does.
     plan: Arc<Plan>,
+    /// Which of `plan`'s statements this view shows.
+    statement: usize,
     /// True when the plan is SQL Server's showplan, the one format `.sqlplan` holds.
     savable: bool,
     /// The statement's SQL, when the server sent it.
@@ -43,10 +48,11 @@ pub struct PlanView {
     focus_handle: FocusHandle,
 }
 
-/// One operator without its children, which follow it as rows of their own.
+/// One operator's place in the tree; its children follow it as rows of their own.
 struct Row {
     depth: usize,
-    operator: Operator,
+    /// Child indices from the statement's root down to the operator; empty for the root.
+    path: Vec<usize>,
 }
 
 /// What a user can see of one plan.
@@ -101,19 +107,20 @@ impl PlanView {
         let plan = Arc::new(plan);
         plan.statements
             .iter()
-            .map(|statement| {
+            .enumerate()
+            .map(|(ix, statement)| {
                 let mut rows = Vec::new();
-                flatten(&statement.root, 0, &mut rows);
+                flatten(&statement.root, &mut Vec::new(), &mut rows);
+                let op = |row: &Row| at(&statement.root, &row.path);
                 let costliest = rows
                     .iter()
                     .enumerate()
-                    .max_by(|(_, a), (_, b)| {
-                        a.operator.cost_percent.total_cmp(&b.operator.cost_percent)
-                    })
+                    .max_by(|(_, a), (_, b)| op(a).cost_percent.total_cmp(&op(b).cost_percent))
                     .map_or(0, |(ix, _)| ix);
-                let actual = rows.iter().any(|r| r.operator.actual_rows.is_some());
+                let actual = rows.iter().any(|r| op(r).actual_rows.is_some());
                 PlanView {
                     plan: plan.clone(),
+                    statement: ix,
                     savable,
                     text: statement.text.clone(),
                     rows,
@@ -134,6 +141,16 @@ impl PlanView {
     /// The whole plan, and whether it can be saved as `.sqlplan`.
     pub fn plan(&self) -> (&Arc<Plan>, bool) {
         (&self.plan, self.savable)
+    }
+
+    /// The operator `row` stands for.
+    fn operator(&self, row: &Row) -> &Operator {
+        at(&self.plan.statements[self.statement].root, &row.path)
+    }
+
+    /// Selects operator `row`, as a click does.
+    pub fn select_row(&mut self, row: usize) {
+        self.selected = row.min(self.rows.len().saturating_sub(1));
     }
 
     /// Moves the selection, keeping it in view.
@@ -159,7 +176,7 @@ impl PlanView {
                 .iter()
                 .enumerate()
                 .map(|(ix, row)| {
-                    let op = &row.operator;
+                    let op = self.operator(row);
                     let error = op.estimate_error();
                     OperatorState {
                         depth: row.depth,
@@ -183,7 +200,7 @@ impl PlanView {
     /// The selected operator's name and details for the inspector: the figures the table
     /// shows, its warnings, then every raw property the server sent.
     pub fn inspected(&self) -> Option<(String, Vec<Property>)> {
-        let op = &self.rows.get(self.selected)?.operator;
+        let op = self.operator(self.rows.get(self.selected)?);
         let mut details = Vec::new();
         let mut add = |name: &str, value: String| {
             details.push(Property {
@@ -222,9 +239,16 @@ impl PlanView {
         Some((op.name.clone(), details))
     }
 
-    /// The plan with its heading: its number, whether it is actual, and its statement.
-    pub fn render(&self, ix: usize, number: usize, focused: bool, cx: &App) -> impl IntoElement {
-        let theme = cx.theme();
+    /// The plan with its heading: its number, whether it is actual, and its statement. `ix`
+    /// is its section in the results pane, where a click on a row selects it.
+    pub fn render(
+        &self,
+        ix: usize,
+        number: usize,
+        focused: bool,
+        cx: &mut Context<Results>,
+    ) -> impl IntoElement {
+        let theme = cx.theme().clone();
         let kind = if self.actual { "actual" } else { "estimated" };
         let mut heading = format!("Plan {number} ({kind})");
         if let Some(text) = &self.text {
@@ -249,7 +273,7 @@ impl PlanView {
         )
         .text_color(theme.muted_foreground);
         let rows = self.rows.iter().enumerate().map(|(row_ix, row)| {
-            let op = &row.operator;
+            let op = self.operator(row);
             let error = op.estimate_error();
             let label = if op.kind.is_empty() || op.kind == op.name {
                 op.name.clone()
@@ -287,7 +311,11 @@ impl PlanView {
                 .when(row_ix == self.costliest, |r| {
                     r.font_weight(gpui::FontWeight::BOLD)
                 })
+                .on_click(cx.listener(move |results, _, window, cx| {
+                    results.click_operator(ix, row_ix, window, cx);
+                }))
         });
+        let rows: Vec<_> = rows.collect();
         div()
             .id(("plan", ix))
             .key_context("Plan")
@@ -324,18 +352,22 @@ impl PlanView {
     }
 }
 
-/// Appends `operator` and its subtree to `rows`, parents first.
-fn flatten(operator: &Operator, depth: usize, rows: &mut Vec<Row>) {
+/// Appends a row for `operator`, at `path` below the root, and for its subtree, parents first.
+fn flatten(operator: &Operator, path: &mut Vec<usize>, rows: &mut Vec<Row>) {
     rows.push(Row {
-        depth,
-        operator: Operator {
-            children: Vec::new(),
-            ..operator.clone()
-        },
+        depth: path.len(),
+        path: path.clone(),
     });
-    for child in &operator.children {
-        flatten(child, depth + 1, rows);
+    for (ix, child) in operator.children.iter().enumerate() {
+        path.push(ix);
+        flatten(child, path, rows);
+        path.pop();
     }
+}
+
+/// The operator at `path` below `root`.
+fn at<'a>(root: &'a Operator, path: &[usize]) -> &'a Operator {
+    path.iter().fold(root, |op, &ix| &op.children[ix])
 }
 
 /// One table row: the operator column indented by `depth`, the figures right-aligned.
