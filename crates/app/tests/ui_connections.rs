@@ -236,3 +236,50 @@ fn ui_connections_in_a_coloured_folder_connect_survive_a_restart_and_report_a_wr
         }
     }
 }
+
+/// Each explorer row as (depth, name), top to bottom.
+fn rows(state: &Value) -> Vec<(u64, String)> {
+    state["explorer"]["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            (
+                r["depth"].as_u64().unwrap(),
+                r["name"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn ui_folders_nest_move_rename_refuse_a_cycle_and_delete_after_asking() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scripts/explorer-folders.json");
+    let lines = run_script(&script, Some(dir.path()));
+    let cases: [(&str, &[(u64, &str)]); 8] = [
+        ("make A", &[(0, "A")]),
+        ("make B in A", &[(0, "A"), (1, "B")]),
+        ("move B to the top level", &[(0, "A"), (0, "B")]),
+        ("rename B", &[(0, "A"), (0, "Archive")]),
+        ("move A into Archive", &[(0, "Archive"), (1, "A")]),
+        ("move Archive into A", &[(0, "Archive"), (1, "A")]),
+        ("ask before deleting Archive", &[(0, "Archive"), (1, "A")]),
+        ("delete Archive", &[]),
+    ];
+    for (step, expected) in cases {
+        let expected: Vec<(u64, String)> = expected
+            .iter()
+            .map(|(d, n)| (*d, (*n).to_owned()))
+            .collect();
+        assert_eq!(rows(state(&lines, step)), expected, "rows after {step:?}");
+    }
+    let refused = state(&lines, "move Archive into A");
+    assert_eq!(
+        refused["messages"].as_array().unwrap().last().unwrap(),
+        "A folder can't move into itself or a folder inside it."
+    );
+    let asking = state(&lines, "ask before deleting Archive");
+    assert_eq!(asking["explorer"]["dialog"]["dialog"], "delete");
+    assert_eq!(asking["explorer"]["dialog"]["name"], "Archive");
+}
