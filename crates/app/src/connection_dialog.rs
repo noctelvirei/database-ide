@@ -223,6 +223,10 @@ impl ConnectionForm {
         })
     }
 
+    pub fn is_testing(&self) -> bool {
+        self.test == TestStatus::Testing
+    }
+
     pub fn state(&self, cx: &gpui::App) -> FormState {
         let value = |input: &Entity<InputState>| input.read(cx).value().to_string();
         FormState {

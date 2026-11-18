@@ -21,6 +21,9 @@
 //! A `shot` input writes `<state file>.shot` holding the shot's name and waits, up to 10 s,
 //! for an outside script (`scripts/ui-run.ps1`) to capture the window and delete the file.
 //! Shots are taken only with `--ui-shots`; otherwise they are skipped.
+//!
+//! An `"idle"` input waits, up to 30 s, until nothing is connecting or testing, so a script
+//! can check the outcome of a connect without guessing how long it takes.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -51,6 +54,8 @@ enum Input {
     Text(String),
     /// A window screenshot saved under this name.
     Shot(String),
+    /// Waits until no connect or test is under way. Written as the string `"idle"`.
+    Idle,
 }
 
 /// A script read from disk, ready to play.
@@ -129,6 +134,19 @@ impl UiScript {
                         }
                     }
                     Input::Shot(_) => {}
+                    Input::Idle => {
+                        for _ in 0..300 {
+                            let busy = cx
+                                .update(|_, cx| workbench.read_with(cx, |wb, cx| wb.is_busy(cx)))
+                                .ok()
+                                .and_then(Result::ok)
+                                .unwrap_or(false);
+                            if !busy {
+                                break;
+                            }
+                            pause(100).await;
+                        }
+                    }
                 }
                 pause(50).await;
             }

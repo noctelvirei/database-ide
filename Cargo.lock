@@ -1313,6 +1313,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "dbide-engine",
+ "dbide-test-servers",
  "futures",
  "gpui-component",
  "gpui-kit-assets",

@@ -1,58 +1,16 @@
 //! Drives the real app window through `--ui-script` (CODE_STANDARDS.md, "UI E2E harness").
 //! Each test opens a window on the desktop for a few seconds; skip them with `--skip ui_`.
 
+mod support;
+
 use std::path::Path;
-use std::process::Command;
-use std::time::{Duration, Instant};
 
-use serde_json::Value;
-
-/// Runs a script from `tests/scripts` and returns its state lines.
-fn run_script(name: &str) -> Vec<Value> {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let state = dir.path().join("state.jsonl");
-    let script = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/scripts")
-        .join(name);
-    let mut app = Command::new(env!("CARGO_BIN_EXE_database-ide"))
-        .arg("--ui-script")
-        .arg(&script)
-        .arg("--ui-state")
-        .arg(&state)
-        .spawn()
-        .expect("start the app");
-    let deadline = Instant::now() + Duration::from_secs(60);
-    loop {
-        if let Some(status) = app.try_wait().expect("wait for the app") {
-            assert!(status.success(), "the app exited with {status}");
-            break;
-        }
-        if Instant::now() > deadline {
-            let _ = app.kill();
-            panic!("the app did not finish the script within 60 s");
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    std::fs::read_to_string(&state)
-        .expect("state file")
-        .lines()
-        .map(|line| serde_json::from_str(line).expect("a JSON state line"))
-        .collect()
-}
-
-/// The state recorded after the step called `step`.
-fn state<'a>(lines: &'a [Value], step: &str) -> &'a Value {
-    let line = lines
-        .iter()
-        .find(|l| l["step"] == step)
-        .unwrap_or_else(|| panic!("no state line for step {step:?}: {lines:#?}"));
-    assert!(line.get("error").is_none(), "step {step:?} failed: {line}");
-    &line["state"]
-}
+use support::{run_script, state};
 
 #[test]
 fn ui_f6_f8_and_ctrl_r_move_focus_through_the_visible_panes() {
-    let lines = run_script("workbench-keys.json");
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scripts/workbench-keys.json");
+    let lines = run_script(&script, None);
     let cases = [
         ("start", "Editor", true),
         ("F6 to messages", "Messages", true),
@@ -80,7 +38,8 @@ fn ui_f6_f8_and_ctrl_r_move_focus_through_the_visible_panes() {
 
 #[test]
 fn ui_every_ssms_shortcut_reaches_its_action_from_the_editor() {
-    let lines = run_script("workbench-keys.json");
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scripts/workbench-keys.json");
+    let lines = run_script(&script, None);
     assert_eq!(state(&lines, "type in editor")["editor_text"], "select 1");
     let cases = [
         ("F5", "Run"),

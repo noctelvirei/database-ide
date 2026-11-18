@@ -19,6 +19,7 @@ use gpui::{
     App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
     ParentElement as _, Render, SharedString, Styled as _, Window, div, prelude::*, px,
 };
+use gpui_component::dialog::DialogEntrance;
 use gpui_component::input::{Input, InputState};
 use gpui_component::list::ListItem;
 use gpui_component::tree::{TreeEvent, TreeItem, TreeState, tree};
@@ -152,9 +153,15 @@ impl Explorer {
         )
         .detach();
         let focus = cx.focus_handle();
-        // The tree owns the arrow keys, so focus on the pane goes on to the tree.
+        // The tree owns the arrow keys, so focus on the pane goes on to the tree, with the
+        // first row selected if none is, so the arrows have somewhere to start.
         cx.on_focus(&focus, window, |this, window, cx| {
-            this.tree.update(cx, |tree, cx| tree.focus(window, cx));
+            this.tree.update(cx, |tree, cx| {
+                if tree.selected_index().is_none() && tree.entry(0).is_some() {
+                    tree.set_selected_index(Some(0), cx);
+                }
+                tree.focus(window, cx);
+            });
         })
         .detach();
         let this = Self {
@@ -173,6 +180,12 @@ impl Explorer {
         };
         this.rebuild(None, cx);
         this
+    }
+
+    /// True while a connection is connecting or the open dialog is testing one.
+    pub fn is_busy(&self, cx: &App) -> bool {
+        !self.connecting.is_empty()
+            || matches!(&self.dialog, Some(OpenDialog::Connection(form)) if form.read(cx).is_testing())
     }
 
     pub fn state(&self, cx: &App) -> ExplorerState {
@@ -364,6 +377,7 @@ impl Explorer {
             };
             dialog
                 .title(title)
+                .entrance(DialogEntrance::None)
                 .w(px(520.))
                 .child(form.clone())
                 .footer(footer("Save (Enter)"))
@@ -457,6 +471,7 @@ impl Explorer {
             };
             dialog
                 .title(title)
+                .entrance(DialogEntrance::None)
                 .w(px(420.))
                 .child(form.clone())
                 .footer(footer("Save (Enter)"))
@@ -551,6 +566,7 @@ impl Explorer {
             };
             dialog
                 .title("Rename")
+                .entrance(DialogEntrance::None)
                 .w(px(420.))
                 .child(Input::new(&input))
                 .footer(footer("Rename (Enter)"))
@@ -584,6 +600,7 @@ impl Explorer {
             };
             alert
                 .title("Delete")
+                .entrance(DialogEntrance::None)
                 .description(question.clone())
                 .ok_text("Delete")
                 .show_cancel(true)
@@ -727,6 +744,7 @@ impl Explorer {
             };
             dialog
                 .title(format!("Password for {connection}"))
+                .entrance(DialogEntrance::None)
                 .w(px(420.))
                 .child(Input::new(&input))
                 .footer(footer("Connect (Enter)"))
@@ -792,12 +810,18 @@ fn footer(action: &'static str) -> impl IntoElement {
         .child(DialogAction::new().child(Button::new("ok").primary().label(action)))
 }
 
-/// Forgets the open dialog once it closes, however it closed.
+/// Forgets the open dialog once it closes, however it closed, and gives focus back to the
+/// explorer, which opened it.
 fn closer(
     explorer: &Entity<Explorer>,
 ) -> impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static {
     let explorer = explorer.clone();
-    move |_, _, cx| explorer.update(cx, |this, _| this.dialog = None)
+    move |_, window, cx| {
+        explorer.update(cx, |this, cx| {
+            this.dialog = None;
+            window.focus(&this.focus, cx);
+        })
+    }
 }
 
 impl Focusable for Explorer {

@@ -183,6 +183,11 @@ impl Workbench {
         cx.notify();
     }
 
+    /// True while a connect or a connection test is under way.
+    pub fn is_busy(&self, cx: &App) -> bool {
+        self.explorer.read(cx).is_busy(cx)
+    }
+
     pub fn visible_state(&self, window: &Window, cx: &App) -> VisibleState {
         VisibleState {
             focused_pane: self.focused_pane(window, cx),
