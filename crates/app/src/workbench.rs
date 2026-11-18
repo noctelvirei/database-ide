@@ -149,8 +149,13 @@ impl Workbench {
     }
 
     fn focus_pane(&mut self, pane: Pane, window: &mut Window, cx: &mut Context<Self>) {
-        let handle = self.focus_handle_of(pane, cx);
-        window.focus(&handle, cx);
+        if pane == Pane::Explorer {
+            self.explorer
+                .update(cx, |explorer, cx| explorer.focus(window, cx));
+        } else {
+            let handle = self.focus_handle_of(pane, cx);
+            window.focus(&handle, cx);
+        }
         cx.notify();
     }
 

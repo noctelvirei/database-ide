@@ -106,11 +106,58 @@ fn row<'a>(state: &'a Value, name: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("no explorer row {name:?}: {state:#}"))
 }
 
+/// Plays one run of the app: a red folder "Lab", then each of `servers` saved in it with its
+/// password and connected. The connections file stays in `appdata`.
+fn save_in_a_red_folder_and_connect(servers: &[Server], dir: &Path, appdata: &Path) -> Vec<Value> {
+    let mut steps = vec![
+        json!({ "name": "explorer", "input": [{ "key": "f8" }] }),
+        json!({
+            "name": "save folder",
+            // Enter on the closed Colour choice saves the dialog.
+            "input": [{ "key": "ctrl-shift-n" }, { "text": "Lab" }, { "key": "tab" },
+                      { "key": "down" }, { "key": "down" }, { "key": "enter" }, { "key": "enter" }],
+        }),
+    ];
+    for server in servers {
+        steps.extend(add_and_connect(server));
+    }
+    let script = dir.join("first.json");
+    std::fs::write(&script, serde_json::to_string(&steps).unwrap()).unwrap();
+    let lines = run_script(&script, Some(appdata));
+    let folder = state(&lines, "save folder");
+    assert_eq!(row(folder, "Lab")["kind"], "folder");
+    assert_eq!(row(folder, "Lab")["colour"], "Red");
+    lines
+}
+
+/// Checks that `name` connected, sits in the folder and wears the folder's colour.
+fn assert_connected_in_the_red_folder(lines: &[Value], name: &str) {
+    let connected = state(lines, &format!("connect {name}"));
+    let row = row(connected, name);
+    assert_eq!(row["status"], "connected", "{connected:#}");
+    assert_eq!(row["depth"], 1, "{name} is in the folder");
+    assert_eq!(row["colour"], "Red", "{name} inherits the folder's colour");
+    assert_eq!(
+        connected["messages"].as_array().unwrap().last().unwrap(),
+        &json!(format!("Connected to {name}."))
+    );
+}
+
+fn assert_no_password_shown(lines: &[Value], servers: &[Server]) {
+    for line in lines {
+        let text = line.to_string();
+        for server in servers {
+            assert!(
+                !text.contains(server.password),
+                "a state line shows a password"
+            );
+        }
+    }
+}
+
 #[test]
-fn ui_connections_in_a_coloured_folder_connect_survive_a_restart_and_report_a_wrong_password() {
+fn ui_mssql_connections_in_a_coloured_folder_survive_a_restart_and_report_a_wrong_password() {
     let mssql = Mssql::start().expect("SQL Server test database");
-    let postgres = Postgres::start().expect("PostgreSQL test server");
-    let mysql = MySql::start().expect("MySQL test server");
     let servers = [
         Server {
             name: "Lab SQL Server",
@@ -120,24 +167,6 @@ fn ui_connections_in_a_coloured_folder_connect_survive_a_restart_and_report_a_wr
             user: mssql.user(),
             password: mssql.password(),
             database: mssql.database(),
-        },
-        Server {
-            name: "Lab PostgreSQL",
-            engine_keys: &["down", "down", "enter"],
-            host: postgres.host(),
-            port: postgres.port(),
-            user: postgres.user(),
-            password: postgres.password(),
-            database: postgres.database(),
-        },
-        Server {
-            name: "Lab MySQL",
-            engine_keys: &["down", "down", "down", "enter"],
-            host: mysql.host(),
-            port: mysql.port(),
-            user: mysql.user(),
-            password: mysql.password(),
-            database: mysql.database(),
         },
         // A SQL login the harness made for this test, never sa, with a wrong password.
         Server {
@@ -150,44 +179,13 @@ fn ui_connections_in_a_coloured_folder_connect_survive_a_restart_and_report_a_wr
             database: mssql.database(),
         },
     ];
-
     let dir = tempfile::tempdir().expect("temp dir");
     let appdata = dir.path().join("appdata");
     std::fs::create_dir(&appdata).expect("appdata folder");
     let _forget = ForgetPasswords(&appdata);
 
-    // First run: a red folder, a connection per server in it, and a connect to each.
-    let mut steps = vec![
-        json!({ "name": "explorer", "input": [{ "key": "f8" }] }),
-        json!({
-            "name": "save folder",
-            // Enter on the closed Colour choice saves the dialog.
-            "input": [{ "key": "ctrl-shift-n" }, { "text": "Lab" }, { "key": "tab" },
-                      { "key": "down" }, { "key": "down" }, { "key": "enter" }, { "key": "enter" }],
-        }),
-    ];
-    for server in &servers {
-        steps.extend(add_and_connect(server));
-    }
-    let script = dir.path().join("first.json");
-    std::fs::write(&script, serde_json::to_string(&steps).unwrap()).unwrap();
-    let first = run_script(&script, Some(&appdata));
-
-    let folder = state(&first, "save folder");
-    assert_eq!(row(folder, "Lab")["kind"], "folder");
-    assert_eq!(row(folder, "Lab")["colour"], "Red");
-    for name in ["Lab SQL Server", "Lab PostgreSQL", "Lab MySQL"] {
-        let connected = state(&first, &format!("connect {name}"));
-        let row = row(connected, name);
-        assert_eq!(row["status"], "connected", "{connected:#}");
-        assert_eq!(row["depth"], 1, "{name} is in the folder");
-        assert_eq!(row["colour"], "Red", "{name} inherits the folder's colour");
-        let messages = connected["messages"].as_array().unwrap();
-        assert_eq!(
-            messages.last().unwrap(),
-            &json!(format!("Connected to {name}."))
-        );
-    }
+    let first = save_in_a_red_folder_and_connect(&servers, dir.path(), &appdata);
+    assert_connected_in_the_red_folder(&first, "Lab SQL Server");
     let refused = state(&first, "connect Wrong password");
     assert_eq!(row(refused, "Wrong password")["status"], "disconnected");
     assert_eq!(
@@ -214,28 +212,55 @@ fn ui_connections_in_a_coloured_folder_connect_survive_a_restart_and_report_a_wr
         .iter()
         .map(|r| r["name"].as_str().unwrap())
         .collect();
-    assert_eq!(
-        names,
-        [
-            "Lab",
-            "Lab SQL Server",
-            "Lab PostgreSQL",
-            "Lab MySQL",
-            "Wrong password"
-        ]
-    );
+    assert_eq!(names, ["Lab", "Lab SQL Server", "Wrong password"]);
     let connected = state(&second, "connect from the saved password");
     assert_eq!(row(connected, "Lab SQL Server")["status"], "connected");
+    assert_no_password_shown(&first, &servers);
+    assert_no_password_shown(&second, &servers);
+}
 
-    for line in first.iter().chain(&second) {
-        let text = line.to_string();
-        for server in &servers {
-            assert!(
-                !text.contains(server.password),
-                "a state line shows a password"
-            );
-        }
-    }
+#[test]
+fn ui_pg_a_connection_in_a_coloured_folder_connects() {
+    let postgres = Postgres::start().expect("PostgreSQL test server");
+    let servers = [Server {
+        name: "Lab PostgreSQL",
+        engine_keys: &["down", "down", "enter"],
+        host: postgres.host(),
+        port: postgres.port(),
+        user: postgres.user(),
+        password: postgres.password(),
+        database: postgres.database(),
+    }];
+    let dir = tempfile::tempdir().expect("temp dir");
+    let appdata = dir.path().join("appdata");
+    std::fs::create_dir(&appdata).expect("appdata folder");
+    let _forget = ForgetPasswords(&appdata);
+
+    let lines = save_in_a_red_folder_and_connect(&servers, dir.path(), &appdata);
+    assert_connected_in_the_red_folder(&lines, "Lab PostgreSQL");
+    assert_no_password_shown(&lines, &servers);
+}
+
+#[test]
+fn ui_mysql_a_connection_in_a_coloured_folder_connects() {
+    let mysql = MySql::start().expect("MySQL test server");
+    let servers = [Server {
+        name: "Lab MySQL",
+        engine_keys: &["down", "down", "down", "enter"],
+        host: mysql.host(),
+        port: mysql.port(),
+        user: mysql.user(),
+        password: mysql.password(),
+        database: mysql.database(),
+    }];
+    let dir = tempfile::tempdir().expect("temp dir");
+    let appdata = dir.path().join("appdata");
+    std::fs::create_dir(&appdata).expect("appdata folder");
+    let _forget = ForgetPasswords(&appdata);
+
+    let lines = save_in_a_red_folder_and_connect(&servers, dir.path(), &appdata);
+    assert_connected_in_the_red_folder(&lines, "Lab MySQL");
+    assert_no_password_shown(&lines, &servers);
 }
 
 /// Sets or clears the read-only flag on `path`.
@@ -362,7 +387,8 @@ fn ui_folders_nest_move_rename_refuse_a_cycle_and_delete_after_asking() {
             .iter()
             .map(|(d, n)| (*d, (*n).to_owned()))
             .collect();
-        assert_eq!(rows(state(&lines, step)), expected, "rows after {step:?}");
+        let seen = state(&lines, step);
+        assert_eq!(rows(seen), expected, "rows after {step:?}: {seen:#}");
     }
     let refused = state(&lines, "move Archive into A");
     assert_eq!(

@@ -160,17 +160,9 @@ impl Explorer {
         )
         .detach();
         let focus = cx.focus_handle();
-        // The tree owns the arrow keys, so focus on the pane goes on to the tree, with the
-        // first row selected if none is, so the arrows have somewhere to start.
-        cx.on_focus(&focus, window, |this, window, cx| {
-            this.tree.update(cx, |tree, cx| {
-                if tree.selected_index().is_none() && tree.entry(0).is_some() {
-                    tree.set_selected_index(Some(0), cx);
-                }
-                tree.focus(window, cx);
-            });
-        })
-        .detach();
+        // A click on the pane's empty space focuses the pane itself.
+        cx.on_focus(&focus, window, |this, window, cx| this.focus(window, cx))
+            .detach();
         let this = Self {
             focus,
             tree,
@@ -188,6 +180,21 @@ impl Explorer {
         };
         this.rebuild(None, cx);
         this
+    }
+
+    /// Gives the explorer keyboard focus. The tree owns the arrow keys, so focus goes to the
+    /// tree, with the first row selected if none is, so the arrows have somewhere to start.
+    ///
+    /// Callers use this rather than focusing the pane's handle: gpui runs focus listeners
+    /// only while the window is active, so a listener alone misses a focus change made while
+    /// another window is in front.
+    pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
+        self.tree.update(cx, |tree, cx| {
+            if tree.selected_index().is_none() && tree.entry(0).is_some() {
+                tree.set_selected_index(Some(0), cx);
+            }
+            tree.focus(window, cx);
+        });
     }
 
     /// True while a connection is connecting or the open dialog is testing one.
@@ -336,19 +343,26 @@ impl Explorer {
 
     /// Applies `edit` to a copy of the tree and writes the copy to `connections.toml`. The
     /// explorer takes the copy only once the file is written, so a failed edit or save leaves
-    /// the screen, the file and the saved passwords as they were.
+    /// the screen, the file and the saved passwords as they were. `under` names the item
+    /// whose connections' passwords the edit may delete: the connection itself, or a folder
+    /// and everything in it.
     fn commit<T>(
         &mut self,
+        under: Option<&str>,
         cx: &mut Context<Self>,
         edit: impl FnOnce(&mut Connections) -> Result<T, connections::Error>,
     ) -> Result<T, connections::Error> {
         // The engine's `update_connection` and `delete` remove passwords before the file is
-        // written, so each saved password is read first and put back if the edit fails.
-        // A password that can't be read can't be put back, so it stops the edit.
+        // written, so those passwords are read first and put back if the edit fails. One
+        // that can't be read couldn't be put back, so it stops the edit.
         let mut passwords = Vec::new();
-        for saved in self.saved.connections() {
-            if let Some(password) = self.credentials.read(saved)? {
-                passwords.push((saved.clone(), password));
+        if let Some(under) = under {
+            for saved in self.saved.connections() {
+                if self.is_within(&saved.id, saved.parent.as_deref(), under)
+                    && let Some(password) = self.credentials.read(saved)?
+                {
+                    passwords.push((saved.clone(), password));
+                }
             }
         }
         let mut next = self.saved.clone();
@@ -369,6 +383,25 @@ impl Explorer {
             self.saved = next;
         }
         outcome
+    }
+
+    /// True when the item `id`, whose folder is `parent`, is `under` or inside it.
+    fn is_within<'a>(&'a self, id: &str, mut parent: Option<&'a str>, under: &str) -> bool {
+        if id == under {
+            return true;
+        }
+        while let Some(folder) = parent {
+            if folder == under {
+                return true;
+            }
+            parent = self
+                .saved
+                .folders()
+                .iter()
+                .find(|f| f.id == folder)
+                .and_then(|f| f.parent.as_deref());
+        }
+        false
     }
 
     fn new_connection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -436,7 +469,7 @@ impl Explorer {
         };
         let name = output.connection.name.clone();
         let credentials = self.credentials.clone();
-        let saved = self.commit(cx, |saved| match editing {
+        let saved = self.commit(editing, cx, |saved| match editing {
             Some(id) => saved
                 .update_connection(id, output.connection, &credentials)
                 .map(|()| id.to_owned()),
@@ -533,7 +566,7 @@ impl Explorer {
             return false;
         };
         let name = output.name.clone();
-        let saved = self.commit(cx, |saved| {
+        let saved = self.commit(None, cx, |saved| {
             let id = match editing {
                 Some(id) => saved.rename(id, &output.name).map(|()| id.to_owned()),
                 None => saved.add_folder(&output.name, parent),
@@ -597,7 +630,7 @@ impl Explorer {
                         if name.is_empty() {
                             return false;
                         }
-                        if let Err(error) = this.commit(cx, |saved| saved.rename(&id, name)) {
+                        if let Err(error) = this.commit(None, cx, |saved| saved.rename(&id, name)) {
                             // The dialog stays open with the name, so the user can retry.
                             this.message(format!("Couldn't rename: {error}."), cx);
                             return false;
@@ -660,7 +693,7 @@ impl Explorer {
             .map(|c| c.id.clone())
             .collect();
         let credentials = self.credentials.clone();
-        if let Err(error) = self.commit(cx, |saved| saved.delete(id, &credentials)) {
+        if let Err(error) = self.commit(Some(id), cx, |saved| saved.delete(id, &credentials)) {
             self.message(format!("Couldn't delete: {error}."), cx);
             return;
         }
@@ -701,7 +734,7 @@ impl Explorer {
             return;
         }
         let target = if at_top { None } else { self.target_folder(cx) };
-        match self.commit(cx, |saved| saved.move_to(&id, target.as_deref())) {
+        match self.commit(None, cx, |saved| saved.move_to(&id, target.as_deref())) {
             Ok(()) => {
                 self.cut = None;
                 if let Some(target) = &target {
@@ -735,7 +768,7 @@ fn closer(
     move |_, window, cx| {
         explorer.update(cx, |this, cx| {
             this.dialog = None;
-            window.focus(&this.focus, cx);
+            this.focus(window, cx);
         })
     }
 }
