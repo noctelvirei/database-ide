@@ -220,8 +220,16 @@ impl QueryTab {
         };
         self.formatting = true;
         cx.spawn_in(window, async move |this, cx| {
+            // The formatter trims a fragment's outer whitespace; a selection keeps its own, so
+            // a line break after a `--` comment, say, still ends the comment.
             let formatted = cx
-                .background_spawn(async move { dbide_engine::format::format(&part, engine) })
+                .background_spawn(async move {
+                    let core = part.trim();
+                    let lead = &part[..part.len() - part.trim_start().len()];
+                    let trail = &part[part.trim_end().len()..];
+                    dbide_engine::format::format(core, engine)
+                        .map(|text| format!("{lead}{text}{trail}"))
+                })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.formatting = false;
@@ -239,6 +247,8 @@ impl QueryTab {
                         if selected.is_empty() {
                             editor.replace_all(text, window, cx);
                         } else {
+                            // Only the formatted range changes, not other cursors' selections.
+                            editor.set_selected_range(selected, cx);
                             editor.replace(text, window, cx);
                         }
                     }),

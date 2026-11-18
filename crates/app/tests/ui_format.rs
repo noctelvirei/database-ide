@@ -20,6 +20,9 @@ const MESSY: &str = "select name,Type,STATUS,uSeR from things";
 const TIDY: &str = "SELECT name, Type, STATUS, uSeR FROM things";
 /// A string with no closing quote, which the formatter can't tokenize.
 const UNCLOSED: &str = "select 'abc";
+/// A line ending in a comment; selected with its line break, it must keep the break, or
+/// the second statement would join the comment.
+const COMMENTED: [&str; 2] = ["select 1 -- first", "select 2"];
 
 fn formats_and_undoes(server: &Server) {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -42,6 +45,19 @@ fn formats_and_undoes(server: &Server) {
                 { "key": "ctrl-a" },
                 { "text": UNCLOSED },
                 { "key": "delete" },
+                { "key": "ctrl-k ctrl-f" },
+                "idle",
+            ],
+        },
+        {
+            "name": "format a selected line",
+            "input": [
+                { "key": "ctrl-a" },
+                { "text": COMMENTED[0] },
+                { "key": "enter" },
+                { "text": COMMENTED[1] },
+                { "key": "ctrl-home" },
+                { "key": "shift-down" },
                 { "key": "ctrl-k ctrl-f" },
                 "idle",
             ],
@@ -69,6 +85,12 @@ fn formats_and_undoes(server: &Server) {
     assert!(
         last.starts_with("Couldn't format: cannot tokenize SQL"),
         "{refused:#}"
+    );
+
+    let line = state(&lines, "format a selected line");
+    assert_eq!(
+        line["editor_text"], "SELECT 1 -- first\nselect 2",
+        "{line:#}"
     );
 }
 
