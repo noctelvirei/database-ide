@@ -145,6 +145,11 @@ impl Workbench {
                 ExplorerEvent::OpenQuery(target) => {
                     this.open_tab(Some(target.as_ref().clone()), window, cx);
                 }
+                ExplorerEvent::OpenScript { target, text } => {
+                    this.open_tab(Some(target.as_ref().clone()), window, cx);
+                    let editor = this.active_tab().read(cx).editor().clone();
+                    editor.update(cx, |editor, cx| editor.set_value(text.clone(), window, cx));
+                }
             },
         )
         .detach();

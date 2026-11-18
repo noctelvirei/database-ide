@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use dbide_engine::connections::Connection;
 use dbide_engine::danger::Engine;
-use dbide_engine::objects;
+use dbide_engine::objects::{self, Index, Kind, Object, Script};
 use dbide_engine::plan::{self, Plan};
 use dbide_engine::session::{
     self, CancelHandle, ConnectError, ConnectErrorKind, Event, PlanMode, Session,
@@ -59,6 +59,84 @@ pub enum Job {
     /// Returns the batch's plans: estimated without running it, or actual by running it
     /// (docs/spec.md, "Plans").
     Plan(PlanMode),
+}
+
+/// One catalog call the object explorer makes on a session (docs/spec.md, "Object explorer
+/// and Script as"). Every call but `Databases` reads the session's current database.
+#[derive(Clone, Debug)]
+pub enum Explore {
+    /// The server's user databases.
+    Databases,
+    /// The tables, views, procedures and functions in every user schema.
+    Objects,
+    /// A table's indexes.
+    Indexes(Object),
+    /// An object's script in `form`, for a new query tab.
+    Script(Object, Script),
+}
+
+/// What an `Explore` call returns, in the same order as its variants.
+pub enum Explored {
+    Databases(Vec<String>),
+    Objects(Vec<Object>),
+    Indexes(Vec<Index>),
+    Script(String),
+}
+
+/// The object kinds the explorer lists under a database.
+const LISTED_KINDS: [Kind; 5] = [
+    Kind::Table,
+    Kind::View,
+    Kind::MaterializedView,
+    Kind::Procedure,
+    Kind::Function,
+];
+
+/// Calls the catalog function `name` of `engine`'s objects module with `args`, turning its
+/// error into the text the explorer shows.
+macro_rules! catalog {
+    ($engine:expr, $name:ident($($arg:expr),*)) => {
+        match $engine {
+            Engine::SqlServer => objects::mssql::$name($($arg),*).await.map_err(|e| e.to_string()),
+            Engine::PostgreSql => objects::postgres::$name($($arg),*).await.map_err(|e| e.to_string()),
+            Engine::MySql => objects::mysql::$name($($arg),*).await.map_err(|e| e.to_string()),
+        }
+    };
+}
+
+/// Runs one explorer call on `session`.
+async fn explore(
+    session: &mut dyn Session,
+    engine: Engine,
+    request: Explore,
+) -> Result<Explored, String> {
+    Ok(match request {
+        Explore::Databases => Explored::Databases(
+            catalog!(engine, databases(session))?
+                .into_iter()
+                .map(|database| database.name)
+                .collect(),
+        ),
+        Explore::Objects => {
+            let mut listed = Vec::new();
+            for schema in catalog!(engine, schemas(session))? {
+                if schema.system {
+                    continue;
+                }
+                let objects = catalog!(engine, objects(session, &schema.name))?;
+                listed.extend(
+                    objects
+                        .into_iter()
+                        .filter(|o| !o.system && LISTED_KINDS.contains(&o.kind)),
+                );
+            }
+            Explored::Objects(listed)
+        }
+        Explore::Indexes(table) => Explored::Indexes(catalog!(engine, indexes(session, &table))?),
+        Explore::Script(object, form) => {
+            Explored::Script(catalog!(engine, script(session, &object, form))?)
+        }
+    })
 }
 
 /// How many updates may wait for the UI before the run pauses for it to catch up.
@@ -177,21 +255,26 @@ impl Runtime {
         session: Box<dyn Session>,
         engine: Engine,
     ) -> impl Future<Output = (Box<dyn Session>, Result<Vec<String>, String>)> + use<> {
+        let listing = self.explore(session, engine, Explore::Databases);
+        async move {
+            let (session, listed) = listing.await;
+            let names = listed.map(|explored| match explored {
+                Explored::Databases(names) => names,
+                _ => unreachable!("a database list returns databases"),
+            });
+            (session, names)
+        }
+    }
+
+    /// Makes one explorer catalog call on `session`, with the session back.
+    pub fn explore(
+        &self,
+        session: Box<dyn Session>,
+        engine: Engine,
+        request: Explore,
+    ) -> impl Future<Output = (Box<dyn Session>, Result<Explored, String>)> + use<> {
         self.with_session(session, move |session| {
-            Box::pin(async move {
-                let listed = match engine {
-                    Engine::SqlServer => objects::mssql::databases(session)
-                        .await
-                        .map_err(|e| e.to_string()),
-                    Engine::PostgreSql => objects::postgres::databases(session)
-                        .await
-                        .map_err(|e| e.to_string()),
-                    Engine::MySql => objects::mysql::databases(session)
-                        .await
-                        .map_err(|e| e.to_string()),
-                };
-                listed.map(|objects| objects.into_iter().map(|o| o.name).collect())
-            })
+            Box::pin(explore(session, engine, request))
         })
     }
 

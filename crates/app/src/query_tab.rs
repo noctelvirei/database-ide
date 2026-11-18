@@ -36,7 +36,7 @@ impl HeldPassword {
         Self(password)
     }
 
-    fn expose(&self) -> &str {
+    pub fn expose(&self) -> &str {
         &self.0
     }
 }
