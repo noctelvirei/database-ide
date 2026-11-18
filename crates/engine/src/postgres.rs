@@ -285,8 +285,10 @@ fn connect_error(
 ) -> ConnectError {
     let windows = details.sign_in == SignInMethod::Windows;
     let kind = match error.code().map(|code| code.code()) {
+        // 28P01 is a failed password. 28000 also covers pg_hba.conf refusing the client
+        // whatever its password, so for password sign-in it keeps the server's own text.
         Some("28P01" | "28000") if windows => ConnectErrorKind::WindowsSignInFailed,
-        Some("28P01" | "28000") => ConnectErrorKind::BadCredentials,
+        Some("28P01") => ConnectErrorKind::BadCredentials,
         Some("3D000" | "42501") => ConnectErrorKind::DatabaseUnavailable,
         _ => {
             if let Some(io) = error

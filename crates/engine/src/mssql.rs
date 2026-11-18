@@ -178,13 +178,19 @@ fn connect_error(
                 }
             }
             // mssql-tds converts SSRP NoAnswer/TimedOut to strings; no typed source survives.
+            // Its Browser lookup has its own short limit, not the saved connect timeout, so
+            // this is an unreachable instance rather than a timeout.
             if text.contains("SQL Server Browser did not respond within ")
                 || text.contains("for the SQL Server Browser lookup did not complete within ")
             {
-                ConnectErrorKind::Timeout
-            } else {
-                ConnectErrorKind::Other
+                return ConnectError::new(
+                    ConnectErrorKind::Unreachable,
+                    details,
+                    password,
+                    "SQL Server Browser didn't answer, so the instance's port is unknown",
+                );
             }
+            ConnectErrorKind::Other
         }
         DriverError::TimeoutError(_) => ConnectErrorKind::Timeout,
         DriverError::CertificateExpired | DriverError::CertificateMismatch => ConnectErrorKind::Tls,
@@ -340,20 +346,19 @@ mod connect_tests {
     use super::*;
 
     #[test]
-    fn erased_browser_timeouts_return_timeout_with_the_instance_address() {
+    fn unanswered_browser_lookups_return_unreachable_with_the_instance_address() {
         let mut details = Connection::new(Engine::SqlServer, "127.0.0.1");
         details.instance = Some("dbide_missing".into());
-        details.connect_timeout = 1;
         for diagnostic in [
             "Error Locating Server/Instance Specified [127.0.0.1\\dbide_missing]. Ensure the instance name is correct and SQL Server Browser service is running on the host. (Connection Error: SQL Server Browser did not respond within 1000ms. Verify that the SQL Server Browser service is running on '127.0.0.1:1434'.)",
             "Error Locating Server/Instance Specified [127.0.0.1\\dbide_missing]. Ensure the instance name is correct and SQL Server Browser service is running on the host. (Connection Error: Resolving '127.0.0.1' for the SQL Server Browser lookup did not complete within 1000ms.)",
         ] {
             let driver = mssql_tds::error::Error::ConnectionError(diagnostic.into());
             let error = connect_error(&driver, &details, None);
-            assert_eq!(error.kind, ConnectErrorKind::Timeout, "{error:?}");
+            assert_eq!(error.kind, ConnectErrorKind::Unreachable, "{error:?}");
             assert_eq!(
                 error.message,
-                "No answer from 127.0.0.1\\dbide_missing within 1 s."
+                "Can't reach 127.0.0.1\\dbide_missing: SQL Server Browser didn't answer, so the instance's port is unknown."
             );
         }
     }
