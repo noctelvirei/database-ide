@@ -1,6 +1,7 @@
 //! Connecting and disconnecting the explorer's connections: Enter connects with the saved
 //! password, Windows sign-in or a typed one, and each session lives until the connection is
-//! disconnected, edited or deleted.
+//! disconnected, edited or deleted. Ctrl+N signs in the same way and hands the connection to
+//! the workbench for a query tab, which opens its own session.
 
 use std::cell::Cell;
 
@@ -12,7 +13,17 @@ use gpui_component::WindowExt as _;
 use gpui_component::dialog::DialogEntrance;
 use gpui_component::input::{Input, InputState};
 
-use super::{Explorer, OpenDialog, Status, closer, footer};
+use super::{Explorer, ExplorerEvent, OpenDialog, Status, closer, footer};
+use crate::query_tab::{HeldPassword, QueryTarget};
+
+/// What to do once a connection's password is known.
+#[derive(Clone, Copy)]
+enum AfterSignIn {
+    /// Connect the explorer's own session.
+    Connect,
+    /// Hand the connection to the workbench for a new query tab.
+    OpenQuery,
+}
 
 impl Explorer {
     /// Drops the connection's session and any connect still under way, so the next connect
@@ -49,26 +60,75 @@ impl Explorer {
                 );
             }
             Status::Connecting => {}
-            Status::Disconnected => match saved.connection.sign_in {
-                SignInMethod::Windows => self.connect(&saved, None, window, cx),
-                SignInMethod::Password => match self.credentials.read(&saved) {
-                    Ok(Some(secret)) => {
-                        let password = secret.expose().to_owned();
-                        self.connect(&saved, Some(password), window, cx);
-                    }
-                    Ok(None) => self.ask_password(saved, window, cx),
-                    Err(error) => {
-                        self.message(format!("Can't read the saved password: {error}."), cx);
-                    }
-                },
-                SignInMethod::AskEachTime => self.ask_password(saved, window, cx),
+            Status::Disconnected => self.sign_in(saved, AfterSignIn::Connect, window, cx),
+        }
+    }
+
+    /// Ctrl+N with a connection selected: signs in as Enter does, then asks the workbench
+    /// for a query tab on it. Returns false when no connection is selected.
+    pub(crate) fn open_query(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(saved) = self
+            .selected(cx)
+            .and_then(|id| self.connection(&id).cloned())
+        else {
+            return false;
+        };
+        self.sign_in(saved, AfterSignIn::OpenQuery, window, cx);
+        true
+    }
+
+    /// Finds the connection's password (saved, asked for, or none for Windows sign-in),
+    /// then does `after`.
+    fn sign_in(
+        &mut self,
+        saved: SavedConnection,
+        after: AfterSignIn,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match saved.connection.sign_in {
+            SignInMethod::Windows => self.signed_in(&saved, None, after, window, cx),
+            SignInMethod::Password => match self.credentials.read(&saved) {
+                Ok(Some(secret)) => {
+                    let password = secret.expose().to_owned();
+                    self.signed_in(&saved, Some(password), after, window, cx);
+                }
+                Ok(None) => self.ask_password(saved, after, window, cx),
+                Err(error) => {
+                    self.message(format!("Can't read the saved password: {error}."), cx);
+                }
             },
+            SignInMethod::AskEachTime => self.ask_password(saved, after, window, cx),
+        }
+    }
+
+    fn signed_in(
+        &mut self,
+        saved: &SavedConnection,
+        password: Option<String>,
+        after: AfterSignIn,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match after {
+            AfterSignIn::Connect => self.connect(saved, password, window, cx),
+            AfterSignIn::OpenQuery => {
+                self.dialog = None;
+                let settings = self.saved.effective_settings(&saved.id).ok();
+                cx.emit(ExplorerEvent::OpenQuery(Box::new(QueryTarget {
+                    saved: saved.clone(),
+                    colour: settings.as_ref().and_then(|s| s.colour).map(str::to_owned),
+                    danger_check: settings.is_none_or(|s| s.danger_check),
+                    password: password.map(HeldPassword::new),
+                })));
+            }
         }
     }
 
     fn ask_password(
         &mut self,
         saved: SavedConnection,
+        after: AfterSignIn,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -89,7 +149,7 @@ impl Explorer {
                 move |_: &gpui::ClickEvent, window: &mut Window, cx: &mut App| {
                     let password = input.read(cx).value().to_string();
                     explorer.update(cx, |this, cx| {
-                        this.connect(&saved, Some(password), window, cx)
+                        this.signed_in(&saved, Some(password), after, window, cx)
                     });
                     true
                 }

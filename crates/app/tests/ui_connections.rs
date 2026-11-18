@@ -6,6 +6,7 @@
 //! connections file in a temp APPDATA, and its passwords under the tests' Credential
 //! Manager service, which the test empties afterwards.
 
+mod passwords;
 mod support;
 
 use std::path::Path;
@@ -16,6 +17,7 @@ use dbide_engine::danger::Engine;
 use dbide_test_servers::mssql::Mssql;
 use dbide_test_servers::mysql::MySql;
 use dbide_test_servers::postgres::Postgres;
+use passwords::ForgetPasswords;
 use serde_json::{Value, json};
 use support::{run_script, state};
 
@@ -79,24 +81,6 @@ fn add_and_connect(server: &Server) -> Vec<Value> {
             "input": [{ "key": "enter" }, "idle"],
         }),
     ]
-}
-
-/// Deletes the passwords the app saved for the connections in `appdata`.
-struct ForgetPasswords<'a>(&'a Path);
-
-impl Drop for ForgetPasswords<'_> {
-    fn drop(&mut self) {
-        let file = self.0.join("Database IDE").join("connections.toml");
-        let (Ok(saved), Ok(credentials)) = (
-            Connections::load(file),
-            Credentials::new("database-ide-test"),
-        ) else {
-            return;
-        };
-        for connection in saved.connections() {
-            let _ = credentials.delete(&connection.id);
-        }
-    }
 }
 
 fn row<'a>(state: &'a Value, name: &str) -> &'a Value {

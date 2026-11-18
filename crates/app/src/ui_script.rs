@@ -22,8 +22,10 @@
 //! for an outside script (`scripts/ui-run.ps1`) to capture the window and delete the file.
 //! Shots are taken only with `--ui-shots`; otherwise they are skipped.
 //!
-//! An `"idle"` input waits, up to 30 s, until nothing is connecting or testing, so a script
-//! can check the outcome of a connect without guessing how long it takes.
+//! An `"idle"` input waits, up to 30 s, until nothing is connecting, testing, running,
+//! switching or listing, so a script can check an outcome without guessing how long it takes.
+//! A `"running"` input waits, up to 30 s, until the active tab's run has started, so a script
+//! can cancel a run that is under way rather than one still being set up.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -54,8 +56,11 @@ enum Input {
     Text(String),
     /// A window screenshot saved under this name.
     Shot(String),
-    /// Waits until no connect or test is under way. Written as the string `"idle"`.
+    /// Waits until no connect, test, run, switch or list is under way. Written as the string
+    /// `"idle"`.
     Idle,
+    /// Waits until the active tab's run has started. Written as the string `"running"`.
+    Running,
 }
 
 /// A script read from disk, ready to play.
@@ -134,18 +139,9 @@ impl UiScript {
                         }
                     }
                     Input::Shot(_) => {}
-                    Input::Idle => {
-                        for _ in 0..300 {
-                            let busy = cx
-                                .update(|_, cx| workbench.read_with(cx, |wb, cx| wb.is_busy(cx)))
-                                .ok()
-                                .and_then(Result::ok)
-                                .unwrap_or(false);
-                            if !busy {
-                                break;
-                            }
-                            pause(100).await;
-                        }
+                    Input::Idle => wait_until(&mut cx, &workbench, |wb, cx| !wb.is_busy(cx)).await,
+                    Input::Running => {
+                        wait_until(&mut cx, &workbench, Workbench::is_running).await;
                     }
                 }
                 pause(50).await;
@@ -198,4 +194,24 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     name.push(".");
     name.push(suffix);
     PathBuf::from(name)
+}
+
+/// Polls `done` every 100 ms for up to 30 s, or until the window has gone.
+async fn wait_until(
+    cx: &mut AsyncWindowContext,
+    workbench: &WeakEntity<Workbench>,
+    done: impl Fn(&Workbench, &gpui::App) -> bool,
+) {
+    for _ in 0..300 {
+        let finished = cx
+            .update(|_, cx| workbench.read_with(cx, |wb, cx| done(wb, cx)))
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or(true);
+        if finished {
+            return;
+        }
+        let executor = cx.background_executor().clone();
+        executor.timer(Duration::from_millis(100)).await;
+    }
 }

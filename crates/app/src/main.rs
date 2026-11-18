@@ -11,7 +11,9 @@ mod connection_dialog;
 mod explorer;
 mod folder_dialog;
 mod keymap;
+mod messages;
 mod palette;
+mod query_tab;
 mod runtime;
 mod ui_script;
 mod workbench;
@@ -97,10 +99,12 @@ fn main() -> ExitCode {
                 ..Default::default()
             };
             let opened = cx.open_window(options, |window, cx| {
-                let explorer = cx.new(|cx| Explorer::new(path, credentials, runtime, window, cx));
+                let explorer =
+                    cx.new(|cx| Explorer::new(path, credentials, runtime.clone(), window, cx));
                 let workbench = cx.new(|cx| {
                     Workbench::new(
                         explorer,
+                        runtime,
                         move |window, cx| {
                             // Next-frame callbacks run once this frame has been drawn and presented.
                             window.on_next_frame(|_, _| write_first_frame_time());

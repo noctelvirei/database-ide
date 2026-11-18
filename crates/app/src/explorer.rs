@@ -33,13 +33,17 @@ use crate::keymap::{
     PasteItem, PasteItemAtTop, RenameItem,
 };
 use crate::palette;
+use crate::query_tab::QueryTarget;
 use crate::runtime::Runtime;
 
 mod connect;
 
-/// Something for the messages strip.
+/// What the explorer asks of the workbench.
 pub enum ExplorerEvent {
+    /// Something for the messages strip.
     Message(SharedString),
+    /// Open a query tab on this connection; the password is already resolved.
+    OpenQuery(Box<QueryTarget>),
 }
 
 /// One explorer row as the user sees it, top to bottom.
@@ -752,7 +756,7 @@ impl Explorer {
 }
 
 /// The dialog footer: Cancel and the dialog's own action, both reachable with Tab.
-fn footer(action: &'static str) -> impl IntoElement {
+pub(crate) fn footer(action: &'static str) -> impl IntoElement {
     use gpui_component::button::{Button, ButtonVariants as _};
     use gpui_component::dialog::{DialogAction, DialogClose, DialogFooter};
     DialogFooter::new()
@@ -768,8 +772,11 @@ fn closer(
     let explorer = explorer.clone();
     move |_, window, cx| {
         explorer.update(cx, |this, cx| {
-            this.dialog = None;
-            this.focus(window, cx);
+            // A dialog that handed work elsewhere (a query tab) cleared itself, and focus
+            // stays where that work put it.
+            if this.dialog.take().is_some() {
+                this.focus(window, cx);
+            }
         })
     }
 }

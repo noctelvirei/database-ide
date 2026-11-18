@@ -5,6 +5,9 @@
 //! own keys are bound by gpui-component, as are a dialog's keys: Tab and Shift+Tab between
 //! fields, Enter for its action and Escape to cancel.
 //!
+//! The messages strip's Up, Down and Enter work while it has focus, to choose an error and
+//! go to its line.
+//!
 //! The explorer's keys work while it has focus, so they don't take keys from the editor.
 //! They follow Windows' file explorer where it has one: F2 renames, Delete deletes,
 //! Alt+Enter opens properties, Ctrl+Shift+N makes a folder, Ctrl+X and Ctrl+V move.
@@ -83,6 +86,18 @@ actions!(
     ]
 );
 
+actions!(
+    messages,
+    [
+        /// Chooses the previous error that names a line (Up).
+        PreviousError,
+        /// Chooses the next error that names a line (Down).
+        NextError,
+        /// Moves the editor's caret to the chosen error's line (Enter).
+        GoToError,
+    ]
+);
+
 /// Binds every key above for the whole app. Call once, after `gpui_component::init`.
 ///
 /// Alt+Break is bound as `alt-pause`, but gpui 0.3.12 does not translate the Windows
@@ -119,6 +134,9 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("enter", ConnectItem, Some("Explorer")),
         KeyBinding::new("ctrl-shift-d", DisconnectItem, Some("Explorer")),
         KeyBinding::new("alt-t", TestConnection, Some("ConnectionForm")),
+        KeyBinding::new("up", PreviousError, Some("Messages")),
+        KeyBinding::new("down", NextError, Some("Messages")),
+        KeyBinding::new("enter", GoToError, Some("Messages")),
         // Bound after gpui-component's own Enter on a select, so this one wins.
         KeyBinding::new("enter", ConfirmFromChoice, Some("Dialog > Select")),
     ]);
