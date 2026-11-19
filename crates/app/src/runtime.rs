@@ -88,8 +88,10 @@ pub enum Explore {
     /// An object's script in `form`, for a new query tab.
     Script(Object, Script),
     /// Objects named like `search.name` in every user database, each searched through its own
-    /// short-lived session opened from `details` with `password`.
+    /// short-lived session opened from `details` with `password`. `generation` comes back
+    /// unchanged and tells this search's reply from an earlier one's.
     Search {
+        generation: u64,
         search: Search,
         details: Connection,
         password: Option<String>,
@@ -162,6 +164,7 @@ async fn explore(
             search,
             details,
             password,
+            ..
         } => Explored::Search(search_all(session, engine, &search, details, password).await?),
     })
 }

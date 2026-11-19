@@ -407,9 +407,7 @@ impl Explorer {
             window,
             |this, _, event: &InputEvent, window, cx| match event {
                 InputEvent::Change => {
-                    if this.needle(cx).is_empty() {
-                        this.clear_searches();
-                    }
+                    this.filter_changed(cx);
                     this.rebuild(None, cx);
                 }
                 InputEvent::PressEnter {
@@ -751,8 +749,8 @@ impl Explorer {
         outcome: Result<Explored, String>,
         cx: &mut Context<Self>,
     ) {
-        if let Explore::Search { search, .. } = &call {
-            self.searched(connection, search, outcome, cx);
+        if let Explore::Search { generation, .. } = &call {
+            self.searched(connection, *generation, outcome, cx);
             return;
         }
         if let Explore::Script(object, _) = &call {

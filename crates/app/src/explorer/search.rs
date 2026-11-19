@@ -8,6 +8,8 @@
 //! A new search replaces the last one on that connection, and clearing the filter drops every
 //! search; a reply to a replaced search is ignored.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use dbide_engine::objects::{Kind as ObjectKind, Object, Search};
 use gpui::Context;
 
@@ -30,6 +32,8 @@ const KINDS: [ObjectKind; 5] = [
 
 /// A connection's last search.
 pub(super) struct Found {
+    /// Tells this search's reply from a replaced search's; unique in the process.
+    generation: u64,
     /// The name searched for, as typed.
     name: String,
     hits: Hits,
@@ -51,15 +55,32 @@ impl Found {
             Hits::Searching | Hits::Failed(_) => None,
         }
     }
+}
 
-    pub(super) fn is_searching(&self) -> bool {
-        matches!(self.hits, Hits::Searching)
-    }
+/// The connection that the row with ID `id` belongs to: an object row's ID starts with its
+/// connection's ID (objects.rs).
+fn connection_of(id: &str) -> &str {
+    id.split(super::objects::SEP).next().unwrap_or(id)
 }
 
 impl Explorer {
+    /// The filter's text changed: an empty filter drops every search; otherwise the selected
+    /// row's connection, before the new text hides it, becomes the one Ctrl+Enter searches.
+    pub(super) fn filter_changed(&mut self, cx: &mut Context<Self>) {
+        if self.needle(cx).is_empty() {
+            for server in self.servers.values_mut() {
+                server.search = None;
+            }
+        }
+        if let Some(id) = self.selected(cx) {
+            self.search_target = Some(connection_of(&id).to_owned());
+        }
+    }
+
     /// Ctrl+Enter in the filter box: searches every database of the selected row's connected
-    /// connection for objects whose name holds the filter's text.
+    /// connection for objects whose name holds the filter's text. With no row selected, as
+    /// when the filter has hidden it, it searches the connection selected before the filter
+    /// changed, or the only connected one.
     pub(super) fn search_databases(&mut self, cx: &mut Context<Self>) {
         let name = self.filter.read(cx).value().trim().to_owned();
         if name.is_empty() {
@@ -69,18 +90,18 @@ impl Explorer {
             );
             return;
         }
-        // An object row's ID starts with its connection's ID (objects.rs). Typing the name
-        // usually filters the selected row away, so with nothing selected the search goes to
-        // the only connected connection.
         let connection = match self.selected(cx) {
-            Some(id) => id
-                .split(super::objects::SEP)
-                .next()
-                .map(str::to_owned)
-                .filter(|id| self.servers.contains_key(id)),
-            None if self.servers.len() == 1 => self.servers.keys().next().cloned(),
-            None => None,
-        };
+            Some(id) => Some(connection_of(&id).to_owned()),
+            None => self
+                .search_target
+                .clone()
+                .filter(|id| self.servers.contains_key(id))
+                .or_else(|| match self.servers.len() {
+                    1 => self.servers.keys().next().cloned(),
+                    _ => None,
+                }),
+        }
+        .filter(|id| self.servers.contains_key(id));
         let Some(connection) = connection else {
             self.message(
                 "Select a connected connection, or a row under one, to search its databases.",
@@ -88,8 +109,11 @@ impl Explorer {
             );
             return;
         };
+        static SEARCHES: AtomicU64 = AtomicU64::new(0);
+        let generation = SEARCHES.fetch_add(1, Ordering::Relaxed);
         let server = self.servers.get_mut(&connection).expect("checked above");
         let call = Explore::Search {
+            generation,
             search: Search {
                 name: name.clone(),
                 kinds: KINDS.to_vec(),
@@ -99,6 +123,7 @@ impl Explorer {
             password: server.password.as_ref().map(|p| p.expose().to_owned()),
         };
         server.search = Some(Found {
+            generation,
             name,
             hits: Hits::Searching,
         });
@@ -106,11 +131,12 @@ impl Explorer {
         self.rebuild(None, cx);
     }
 
-    /// A search on `connection` replied. Ignored unless it is the connection's latest search.
+    /// Search `generation` on `connection` replied. Ignored unless it is the connection's
+    /// latest search.
     pub(super) fn searched(
         &mut self,
         connection: &str,
-        search: &Search,
+        generation: u64,
         outcome: Result<Explored, String>,
         cx: &mut Context<Self>,
     ) {
@@ -118,7 +144,7 @@ impl Explorer {
             .servers
             .get_mut(connection)
             .and_then(|s| s.search.as_mut())
-            .filter(|f| f.name == search.name && f.is_searching())
+            .filter(|f| f.generation == generation)
         else {
             return;
         };
@@ -152,13 +178,6 @@ impl Explorer {
             self.message(text, cx);
         }
         self.rebuild(None, cx);
-    }
-
-    /// Clearing the filter drops every connection's search.
-    pub(super) fn clear_searches(&mut self) {
-        for server in self.servers.values_mut() {
-            server.search = None;
-        }
     }
 
     /// The "Search" row under `connection`, open, with its hits, while it has a search.
