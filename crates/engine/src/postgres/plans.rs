@@ -106,6 +106,16 @@ async fn run_inner(
             break;
         }
         let actual = mode == PlanMode::Actual;
+        let guard = format!("dbide_plan_{:016x}", rand::random::<u64>());
+        let savepoint = if actual {
+            false
+        } else {
+            match idle_query(client, notices, &format!("SAVEPOINT {guard}")).await {
+                Ok(()) => true,
+                Err(error) if error.code().is_some_and(|code| code.code() == "25P01") => false,
+                Err(error) => return Err(error.into()),
+            }
+        };
         if actual {
             idle_query(client, notices, "BEGIN").await?;
         }
@@ -126,6 +136,11 @@ async fn run_inner(
         // Roll back on errors and cancellation too, independently of the event consumer.
         if actual {
             idle_query(client, notices, "ROLLBACK").await?;
+        } else if savepoint {
+            if !success {
+                idle_query(client, notices, &format!("ROLLBACK TO SAVEPOINT {guard}")).await?;
+            }
+            idle_query(client, notices, &format!("RELEASE SAVEPOINT {guard}")).await?;
         }
         if !success {
             break;
