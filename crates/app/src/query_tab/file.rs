@@ -243,6 +243,16 @@ impl QueryTab {
         }
     }
 
+    /// Notes a failure the app met on the run's behalf, such as writing its rows to a file,
+    /// unless the server already reported one.
+    pub(super) fn note_failure(&mut self, text: String) {
+        if let Some(entry) = &mut self.entry
+            && matches!(entry.outcome, Outcome::Rows { .. })
+        {
+            entry.outcome = Outcome::Error { text };
+        }
+    }
+
     /// The run ended: hands its entry to the workbench for the history.
     pub(super) fn finish_entry(&mut self, cx: &mut Context<Self>) {
         let Some(mut entry) = self.entry.take() else {

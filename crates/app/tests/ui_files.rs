@@ -149,12 +149,14 @@ fn ui_pg_a_restored_tab_signs_in_on_f5_and_the_history_reopens_a_run() {
             { "name": "to the lab tab", "input": [{ "key": "ctrl-tab" }] },
             { "name": "F5", "input": [{ "key": "f5" }, "idle"] },
             { "name": "history", "input": [{ "key": "ctrl-shift-h" }, "idle"] },
-            { "name": "search", "input": [{ "text": "seven" }] },
+            { "name": "down", "input": [{ "key": "down" }] },
             { "name": "reopen", "input": [{ "key": "enter" }, "idle"] },
+            { "name": "query menu", "input": [{ "key": "alt-q" }] },
             {
                 "name": "actual plan run",
-                "input": [{ "key": "ctrl-m" }, { "key": "f5" }, "idle", { "key": "ctrl-shift-h" }, "idle"],
+                "input": [{ "key": "escape" }, { "key": "ctrl-m" }, { "key": "f5" }, "idle", { "key": "ctrl-shift-h" }, "idle"],
             },
+            { "name": "search", "input": [{ "text": "seven" }] },
             { "name": "Ctrl+N beside it", "input": [{ "key": "escape" }, { "key": "ctrl-n" }, "idle"] },
         ]),
     );
@@ -188,8 +190,11 @@ fn ui_pg_a_restored_tab_signs_in_on_f5_and_the_history_reopens_a_run() {
         ],
         "every run, newest first"
     );
-    let searched = &state(&lines, "search")["history"]["matches"];
-    assert_eq!(searched.as_array().unwrap().len(), 1, "{searched:#}");
+    assert_eq!(
+        state(&lines, "down")["history"]["chosen"],
+        1,
+        "Down chooses the next run"
+    );
 
     let reopened = state(&lines, "reopen");
     assert_eq!(reopened["history"], Value::Null, "the panel closes");
@@ -202,6 +207,13 @@ fn ui_pg_a_restored_tab_signs_in_on_f5_and_the_history_reopens_a_run() {
     assert_eq!(reopened["tabs"][3]["connection"], "Lab");
     assert_eq!(reopened["tabs"][3]["status"], "unconnected");
 
+    let query = &state(&lines, "query menu")["menu_bar"]["items"];
+    assert_eq!(query[0]["label"], "Run");
+    assert_eq!(
+        query[0]["enabled"], true,
+        "a restored tab runs from the menu too: {query:#}"
+    );
+
     let planned = &state(&lines, "actual plan run")["history"]["matches"];
     assert_eq!(planned.as_array().unwrap().len(), 4, "{planned:#}");
     assert!(
@@ -210,6 +222,17 @@ fn ui_pg_a_restored_tab_signs_in_on_f5_and_the_history_reopens_a_run() {
             .unwrap()
             .starts_with("SELECT 7 AS seven"),
         "a run with its actual plan is in the history: {planned:#}"
+    );
+
+    let searched = &state(&lines, "search")["history"];
+    assert_eq!(
+        searched["matches"].as_array().unwrap().len(),
+        2,
+        "{searched:#}"
+    );
+    assert_eq!(
+        searched["chosen"], 0,
+        "typing chooses the first match again"
     );
 
     let beside = state(&lines, "Ctrl+N beside it");

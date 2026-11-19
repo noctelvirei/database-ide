@@ -67,6 +67,8 @@ impl Menu {
 pub struct Situation {
     /// The active tab's session is idle, so it can run, plan or change database.
     pub ready: bool,
+    /// Run can act: the tab is ready, or it is a restored tab that signs in first.
+    pub runnable: bool,
     /// The active tab is running, so Cancel can act.
     pub running: bool,
     pub actual_plan: bool,
@@ -152,7 +154,7 @@ fn items(menu: Menu, s: &Situation) -> Vec<Item> {
             item("Query history", ShowHistory, true),
         ],
         Menu::Query => vec![
-            item("Run", Run, s.ready),
+            item("Run", Run, s.runnable),
             item("Cancel", CancelRun, s.running),
             item("Estimated plan", EstimatedPlan, s.ready),
             toggle("Include actual plan", ToggleActualPlan, s.actual_plan),

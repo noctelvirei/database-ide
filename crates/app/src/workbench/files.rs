@@ -22,17 +22,27 @@ impl Workbench {
     /// Opens the tabs kept from the last session, not connected until each one's first run,
     /// or one unconnected tab when none were kept.
     pub(super) fn restore_tabs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let kept = self
-            .tabs_file
-            .as_deref()
-            .map(open_tabs::load)
-            .unwrap_or_default();
-        for saved in kept {
+        let kept = match self.tabs_file.as_deref().map(open_tabs::load) {
+            Some(Ok(kept)) => Ok(kept),
+            None => Ok(Vec::new()),
+            // Saving would replace the tabs it couldn't read, so this session keeps none.
+            Some(Err(error)) => Err(format!(
+                "Couldn't read the tabs kept from last time ({error}); this session won't keep \
+                 its tabs, so the file stays as it is."
+            )),
+        };
+        if kept.is_err() {
+            self.tabs_file = None;
+        }
+        for saved in kept.clone().unwrap_or_default() {
             self.open_saved(saved, window, cx);
         }
         match self.tabs.is_empty() {
             true => self.open_tab(None, window, cx),
             false => self.show_tab(0, window, cx),
+        }
+        if let Err(problem) = kept {
+            self.note(problem, cx);
         }
     }
 

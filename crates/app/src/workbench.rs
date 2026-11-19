@@ -470,9 +470,12 @@ impl Workbench {
     /// one before any menu or Help panel took it.
     fn situation(&self, window: &Window, cx: &App) -> Situation {
         let bar = self.menu_bar.read(cx);
+        let asleep = self.active_tab().read(cx).is_asleep();
         let tab = self.active_tab().read(cx).state(cx);
+        let ready = tab.status == crate::query_tab::Status::Ready;
         let mut situation = Situation {
-            ready: tab.status == crate::query_tab::Status::Ready,
+            ready,
+            runnable: ready || asleep,
             running: tab.status == crate::query_tab::Status::Running,
             actual_plan: tab.actual_plan,
             results_to_file: tab.results_to_file,

@@ -729,8 +729,11 @@ impl QueryTab {
         // The engine counts lines from one within the batch; the editor from zero.
         let editor_line =
             |line: Option<std::num::NonZeroU64>| line.map(|l| first_line + l.get() as u32 - 1);
-        if let RunUpdate::Event(event) = &update {
-            self.note_event(event);
+        match &update {
+            RunUpdate::Event(event) => self.note_event(event),
+            RunUpdate::Written(Err(error)) => self.note_failure(error.to_string()),
+            RunUpdate::Plan(Err(error)) => self.note_failure(error.to_string()),
+            _ => {}
         }
         let message = match update {
             RunUpdate::Started(handle) => {
