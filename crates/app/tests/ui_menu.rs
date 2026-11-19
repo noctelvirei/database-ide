@@ -97,6 +97,10 @@ fn ui_pg_menus_open_by_alt_letter_run_queries_and_list_the_shortcuts() {
             "name": "keyboard shortcuts",
             "input": [{ "key": "alt-h" }, { "key": "down" }, { "key": "enter" }, { "shot": "shortcuts" }],
         },
+        {
+            "name": "about over the shortcuts",
+            "input": [{ "key": "alt-h" }, { "key": "down" }, { "key": "down" }, { "key": "enter" }],
+        },
         { "name": "shortcuts closed", "input": [{ "key": "escape" }] },
         {
             "name": "grid keys after edit",
@@ -189,8 +193,12 @@ fn ui_pg_menus_open_by_alt_letter_run_queries_and_list_the_shortcuts() {
     assert!(rows.contains(&json!({ "action": "Format", "keys": "Ctrl+K Ctrl+F" })));
     assert!(rows.contains(&json!({ "action": "Results to file", "keys": "Ctrl+Shift+F" })));
     assert!(!rows.iter().any(|row| row["action"] == "Exit"));
+    let about = state(&lines, "about over the shortcuts");
+    assert_eq!(about["menu_bar"]["panel"], "about");
+    // Closing the second panel hands focus back to where it was before the first.
     let closed = state(&lines, "shortcuts closed");
     assert_eq!(closed["menu_bar"]["panel"], Value::Null);
+    assert_eq!(closed["focused_pane"], "Editor", "{closed:#}");
 
     // Opening Edit over a grid and closing it leaves the grid's own keys working.
     let grid = state(&lines, "grid keys after edit");

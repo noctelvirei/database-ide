@@ -316,7 +316,10 @@ impl MenuBar {
     }
 
     fn show_panel(&mut self, panel: Panel, window: &mut Window, cx: &mut Context<Self>) {
-        self.panel_return = window.focused(cx);
+        // Replacing an open panel keeps the focus it will hand back.
+        if self.panel.is_none() {
+            self.panel_return = window.focused(cx);
+        }
         self.panel = Some(panel);
         self.panel_focus.focus(window, cx);
         cx.notify();
