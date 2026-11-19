@@ -64,6 +64,9 @@ Every row of a run streams into a compact temp file as it arrives, with a row-of
 
 Clipboard text with headers, CSV, `.xlsx` (constant-memory writing), INSERT script. All read from the spill store. Run to file streams a run's rows straight into an export file without a grid.
 
+- Ctrl+S on a grid saves its result set; the file's extension picks the format: `.csv` (UTF-8 with a byte-order mark, so Excel reads it), `.xlsx`, or `.sql` for INSERT statements in the connection's dialect. The INSERTs target the result's base table, or the file's name when the server reports none (SQL Server, for a plain SELECT). Saving over a file replaces it only once the new one is complete.
+- Ctrl+Shift+F turns results to file on for the tab (and include actual plan off). F5 then asks for a `.csv` or `.xlsx` file; `name.csv` gives `name-1.csv`, `name-2.csv`, one per result set. The run bar shows the rows written so far; Stop or Alt+Break cancels, leaving an unfinished file as `.partial`. The messages strip says what each file holds.
+
 ## Connections
 
 [Decision](https://github.com/noctelvirei/database-ide/issues/11): a password-free `connections.toml` in the user's app-data folder; passwords in Windows Credential Manager via `keyring`, or ask every time; nestable connection folders carrying connection colour and the danger check, inherited with per-connection override; import SSMS Registered Servers (`RegSrvr.xml` and `.regsrvr`); paste ADO.NET, libpq or JDBC connection strings. Fields: engine, host, port or instance, sign-in method, user, default database, colour, TLS mode, trust server certificate, application name, connect and query timeouts.
@@ -123,6 +126,7 @@ SSMS's shortcuts, not remappable in v1:
 | Alt+Break | Cancel the run |
 | Ctrl+L | Estimated plan |
 | Ctrl+M | Toggle include actual plan |
+| Ctrl+Shift+F | Toggle results to file |
 | F9 | Plan tree ↔ graph |
 | Ctrl+R | Hide or show results |
 | Ctrl+N | New query tab on the current connection |
@@ -134,6 +138,7 @@ SSMS's shortcuts, not remappable in v1:
 | Ctrl+U | Pick the current database |
 | F8 | Focus the object explorer |
 | Ctrl+O / Ctrl+S | Open / save a `.sql` file |
+| Ctrl+S in a grid / plan | Save the result set / the plan to a file |
 
 ### Menu bar
 

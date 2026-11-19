@@ -9,12 +9,13 @@
 //! selection; Ctrl+Home and Ctrl+End go to the first and last cell; Shift with an arrow
 //! grows a block; Shift+Space selects the row, Ctrl+Space
 //! the column, Ctrl+A everything; Ctrl+C copies the block and Ctrl+Shift+C copies it with
-//! headers; Ctrl+Up and Ctrl+Down move between grids and plans; Alt+Enter maximises. A
-//! plan's own keys are in `plan.rs`.
+//! headers; Ctrl+S saves the grid's result set to a file; Ctrl+Up and Ctrl+Down move
+//! between grids and plans; Alt+Enter maximises. A plan's own keys are in `plan.rs`.
 
 mod grid;
 pub mod plan;
 
+use dbide_engine::danger::Engine;
 use dbide_engine::plan::{Plan, Property};
 use dbide_engine::spill::{Reader, Store};
 use gpui::{
@@ -29,7 +30,7 @@ use serde::Serialize;
 use crate::keymap::{
     CopyBlock, CopyBlockWithHeaders, ExtendDown, ExtendLeft, ExtendRight, ExtendUp, FirstCell,
     FirstOperator, LastCell, LastOperator, NextOperator, NextResult, PreviousOperator,
-    PreviousResult, SavePlan, SelectAll, SelectColumn, SelectRow, ToggleMaximise,
+    PreviousResult, SavePlan, SaveResults, SelectAll, SelectColumn, SelectRow, ToggleMaximise,
 };
 use grid::{Block, Grid};
 use plan::{PlanState, PlanView, Step};
@@ -89,11 +90,15 @@ pub struct Results {
     focused: usize,
     /// The grid or plan filling the pane, if one is maximised.
     maximised: Option<usize>,
-    /// Copies still reading their block from the spill file.
-    copying: usize,
+    /// Copies and result-set saves still reading the spill files.
+    reading: usize,
     /// Plans still being written to a file.
     saving: usize,
-    /// An earlier run's spill files that a copy still reads; dropped when the copies end.
+    /// The engine of the connection the result sets came from: INSERT statements follow its
+    /// dialect.
+    engine: Option<Engine>,
+    /// An earlier run's spill files that a copy or save still reads; deleted when the last
+    /// read ends.
     retired: Vec<Store>,
     /// The stacked grids' scroll position.
     scroll: ScrollHandle,
@@ -116,20 +121,21 @@ impl Results {
             stores: Vec::new(),
             focused: 0,
             maximised: None,
-            copying: 0,
+            reading: 0,
             saving: 0,
+            engine: None,
             retired: Vec::new(),
             scroll: ScrollHandle::new(),
             focus_handle: cx.focus_handle(),
         }
     }
 
-    /// Drops the last run's grids and deletes their files, for a new run. Files a copy is
-    /// still reading are deleted when the copy ends.
+    /// Drops the last run's grids and deletes their files, for a new run. Files a copy or
+    /// save is still reading are deleted when it ends.
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.grids.clear();
         self.plans.clear();
-        if self.is_copying() {
+        if self.reading > 0 {
             self.retired.append(&mut self.stores);
         } else {
             delete(std::mem::take(&mut self.stores), cx);
@@ -140,7 +146,15 @@ impl Results {
     }
 
     /// Adds a grid for a result set that has just started.
-    pub fn add(&mut self, reader: Reader, window: &mut Window, cx: &mut Context<Self>) {
+    /// Adds a result set's grid. `engine` is the connection's, for saving it as INSERTs.
+    pub fn add(
+        &mut self,
+        reader: Reader,
+        engine: Option<Engine>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.engine = engine;
         let table = cx.new(|cx| {
             TableState::new(Grid::new(reader), window, cx)
                 .cell_selectable(true)
@@ -307,14 +321,18 @@ impl Results {
         })
     }
 
-    /// True while a copy is still reading its block.
-    fn is_copying(&self) -> bool {
-        self.copying > 0
+    /// True while a copy, or a plan's or result set's save, is under way.
+    pub fn is_working(&self) -> bool {
+        self.reading > 0 || self.saving > 0
     }
 
-    /// True while a copy or a plan save is under way.
-    pub fn is_working(&self) -> bool {
-        self.is_copying() || self.saving > 0
+    /// Ends one copy or save's read of the spill files, deleting retired files once none
+    /// reads them.
+    fn end_read(&mut self, cx: &mut Context<Self>) {
+        self.reading -= 1;
+        if self.reading == 0 {
+            delete(std::mem::take(&mut self.retired), cx);
+        }
     }
 
     fn focused_table(&self) -> Option<Entity<TableState<Grid>>> {
@@ -401,7 +419,7 @@ impl Results {
             return;
         };
         let reader = grid.reader().clone();
-        self.copying += 1;
+        self.reading += 1;
         cx.spawn_in(window, async move |this, cx| {
             let rows = block.rows.len();
             let copied = cx
@@ -417,10 +435,7 @@ impl Results {
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                this.copying -= 1;
-                if this.copying == 0 {
-                    delete(std::mem::take(&mut this.retired), cx);
-                }
+                this.end_read(cx);
                 let message = match copied {
                     Ok(text) => {
                         cx.write_to_clipboard(ClipboardItem::new_string(text));
@@ -497,6 +512,59 @@ impl Results {
             let _ = this.update(cx, |this, cx| {
                 this.saving -= 1;
                 cx.emit(ResultsEvent::Message(message.into()));
+            });
+        })
+        .detach();
+    }
+
+    /// Ctrl+S on a grid: asks where, then writes its whole result set there, in the format
+    /// the file's extension names (`export_file`). A result still receiving rows can't be
+    /// saved yet.
+    fn save_results(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(table) = self.focused_table() else {
+            return;
+        };
+        let grid = table.read(cx).delegate();
+        if !grid.is_complete() {
+            cx.emit(ResultsEvent::Message(
+                "This result is still receiving rows. Save it when the run ends.".into(),
+            ));
+            return;
+        }
+        let reader = grid.reader().clone();
+        let Some(engine) = self.engine else {
+            return;
+        };
+        let asked = crate::file_prompt::save_path(cx, crate::export_file::SUGGESTED_NAME);
+        self.reading += 1;
+        cx.spawn_in(window, async move |this, cx| {
+            let message = match asked.await {
+                None => None,
+                Some(path) => Some(
+                    match crate::export_file::save_format(&path, engine, reader.columns()) {
+                        Err(reason) => reason,
+                        Ok(format) => {
+                            let shown = path.display().to_string();
+                            let written = cx
+                                .background_spawn(async move {
+                                    crate::export_file::write(&reader, &path, &format)
+                                })
+                                .await;
+                            match written {
+                                Ok(file) => crate::export_file::written(&file),
+                                Err(error) => {
+                                    format!("Couldn't save the results to {shown}: {error}")
+                                }
+                            }
+                        }
+                    },
+                ),
+            };
+            let _ = this.update(cx, |this, cx| {
+                this.end_read(cx);
+                if let Some(message) = message {
+                    cx.emit(ResultsEvent::Message(message.into()));
+                }
             });
         })
         .detach();
@@ -634,5 +702,6 @@ impl Render for Results {
                 cx.listener(|this, _: &LastOperator, _, cx| this.select_operator(Step::Last, cx)),
             )
             .on_action(cx.listener(|this, _: &SavePlan, w, cx| this.save_plan(w, cx)))
+            .on_action(cx.listener(|this, _: &SaveResults, w, cx| this.save_results(w, cx)))
     }
 }

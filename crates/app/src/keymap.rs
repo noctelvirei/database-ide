@@ -10,8 +10,9 @@
 //!
 //! The results grids' keys work while a grid has focus (results.rs lists them). Plain
 //! arrows, Home, End, Page Up and Page Down are gpui-component's table keys. Ctrl+C and
-//! Ctrl+Shift+C copy as SSMS does, without and with headers. A plan's keys work while it has
-//! focus; its Ctrl+S saves the plan rather than the tab.
+//! Ctrl+Shift+C copy as SSMS does, without and with headers, and Ctrl+S saves the focused
+//! grid's result set to a file. A plan's keys work while it has focus; its Ctrl+S saves the
+//! plan rather than the tab.
 //!
 //! The explorer's keys work while it has focus, so they don't take keys from the editor.
 //! They follow Windows' file explorer where it has one: F2 renames, Delete deletes,
@@ -40,6 +41,9 @@ actions!(
         EstimatedPlan,
         /// Turns including the actual plan on or off (Ctrl+M).
         ToggleActualPlan,
+        /// Turns sending each run's rows to a file instead of the grid on or off
+        /// (Ctrl+Shift+F).
+        ToggleResultsToFile,
         /// Switches the plan between tree and graph (F9).
         TogglePlanView,
         /// Opens a new query tab on the current connection (Ctrl+N).
@@ -160,6 +164,8 @@ actions!(
         LastOperator,
         /// Saves the focused plan as a `.sqlplan` file (Ctrl+S).
         SavePlan,
+        /// Saves the focused grid's result set as CSV, XLSX or INSERT statements (Ctrl+S).
+        SaveResults,
     ]
 );
 
@@ -178,6 +184,7 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("alt-pause", CancelRun, None),
         KeyBinding::new("ctrl-l", EstimatedPlan, None),
         KeyBinding::new("ctrl-m", ToggleActualPlan, None),
+        KeyBinding::new("ctrl-shift-f", ToggleResultsToFile, None),
         KeyBinding::new("f9", TogglePlanView, None),
         KeyBinding::new("ctrl-n", NewQueryTab, None),
         KeyBinding::new("ctrl-tab", NextQueryTab, None),
@@ -187,7 +194,10 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("ctrl-shift-r", RefreshAutocomplete, None),
         KeyBinding::new("ctrl-u", PickDatabase, None),
         KeyBinding::new("ctrl-o", OpenFile, None),
-        KeyBinding::new("ctrl-s", SaveFile, None),
+        // gpui ranks a binding with no context as matching at the focused element, above a
+        // context the focus sits inside, so the tab's Ctrl+S is scoped to the workbench to let a
+        // grid's and a plan's Ctrl+S win.
+        KeyBinding::new("ctrl-s", SaveFile, Some("Workbench")),
         KeyBinding::new("insert", NewConnection, Some("Explorer")),
         KeyBinding::new("ctrl-shift-n", NewFolder, Some("Explorer")),
         KeyBinding::new("alt-enter", EditItem, Some("Explorer")),
@@ -216,6 +226,7 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("ctrl-down", NextResult, Some("Results")),
         KeyBinding::new("ctrl-up", PreviousResult, Some("Results")),
         KeyBinding::new("alt-enter", ToggleMaximise, Some("Results")),
+        KeyBinding::new("ctrl-s", SaveResults, Some("Results")),
         KeyBinding::new("up", PreviousOperator, Some("Plan")),
         KeyBinding::new("down", NextOperator, Some("Plan")),
         KeyBinding::new("home", FirstOperator, Some("Plan")),

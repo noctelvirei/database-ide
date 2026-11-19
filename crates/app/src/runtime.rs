@@ -11,10 +11,13 @@
 //! come back.
 
 use std::future::Future;
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 use dbide_engine::connections::Connection;
 use dbide_engine::danger::Engine;
+use dbide_engine::export::{self, FileReport, Format};
 use dbide_engine::objects::{self, Index, Kind, Object, Script};
 use dbide_engine::plan::{self, Plan};
 use dbide_engine::session::{
@@ -42,6 +45,9 @@ pub enum RunUpdate {
     Plan(Result<Plan, String>),
     /// One engine event other than a result set, its rows or a plan.
     Event(Event),
+    /// A run to file has ended: the files it wrote, one per result set, or why writing
+    /// stopped. Its messages and errors came before as `Event`s.
+    Written(Result<Vec<FileReport>, String>),
     /// The run is over: the session is free for the next one, and `results` owns the
     /// run's spill files, in result order. Dropping a store deletes its file and ends its
     /// readers, so the UI keeps them as long as it shows the results.
@@ -52,13 +58,21 @@ pub enum RunUpdate {
 }
 
 /// What a run asks of the server.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub enum Job {
     /// Runs the batch for its results.
     Run,
     /// Returns the batch's plans: estimated without running it, or actual by running it
     /// (docs/spec.md, "Plans").
     Plan(PlanMode),
+    /// Runs the batch with its rows going straight into files in `format`, none to the grid
+    /// (CONTEXT.md, "Run to file"): `dir/name.ext` gives `dir/name-1.ext`, one per result set.
+    /// `rows_written` counts the rows written so far, across the files, for the UI to show.
+    ToFile {
+        path: PathBuf,
+        format: Format,
+        rows_written: Arc<AtomicU64>,
+    },
 }
 
 /// One catalog call the object explorer makes on a session (docs/spec.md, "Object explorer
@@ -193,15 +207,43 @@ impl Runtime {
         self.0.spawn(async move {
             let mut results = Results::default();
             {
-                let mut run = match job {
-                    Job::Run => session.run(&batch),
-                    Job::Plan(mode) => session.plan(&batch, mode),
+                let mut run = match &job {
+                    Job::Run | Job::ToFile { .. } => session.run(&batch),
+                    Job::Plan(mode) => session.plan(&batch, *mode),
                 };
                 if updates
                     .send(RunUpdate::Started(run.cancel_handle()))
                     .await
                     .is_err()
                 {
+                    return;
+                }
+                if let Job::ToFile {
+                    path,
+                    format,
+                    rows_written,
+                } = &job
+                {
+                    let written = match export::run_to_file(run, path, format, rows_written).await {
+                        Ok(report) => {
+                            for event in report.events {
+                                if updates.send(RunUpdate::Event(event)).await.is_err() {
+                                    return;
+                                }
+                            }
+                            Ok(report.files)
+                        }
+                        Err(error) => Err(error.to_string()),
+                    };
+                    if updates.send(RunUpdate::Written(written)).await.is_err() {
+                        return;
+                    }
+                    let _ = updates
+                        .send(RunUpdate::Finished {
+                            session,
+                            results: Vec::new(),
+                        })
+                        .await;
                     return;
                 }
                 while let Some(event) = run.next().await {

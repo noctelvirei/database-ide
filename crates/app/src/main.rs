@@ -9,6 +9,7 @@
 mod choice;
 mod connection_dialog;
 mod explorer;
+mod export_file;
 mod file_prompt;
 mod folder_dialog;
 mod keymap;
