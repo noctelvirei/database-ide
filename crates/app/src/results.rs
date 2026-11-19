@@ -28,9 +28,10 @@ use gpui_component::table::{DataTable, TableEvent, TableSelection, TableState};
 use serde::Serialize;
 
 use crate::keymap::{
-    CopyBlock, CopyBlockWithHeaders, ExtendDown, ExtendLeft, ExtendRight, ExtendUp, FirstCell,
-    FirstOperator, LastCell, LastOperator, NextOperator, NextResult, PreviousOperator,
-    PreviousResult, SavePlan, SaveResults, SelectAll, SelectColumn, SelectRow, ToggleMaximise,
+    ChildOperator, CopyBlock, CopyBlockWithHeaders, ExtendDown, ExtendLeft, ExtendRight, ExtendUp,
+    FirstCell, FirstOperator, LastCell, LastOperator, NextOperator, NextResult, ParentOperator,
+    PreviousOperator, PreviousResult, SavePlan, SaveResults, SelectAll, SelectColumn, SelectRow,
+    ToggleMaximise,
 };
 use grid::{Block, Grid};
 use plan::{PlanState, PlanView, Step};
@@ -84,6 +85,8 @@ pub struct Results {
     grids: Vec<Entity<TableState<Grid>>>,
     /// The run's plans, one per statement, shown after the grids.
     plans: Vec<PlanView>,
+    /// True when plans show as a graph rather than a tree table (F9); kept across runs.
+    plan_graph: bool,
     /// The last run's spill files, kept while their grids show them.
     stores: Vec<Store>,
     /// The grid or plan the keyboard works on: grids count first, then plans.
@@ -118,6 +121,7 @@ impl Results {
         Self {
             grids: Vec::new(),
             plans: Vec::new(),
+            plan_graph: false,
             stores: Vec::new(),
             focused: 0,
             maximised: None,
@@ -200,6 +204,31 @@ impl Results {
     /// The grids and plans, together.
     fn sections(&self) -> usize {
         self.grids.len() + self.plans.len()
+    }
+
+    /// True when plans show as a graph rather than a tree table.
+    pub fn plan_graph(&self) -> bool {
+        self.plan_graph
+    }
+
+    /// F9: shows plans as a graph instead of a tree table, or the other way round, keeping
+    /// each plan's selected operator. With no plan shown, says which view plans will get.
+    pub fn toggle_plan_view(&mut self, cx: &mut Context<Self>) {
+        self.plan_graph = !self.plan_graph;
+        for plan in &self.plans {
+            plan.reveal();
+        }
+        if self.plans.is_empty() {
+            let view = if self.plan_graph {
+                "a graph"
+            } else {
+                "a tree table"
+            };
+            cx.emit(ResultsEvent::Message(
+                format!("Plans will show as {view}.").into(),
+            ));
+        }
+        cx.notify();
     }
 
     /// The focused section's plan, when it is one.
@@ -293,7 +322,7 @@ impl Results {
         self.plans
             .iter()
             .enumerate()
-            .map(|(ix, plan)| plan.state(self.grids.len() + ix == self.focused))
+            .map(|(ix, plan)| plan.state(self.grids.len() + ix == self.focused, self.plan_graph))
             .collect()
     }
 
@@ -661,7 +690,7 @@ impl Render for Results {
             .map(|ix| match ix.checked_sub(grid_count) {
                 None => self.grid(ix, cx).into_any_element(),
                 Some(plan) => self.plans[plan]
-                    .render(ix, plan + 1, ix == self.focused, cx)
+                    .render(ix, plan + 1, ix == self.focused, self.plan_graph, cx)
                     .into_any_element(),
             })
             .collect();
@@ -700,6 +729,14 @@ impl Render for Results {
             )
             .on_action(
                 cx.listener(|this, _: &LastOperator, _, cx| this.select_operator(Step::Last, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &ParentOperator, _, cx| {
+                    this.select_operator(Step::Parent, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &ChildOperator, _, cx| this.select_operator(Step::Child, cx)),
             )
             .on_action(cx.listener(|this, _: &SavePlan, w, cx| this.save_plan(w, cx)))
             .on_action(cx.listener(|this, _: &SaveResults, w, cx| this.save_results(w, cx)))

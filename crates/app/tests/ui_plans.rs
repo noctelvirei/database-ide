@@ -1,7 +1,8 @@
 //! Plans as a user drives them against the real SQL Server, PostgreSQL and MySQL servers from
 //! `dbide-test-servers` (CODE_STANDARDS.md, "UI E2E harness"): the estimated plan of a join
 //! (Ctrl+L), its actual plan with the run (Ctrl+M, F5), the costliest operator's details in
-//! the inspector, and on SQL Server the plan saved as a `.sqlplan` file and opened again.
+//! the inspector, the plan as a graph (F9) walked with the arrow keys, and on SQL Server the
+//! plan saved as a `.sqlplan` file and opened again.
 
 mod lab;
 mod passwords;
@@ -79,6 +80,10 @@ fn show_plans(server: &Server, to_plan: &[Value], save: Option<&std::path::Path>
         json!({ "name": "focus the plan", "input": focus_plan }),
         json!({ "name": "first operator", "input": [{ "key": "home" }] }),
         json!({ "name": "next operator", "input": [{ "key": "down" }] }),
+        json!({ "name": "graph", "input": [{ "key": "f9" }, { "shot": "graph" }] }),
+        json!({ "name": "to the parent", "input": [{ "key": "left" }] }),
+        json!({ "name": "to the first input", "input": [{ "key": "right" }, { "shot": "input" }] }),
+        json!({ "name": "back to the tree", "input": [{ "key": "f9" }] }),
     ];
     if let Some(file) = save {
         steps.push(json!({
@@ -150,6 +155,22 @@ fn show_plans(server: &Server, to_plan: &[Value], save: Option<&std::path::Path>
     let next = state(&lines, "next operator");
     assert_eq!(plan(next)["selected"], 1);
     assert_eq!(next["inspector"]["operator"], ops[1]["name"]);
+
+    // F9 shows the graph with the selection kept; Left goes to the operator the selected one
+    // feeds, the statement's root, and Right back to its first input. F9 again keeps it too.
+    let graph = state(&lines, "graph");
+    assert_eq!(plan(graph)["graph"], true, "{graph:#}");
+    assert_eq!(plan(graph)["selected"], 1);
+    assert_eq!(graph["inspector"]["operator"], ops[1]["name"]);
+    let parent = state(&lines, "to the parent");
+    assert_eq!(plan(parent)["selected"], 0, "{parent:#}");
+    assert_eq!(parent["inspector"]["operator"], ops[0]["name"]);
+    let input = state(&lines, "to the first input");
+    assert_eq!(plan(input)["selected"], 1, "{input:#}");
+    assert_eq!(input["inspector"]["operator"], ops[1]["name"]);
+    let tree = state(&lines, "back to the tree");
+    assert_eq!(plan(tree)["graph"], false, "{tree:#}");
+    assert_eq!(plan(tree)["selected"], 1);
     lines
 }
 
@@ -231,6 +252,55 @@ fn assert_rolled_back(lines: &[Value]) {
             .any(|m| m.as_str().unwrap().contains("rolled back")),
         "{ran:#}"
     );
+}
+
+#[test]
+fn ui_pg_graph_scrolls_to_the_selected_operator() {
+    let db = Postgres::start().expect("PostgreSQL test server");
+    let server = Server {
+        engine: Engine::PostgreSql,
+        host: db.host(),
+        port: db.port(),
+        user: db.user(),
+        password: db.password(),
+        database: db.database(),
+    };
+    for n in 1..=6 {
+        db.query(&format!("CREATE TABLE t{n} (id INT PRIMARY KEY)"))
+            .unwrap();
+    }
+    // Six tables joined in a chain: a plan wider and taller than the results pane.
+    let chain = "SELECT * FROM t1 JOIN t2 ON t2.id = t1.id JOIN t3 ON t3.id = t2.id \
+                 JOIN t4 ON t4.id = t3.id JOIN t5 ON t5.id = t4.id JOIN t6 ON t6.id = t5.id";
+    let dir = tempfile::tempdir().expect("temp dir");
+    let appdata = dir.path().join("appdata");
+    std::fs::create_dir(&appdata).expect("appdata folder");
+    let _forget = ForgetPasswords(&appdata);
+    server.save_as_lab(&appdata);
+    let steps = json!([
+        { "name": "open a tab", "input": [{ "key": "f8" }, { "key": "ctrl-n" }, "idle"] },
+        { "name": "plan", "input": [{ "text": chain }, { "key": "ctrl-l" }, "idle"] },
+        // The last operator is chosen while the tree shows, before the graph was ever drawn.
+        { "name": "last operator", "input": [{ "key": "f6" }, { "key": "f6" }, { "key": "end" }] },
+        { "name": "graph", "input": [{ "key": "f9" }, "idle", { "shot": "last" }] },
+        { "name": "first operator", "input": [{ "key": "home" }, "idle", { "shot": "first" }] },
+    ]);
+    let script = dir.path().join("script.json");
+    std::fs::write(&script, steps.to_string()).unwrap();
+    let lines = run_script(&script, Some(&appdata));
+
+    let last = state(&lines, "graph");
+    let shown = plan(last);
+    assert_eq!(shown["graph"], true, "{last:#}");
+    assert_eq!(
+        shown["selected"].as_u64().unwrap() as usize,
+        operators(shown).len() - 1,
+        "{last:#}"
+    );
+    assert_eq!(shown["selected_in_view"], true, "{last:#}");
+    let first = state(&lines, "first operator");
+    assert_eq!(plan(first)["selected"], 0);
+    assert_eq!(plan(first)["selected_in_view"], true, "{first:#}");
 }
 
 #[test]

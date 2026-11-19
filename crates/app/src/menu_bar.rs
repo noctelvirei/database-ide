@@ -27,7 +27,8 @@ use serde::Serialize;
 use crate::keymap::{
     CancelRun, ClosePanel, CopyBlock, EstimatedPlan, FocusExplorer, Format, NewConnection,
     NewQueryTab, NextPane, OpenFile, PickDatabase, PrevPane, Quit, Run, SaveFile, ShowAbout,
-    ShowHistory, ShowShortcuts, ToggleActualPlan, ToggleResults, ToggleResultsToFile,
+    ShowHistory, ShowShortcuts, ToggleActualPlan, TogglePlanView, ToggleResults,
+    ToggleResultsToFile,
 };
 
 /// One menu of the bar, left to right.
@@ -74,6 +75,8 @@ pub struct Situation {
     pub actual_plan: bool,
     pub results_to_file: bool,
     pub results_visible: bool,
+    /// The active tab's plans show as a graph.
+    pub plan_graph: bool,
     /// The results pane had focus: Edit's Copy and Select all work on its grid.
     pub in_results: bool,
     /// Where Edit's actions go, and the other menus' (the focus before the menu opened).
@@ -149,6 +152,7 @@ fn items(menu: Menu, s: &Situation) -> Vec<Item> {
         Menu::View => vec![
             item("Object explorer", FocusExplorer, true),
             toggle("Results", ToggleResults, s.results_visible),
+            toggle("Plan as graph", TogglePlanView, s.plan_graph),
             item("Next pane", NextPane, true),
             item("Previous pane", PrevPane, true),
             item("Query history", ShowHistory, true),
@@ -440,7 +444,15 @@ impl MenuBar {
                 .child(div().text_lg().child("Database IDE"))
                 .child(format!("Version {}", env!("CARGO_PKG_VERSION")))
                 .child("Licensed under MIT OR Apache-2.0.")
-                .child(env!("CARGO_PKG_REPOSITORY")),
+                .child(env!("CARGO_PKG_REPOSITORY"))
+                // The embedded plan icons' licence asks for its notice in every copy.
+                .child(
+                    div()
+                        .pt_2()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child(include_str!("../assets/plan-icons/LICENSE.txt")),
+                ),
         };
         Some(deferred(
             div()

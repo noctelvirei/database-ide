@@ -480,6 +480,7 @@ impl Workbench {
             actual_plan: tab.actual_plan,
             results_to_file: tab.results_to_file,
             results_visible: self.results_visible,
+            plan_graph: self.active_tab().read(cx).results().read(cx).plan_graph(),
             in_results: false,
             edit_target: self.focus_handle_of(Pane::Editor, cx),
             previous: self.focus_handle_of(Pane::Editor, cx),
@@ -789,9 +790,11 @@ impl Render for Workbench {
                     .clone()
                     .update(cx, |tab, cx| tab.toggle_results_to_file(cx));
             }))
-            .on_action(
-                cx.listener(|this, _: &TogglePlanView, _, cx| this.not_built("TogglePlanView", cx)),
-            )
+            .on_action(cx.listener(|this, _: &TogglePlanView, _, cx| {
+                this.last_action = Some("TogglePlanView");
+                let results = this.active_tab().read(cx).results().clone();
+                results.update(cx, |results, cx| results.toggle_plan_view(cx));
+            }))
             .on_action(cx.listener(|this, _: &NewQueryTab, w, cx| {
                 this.last_action = Some("NewQueryTab");
                 this.new_query_tab(w, cx);
