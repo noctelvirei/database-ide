@@ -2,11 +2,18 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use dbide_test_servers::mssql::Mssql;
+use dbide_test_servers::mssql::{CONNECT_TIMEOUT_SECS, Mssql, wait::QUERY_TIMEOUT};
 use mssql_tds::connection::client_context::{ClientContext, TdsAuthenticationMethod};
-use mssql_tds::connection::tds_client::StatementResult;
+use mssql_tds::connection::tds_client::{ResultSet, StatementResult, TdsClient};
 use mssql_tds::connection_provider::tds_connection_provider::TdsConnectionProvider;
 use mssql_tds::core::EncryptionSetting;
+
+// The stress case creates 40 databases; allow five minutes for its full lifecycle under load.
+const TEST_TIMEOUT: Duration = Duration::from_secs(300);
+// A ready child may first need the harness's full DDL budget to create its database.
+const CHILD_READY_TIMEOUT: Duration = Duration::from_secs(120);
+// Check file handshakes promptly without spinning while another process performs DDL.
+const CHILD_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 fn assert_removed(database: &Mssql, name: &str) {
     admin_query(
@@ -17,30 +24,125 @@ fn assert_removed(database: &Mssql, name: &str) {
     );
 }
 
-fn admin_query(database: &Mssql, sql: String) {
+struct Deadline(std::sync::mpsc::Sender<()>);
+
+impl Deadline {
+    fn new(test: &'static str) -> Self {
+        let (done, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            if matches!(
+                receiver.recv_timeout(TEST_TIMEOUT),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ) {
+                let runtime = tokio::runtime::Runtime::new().unwrap();
+                let message = format!(
+                    "{test}: exceeded {} seconds waiting for test/child completion; {}",
+                    TEST_TIMEOUT.as_secs(),
+                    runtime.block_on(dbide_test_servers::mssql::wait::diagnostics())
+                );
+                // Bypass libtest capture because exit cannot flush its per-test buffer.
+                let _ = writeln!(std::io::stderr(), "{message}");
+                // A panic would leave blocked test threads and child waits running.
+                std::process::exit(1);
+            }
+        });
+        Self(done)
+    }
+}
+
+impl Drop for Deadline {
+    fn drop(&mut self) {
+        let _ = self.0.send(());
+    }
+}
+
+fn admin_connection(database: &Mssql) -> (tokio::runtime::Runtime, TdsClient) {
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    runtime.block_on(async {
+    let client = runtime.block_on(async {
         let address = format!("tcp:{},{}", database.host(), database.port());
         let mut context = ClientContext::with_data_source(&address);
         context.database = "master".into();
+        context.application_name = "Database IDE test harness".into();
+        context.connect_timeout = CONNECT_TIMEOUT_SECS;
+        context.login_timeout = Some(CONNECT_TIMEOUT_SECS);
         context.tds_authentication_method = TdsAuthenticationMethod::SSPI;
         context.encryption_options.mode = EncryptionSetting::On;
         context.encryption_options.trust_server_certificate = true;
-        let mut admin = TdsConnectionProvider::new()
+        TdsConnectionProvider::new()
             .create_client(context, &address, None)
             .await
-            .unwrap();
-        let mut result = admin.execute(sql, ()).await.unwrap();
-        while !matches!(result, StatementResult::End) {
-            result = admin.advance().await.unwrap();
-        }
-        admin.close_query().await.unwrap();
-        admin.close_connection().await.unwrap();
+            .unwrap()
     });
+    (runtime, client)
+}
+
+fn admin_query(database: &Mssql, sql: String) {
+    let (runtime, mut admin) = admin_connection(database);
+    execute_admin(&runtime, &mut admin, sql);
+    runtime.block_on(admin.close_connection()).unwrap();
+}
+
+fn execute_admin(runtime: &tokio::runtime::Runtime, admin: &mut TdsClient, sql: String) {
+    let operation = sql.clone();
+    runtime
+        .block_on(async {
+            tokio::time::timeout(QUERY_TIMEOUT, async {
+                let mut result = admin.execute(sql, ()).await.unwrap();
+                while !matches!(result, StatementResult::End) {
+                    result = admin.advance().await.unwrap();
+                }
+                admin.close_query().await.unwrap();
+            })
+            .await
+        })
+        .unwrap_or_else(|_| panic!("Timed out waiting for admin query: {operation}"));
+}
+
+#[test]
+fn mssql_blocked_query_names_the_database_and_blocking_session() {
+    let _deadline = Deadline::new("mssql_blocked_query_names_the_database_and_blocking_session");
+    let database = Mssql::start().unwrap();
+    database.query("CREATE TABLE marker (value int);").unwrap();
+    let (runtime, mut blocker) = admin_connection(&database);
+    let session = runtime.block_on(async {
+        blocker.execute("SELECT @@SPID".into(), ()).await.unwrap();
+        let row = blocker.next_row().await.unwrap().unwrap();
+        let mssql_tds::datatypes::column_values::ColumnValues::SmallInt(session) = row[0] else {
+            panic!("@@SPID must be a smallint");
+        };
+        blocker.close_query().await.unwrap();
+        session
+    });
+    execute_admin(
+        &runtime,
+        &mut blocker,
+        format!(
+            "BEGIN TRAN; SELECT * FROM [{}].dbo.marker WITH (TABLOCKX, HOLDLOCK);",
+            database.database()
+        ),
+    );
+    let error = database
+        .query("SET LOCK_TIMEOUT 1000; INSERT INTO marker VALUES (1)")
+        .unwrap_err();
+    execute_admin(&runtime, &mut blocker, "ROLLBACK;".into());
+    runtime.block_on(blocker.close_connection()).unwrap();
+    let message = error.to_string();
+    assert!(message.contains(database.database()), "{message}");
+    assert!(message.contains("1222"), "{message}");
+    assert!(
+        message.contains(&format!(
+            "lock session={session} type=DATABASE database={}",
+            database.database()
+        )),
+        "{message}"
+    );
+    assert_eq!(database.query("SELECT 42").unwrap(), "42");
 }
 
 #[test]
 fn mssql_server_errors_are_diagnosable_and_leave_the_connection_usable() {
+    let _deadline =
+        Deadline::new("mssql_server_errors_are_diagnosable_and_leave_the_connection_usable");
     let database = Mssql::start().unwrap();
     let error = database
         .query("THROW 51042, 'Harness diagnostic test', 1;")
@@ -53,6 +155,8 @@ fn mssql_server_errors_are_diagnosable_and_leave_the_connection_usable() {
 
 #[test]
 fn mssql_parallel_handles_remain_usable_after_another_handle_panics() {
+    let _deadline =
+        Deadline::new("mssql_parallel_handles_remain_usable_after_another_handle_panics");
     let survivor = Mssql::start().unwrap();
     let threads: Vec<_> = (0..4).map(|_| std::thread::spawn(Mssql::start)).collect();
     let databases: Vec<_> = threads
@@ -78,32 +182,71 @@ fn mssql_parallel_handles_remain_usable_after_another_handle_panics() {
 
 #[test]
 fn mssql_new_run_sweeps_crashed_run_without_waiting_for_global_lock() {
+    let _deadline =
+        Deadline::new("mssql_new_run_sweeps_crashed_run_without_waiting_for_global_lock");
     const CHILD_MODE: &str = "DBIDE_MSSQL_CLEANUP_CHILD";
     const CHILD_FILE: &str = "DBIDE_MSSQL_CLEANUP_FILE";
     if let Ok(mode) = std::env::var(CHILD_MODE) {
-        let file = std::env::var_os(CHILD_FILE).unwrap();
+        let file = std::path::PathBuf::from(std::env::var_os(CHILD_FILE).unwrap());
         let database = Mssql::start().unwrap();
         if mode == "crash" {
-            std::fs::write(file, database.database()).unwrap();
+            database
+                .query("CREATE TABLE marker (value int); INSERT INTO marker VALUES (1);")
+                .unwrap();
+            std::fs::write(file.with_extension("tmp"), database.database()).unwrap();
+            std::fs::rename(file.with_extension("tmp"), file).unwrap();
+            let mut release = String::new();
+            std::io::stdin().read_line(&mut release).unwrap();
+            assert_eq!(release, "go\n");
             // Skip Drop, as when a test process dies with its sessions still open.
             std::process::exit(0);
         }
         let name = std::fs::read_to_string(file).unwrap();
+        if mode == "blocked" {
+            admin_query(
+                &database,
+                format!(
+                    "IF DB_ID(N'{name}') IS NULL THROW 51000, 'Database with external locks was swept', 1;"
+                ),
+            );
+            return;
+        }
         assert_removed(&database, &name);
         return;
     }
     let folder = tempfile::tempdir().unwrap();
     let file = folder.path().join("database.txt");
     let survivor = Mssql::start().unwrap();
-    let crashed = Command::new(std::env::current_exe().unwrap())
+    let mut crashed = Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
             "mssql_new_run_sweeps_crashed_run_without_waiting_for_global_lock",
         ])
         .env(CHILD_MODE, "crash")
         .env(CHILD_FILE, &file)
-        .output()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .unwrap();
+    // Acquire the external lock before the owner exits, so another concurrent sweep
+    // cannot delete the fixture between its creation and the regression check.
+    while !file.exists() {
+        assert!(
+            crashed.try_wait().unwrap().is_none(),
+            "Crash child exited before creating its database"
+        );
+        std::thread::sleep(CHILD_POLL_INTERVAL);
+    }
+    let name = std::fs::read_to_string(&file).unwrap();
+    let (runtime, mut blocker) = admin_connection(&survivor);
+    execute_admin(
+        &runtime,
+        &mut blocker,
+        format!("BEGIN TRAN; SELECT * FROM [{name}].dbo.marker WITH (TABLOCKX, HOLDLOCK);"),
+    );
+    crashed.stdin.take().unwrap().write_all(b"go\n").unwrap();
+    let crashed = crashed.wait_with_output().unwrap();
     assert!(
         crashed.status.success(),
         "stdout: {}\nstderr: {}",
@@ -112,6 +255,23 @@ fn mssql_new_run_sweeps_crashed_run_without_waiting_for_global_lock() {
     );
     // A session left by the old harness must not serialize new test databases.
     survivor.query("USE master; DECLARE @rc int; EXEC @rc = sys.sp_getapplock @Resource = N'dbide_test_harness', @LockMode = 'Exclusive', @LockOwner = 'Session', @LockTimeout = 0; IF @rc < 0 THROW 51000, 'Could not set up old harness lock', 1;").unwrap();
+    let blocked = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "mssql_new_run_sweeps_crashed_run_without_waiting_for_global_lock",
+        ])
+        .env(CHILD_MODE, "blocked")
+        .env(CHILD_FILE, &file)
+        .output()
+        .unwrap();
+    execute_admin(&runtime, &mut blocker, "ROLLBACK;".into());
+    runtime.block_on(blocker.close_connection()).unwrap();
+    assert!(
+        blocked.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&blocked.stdout),
+        String::from_utf8_lossy(&blocked.stderr)
+    );
     let verified = Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
@@ -137,6 +297,7 @@ fn mssql_new_run_sweeps_crashed_run_without_waiting_for_global_lock() {
 
 #[test]
 fn mssql_processes_create_and_drop_databases_concurrently() {
+    let _deadline = Deadline::new("mssql_processes_create_and_drop_databases_concurrently");
     const CHILD: &str = "DBIDE_MSSQL_CONCURRENT_CHILD";
     const FOLDER: &str = "DBIDE_MSSQL_CONCURRENT_FOLDER";
     if let Ok(id) = std::env::var(CHILD) {
@@ -185,13 +346,13 @@ fn mssql_processes_create_and_drop_databases_concurrently() {
                 .unwrap()
         })
         .collect();
-    let deadline = Instant::now() + Duration::from_secs(120);
+    let deadline = Instant::now() + CHILD_READY_TIMEOUT;
     while (0..4).any(|id| !folder.path().join(id.to_string()).exists()) {
         assert!(
             Instant::now() < deadline,
             "Concurrent children did not become ready"
         );
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(CHILD_POLL_INTERVAL);
     }
     for child in &mut children {
         child.stdin.take().unwrap().write_all(b"go\n").unwrap();
@@ -209,6 +370,7 @@ fn mssql_processes_create_and_drop_databases_concurrently() {
 
 #[test]
 fn mssql_sweep_preserves_another_live_process_database() {
+    let _deadline = Deadline::new("mssql_sweep_preserves_another_live_process_database");
     const CHILD: &str = "DBIDE_MSSQL_LIVE_CHILD";
     const FILE: &str = "DBIDE_MSSQL_LIVE_FILE";
     if let Ok(mode) = std::env::var(CHILD) {
@@ -259,7 +421,7 @@ fn mssql_sweep_preserves_another_live_process_database() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(120);
+    let deadline = Instant::now() + CHILD_READY_TIMEOUT;
     while !file.exists() {
         assert!(
             Instant::now() < deadline,
@@ -273,7 +435,7 @@ fn mssql_sweep_preserves_another_live_process_database() {
                 String::from_utf8_lossy(&output.stderr)
             );
         }
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(CHILD_POLL_INTERVAL);
     }
     let swept = Command::new(std::env::current_exe().unwrap())
         .args([
