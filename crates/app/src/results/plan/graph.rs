@@ -117,12 +117,6 @@ fn segment(x: f32, y: f32, length: f32, width: f32, across: bool) -> gpui::Div {
 }
 
 impl PlanView {
-    /// Asks for the graph to scroll the selected operator's box into view the next time it is
-    /// drawn at a known size: at once when it is shown, otherwise when F9 shows it.
-    pub(in crate::results) fn reveal(&self) {
-        self.reveal_pending.set(true);
-    }
-
     /// An empty element laid over the graph's scroll area, the same size, drawn just before
     /// it. If `reveal` asked, it scrolls the selected box into view by the least amount while
     /// the frame is laid out: the area's size is known only then, and gpui's own

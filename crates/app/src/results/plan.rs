@@ -193,8 +193,15 @@ impl PlanView {
                 _ => at,
             },
         };
-        self.scroll.scroll_to_item(self.selected);
         self.reveal();
+    }
+
+    /// Scrolls the selected operator into view in both the tree table and the graph, each the
+    /// next time it is drawn: at once in the view shown, and in the other when F9 shows it.
+    pub(super) fn reveal(&self) {
+        self.scroll.scroll_to_item(self.selected);
+        // The graph scrolls itself as it is laid out (`graph.rs`).
+        self.reveal_pending.set(true);
     }
 
     /// What a user can see of the plan; `graph` says it is shown as a graph.
