@@ -382,9 +382,13 @@ async fn mssql_danger_estimate_matches_rows_without_deleting() {
     let mut session = open(&database).await;
     setup(&mut session, "CREATE TABLE t(n int); INSERT INTO t SELECT value FROM GENERATE_SERIES(1,100); UPDATE STATISTICS t WITH FULLSCAN").await;
     let flagged = danger::check("DELETE FROM t", Engine::SqlServer);
-    let estimate = mssql::estimate_rows(&mut session, "DELETE FROM t", &flagged.statements)
-        .await
-        .unwrap();
+    let estimate = danger::estimates::estimate_rows(
+        &mut session,
+        "DELETE FROM t",
+        &flagged,
+        Engine::SqlServer,
+    )
+    .await;
     assert!((estimate[0].unwrap() - 100.0).abs() < 1.0);
     let events: Vec<_> = session.run("SELECT COUNT(*) FROM t").collect().await;
     assert_eq!(events[1], Event::Rows(vec![vec![Value::Integer(100)]]));
@@ -397,9 +401,8 @@ async fn mssql_danger_estimate_skips_a_safe_delete_on_the_same_line() {
     setup(&mut session, "CREATE TABLE t(n int PRIMARY KEY); INSERT INTO t SELECT value FROM GENERATE_SERIES(1,100); UPDATE STATISTICS t WITH FULLSCAN").await;
     let script = "DELETE FROM t WHERE n = 1; DELETE FROM t";
     let flagged = danger::check(script, Engine::SqlServer);
-    let estimate = mssql::estimate_rows(&mut session, script, &flagged.statements)
-        .await
-        .unwrap();
+    let estimate =
+        danger::estimates::estimate_rows(&mut session, script, &flagged, Engine::SqlServer).await;
     assert_eq!(estimate.len(), 1);
     assert!((estimate[0].unwrap() - 100.0).abs() < 1.0, "{estimate:?}");
 }
@@ -507,9 +510,8 @@ async fn mssql_danger_estimate_matches_delete_after_a_multiline_cte() {
     let sql = "WITH targets AS (SELECT n FROM t)\nDELETE FROM targets";
     let flagged = danger::check(sql, Engine::SqlServer);
     assert_eq!(flagged.statements[0].line, 2);
-    let estimate = mssql::estimate_rows(&mut session, sql, &flagged.statements)
-        .await
-        .unwrap();
+    let estimate =
+        danger::estimates::estimate_rows(&mut session, sql, &flagged, Engine::SqlServer).await;
     assert!((estimate[0].unwrap() - 100.0).abs() < 1.0);
 }
 

@@ -1,4 +1,4 @@
-//! MySQL version 2 iterator JSON; unknown fields remain available in the inspector.
+//! MySQL iterator JSON and single-table version 1 estimates, retaining raw properties.
 
 use serde_json::Value;
 
@@ -16,10 +16,13 @@ pub enum Error {
     Invalid(String),
 }
 
-/// Parses EXPLAIN FORMAT=JSON with explain_json_format_version=2, with or without ANALYZE.
+/// Parses version 2 EXPLAIN JSON, or version 1 single-table estimated data changes.
 /// Rows and elapsed milliseconds are totals over loops; raw counters retain server units.
 pub fn parse(payload: &str) -> Result<Plan, Error> {
     let node: Value = serde_json::from_str(payload)?;
+    if let Some(block) = node.get("query_block") {
+        return single_table(payload, block);
+    }
     let cost = number(&node, "estimated_total_cost")?.unwrap_or(0.0);
     Ok(Plan {
         payload: payload.into(),
@@ -29,6 +32,63 @@ pub fn parse(payload: &str) -> Result<Plan, Error> {
             root: operator(&node, cost, 1.0, 0)?,
         }],
         properties: Vec::new(),
+    })
+}
+
+fn single_table(payload: &str, block: &Value) -> Result<Plan, Error> {
+    let table = block
+        .get("table")
+        .ok_or_else(|| Error::Invalid("no single-table estimate".into()))?;
+    let rows = number(table, "rows_examined_per_scan")?
+        .ok_or_else(|| Error::Invalid("table has no row estimate".into()))?;
+    // Version 1 encodes the percentage as a decimal string, unlike version 2 counters.
+    let filtered = match table.get("filtered") {
+        Some(value) => value
+            .as_str()
+            .and_then(|value| value.parse::<f64>().ok())
+            .or_else(|| value.as_f64())
+            .filter(|value| value.is_finite() && (0.0..=100.0).contains(value))
+            .ok_or_else(|| Error::Invalid("filtered must be a percentage".into()))?,
+        None => 100.0,
+    };
+    let name = string(table, "access_type").unwrap_or_else(|| "Table access".into());
+    let mut properties = Vec::new();
+    raw_json(table, "", None, &mut properties);
+    Ok(Plan {
+        payload: payload.into(),
+        format: PlanFormat::MySqlJson,
+        statements: vec![Statement {
+            text: None,
+            root: Operator {
+                kind: name.clone(),
+                name,
+                estimated_rows: rows * (filtered / 100.0),
+                estimated_rows_total: rows * (filtered / 100.0),
+                actual_rows: None,
+                subtree_cost: 0.0,
+                own_cost: 0.0,
+                cost_percent: 0.0,
+                elapsed_ms: None,
+                cpu_ms: None,
+                logical_reads: None,
+                physical_reads: None,
+                warnings: Vec::new(),
+                object: Some(Object {
+                    database: None,
+                    schema: None,
+                    table: string(table, "table_name"),
+                    index: string(table, "key"),
+                }),
+                parallel: false,
+                children: Vec::new(),
+                properties,
+            },
+        }],
+        properties: {
+            let mut properties = Vec::new();
+            raw_json(block, "query_block", Some("table"), &mut properties);
+            properties
+        },
     })
 }
 

@@ -459,3 +459,30 @@ fn postgres_gather_and_its_worker_subtree_are_parallel() {
     assert!(plan.statements[0].root.children[0].parallel);
     assert!(!plan.statements[0].root.children[1].parallel);
 }
+
+#[test]
+fn mysql_single_table_estimate_applies_filter_and_keeps_raw_payload() {
+    let payload = r#"{"query_block":{"select_id":1,"table":{"table_name":"t","access_type":"ALL","rows_examined_per_scan":100,"filtered":"25.00","update":true}}}"#;
+    let plan = plan::parse(payload, PlanFormat::MySqlJson).unwrap();
+    assert_eq!(plan.statements[0].root.estimated_rows, 25.0);
+    assert_eq!(plan.statements[0].root.actual_rows, None);
+    assert_eq!(plan.payload(), payload);
+    assert!(
+        plan.statements[0]
+            .root
+            .properties
+            .iter()
+            .any(|property| property.name == "update" && property.value == "true")
+    );
+}
+
+#[test]
+fn mysql_missing_single_table_estimate_is_not_zero() {
+    assert!(
+        plan::parse(
+            r#"{"query_block":{"table":{"table_name":"t","message":"Deleting all rows"}}}"#,
+            PlanFormat::MySqlJson
+        )
+        .is_err()
+    );
+}
