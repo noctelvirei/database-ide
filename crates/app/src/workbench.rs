@@ -272,6 +272,7 @@ impl Workbench {
     }
 
     fn focus_pane(&mut self, pane: Pane, window: &mut Window, cx: &mut Context<Self>) {
+        self.menu_bar.update(cx, |bar, cx| bar.dismiss_panel(cx));
         match pane {
             Pane::Explorer => self
                 .explorer
@@ -398,16 +399,14 @@ impl Workbench {
         }
     }
 
-    /// What the menus need to know now. While a menu is open, the one it was opened for, so
-    /// the focus it records is the one before any menu took it.
+    /// What the menus need to know now. The tab's state is always current; the focus is the
+    /// one before any menu or Help panel took it.
     fn situation(&self, window: &Window, cx: &App) -> Situation {
-        if let Some(open) = self.menu_bar.read(cx).situation() {
-            return open.clone();
-        }
+        let bar = self.menu_bar.read(cx);
         let tab = self.active_tab().read(cx).state(cx);
         let editor = self.focus_handle_of(Pane::Editor, cx);
         let in_results = self.focused_pane(window, cx) == Some(Pane::Results);
-        Situation {
+        let mut situation = Situation {
             ready: tab.status == crate::query_tab::Status::Ready,
             running: tab.status == crate::query_tab::Status::Running,
             actual_plan: tab.actual_plan,
@@ -421,7 +420,15 @@ impl Workbench {
                 _ => editor.clone(),
             },
             previous: window.focused(cx).unwrap_or(editor),
+        };
+        if let Some(open) = bar.situation() {
+            situation.in_results = open.in_results;
+            situation.edit_target = open.edit_target.clone();
+            situation.previous = open.previous.clone();
+        } else if let Some(back) = bar.panel_return() {
+            situation.previous = back.clone();
         }
+        situation
     }
 
     /// Alt+its letter, F10 or a click: opens `menu`.

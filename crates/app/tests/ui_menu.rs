@@ -113,6 +113,30 @@ fn ui_pg_menus_open_by_alt_letter_run_queries_and_list_the_shortcuts() {
                 { "key": "up" },
             ],
         },
+        {
+            "name": "about, then another pane",
+            "input": [
+                { "key": "alt-h" },
+                { "key": "down" },
+                { "key": "down" },
+                { "key": "enter" },
+                { "key": "f6" },
+                "idle",
+            ],
+        },
+        {
+            "name": "query after a run ends under file",
+            "input": [
+                { "key": "ctrl-n" },
+                "idle",
+                { "text": "SELECT pg_sleep(1)" },
+                { "key": "f5" },
+                "running",
+                { "key": "alt-f" },
+                "idle",
+                { "key": "alt-q" },
+            ],
+        },
     ]);
     let script = dir.path().join("script.json");
     std::fs::write(&script, steps.to_string()).unwrap();
@@ -199,6 +223,9 @@ fn ui_pg_menus_open_by_alt_letter_run_queries_and_list_the_shortcuts() {
     let closed = state(&lines, "shortcuts closed");
     assert_eq!(closed["menu_bar"]["panel"], Value::Null);
     assert_eq!(closed["focused_pane"], "Editor", "{closed:#}");
+    // A panel closes when focus leaves it, so Escape is never out of reach.
+    let away = state(&lines, "about, then another pane");
+    assert_eq!(away["menu_bar"]["panel"], Value::Null, "{away:#}");
 
     // Opening Edit over a grid and closing it leaves the grid's own keys working.
     let grid = state(&lines, "grid keys after edit");
@@ -206,5 +233,11 @@ fn ui_pg_menus_open_by_alt_letter_run_queries_and_list_the_shortcuts() {
         grid["results"][0]["block"],
         json!({ "rows": { "start": 1, "end": 2 }, "columns": { "start": 0, "end": 1 } }),
         "{grid:#}"
+    );
+
+    // A menu opened after the run ended shows it as over, though File was open meanwhile.
+    assert_eq!(
+        open("query after a run ends under file"),
+        (json!("Query"), query("[ ]"))
     );
 }

@@ -272,6 +272,7 @@ impl MenuBar {
             }
         })
         .detach();
+        self.dismiss_panel(cx);
         popup.focus_handle(cx).focus(window, cx);
         self.open = Some(OpenMenu {
             menu,
@@ -315,14 +316,25 @@ impl MenuBar {
         self.show_panel(Panel::About, window, cx);
     }
 
+    /// Where focus goes back to when the open Help panel closes, if one is open.
+    pub fn panel_return(&self) -> Option<&FocusHandle> {
+        self.panel.as_ref().and(self.panel_return.as_ref())
+    }
+
     fn show_panel(&mut self, panel: Panel, window: &mut Window, cx: &mut Context<Self>) {
-        // Replacing an open panel keeps the focus it will hand back.
-        if self.panel.is_none() {
-            self.panel_return = window.focused(cx);
-        }
+        self.panel_return = window.focused(cx);
         self.panel = Some(panel);
         self.panel_focus.focus(window, cx);
         cx.notify();
+    }
+
+    /// Closes the open Help panel without moving focus: a click elsewhere, a move to a pane or
+    /// a menu takes focus from it, and Escape would no longer reach it.
+    pub fn dismiss_panel(&mut self, cx: &mut Context<Self>) {
+        if self.panel.take().is_some() {
+            self.panel_return = None;
+            cx.notify();
+        }
     }
 
     fn close_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -333,10 +345,11 @@ impl MenuBar {
         cx.notify();
     }
 
-    /// Left or Right in an open menu: the menu beside it.
+    /// Left or Right in an open menu: the menu beside it, opened as Alt+its letter would, so
+    /// its items reflect the workbench now.
     fn step(&mut self, step: isize, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(open) = self.open.take() {
-            self.open(open.menu.step(step), open.situation, window, cx);
+        if let Some(open) = &self.open {
+            window.dispatch_action(open_action(open.menu.step(step)), cx);
         }
     }
 
@@ -395,6 +408,7 @@ impl MenuBar {
                 .key_context("MenuPanel")
                 .track_focus(&self.panel_focus)
                 .on_action(cx.listener(|this, _: &ClosePanel, w, cx| this.close_panel(w, cx)))
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| this.dismiss_panel(cx)))
                 .absolute()
                 .top(px(40.))
                 .left(px(300.))
