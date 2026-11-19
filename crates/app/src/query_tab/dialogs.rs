@@ -5,7 +5,8 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use dbide_engine::danger::{DangerCheck, DangerKind};
-use futures::channel::oneshot;
+use futures::StreamExt as _;
+use futures::channel::{mpsc, oneshot};
 use gpui::{
     App, AppContext as _, Context, Entity, Focusable as _, InteractiveElement as _,
     ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
@@ -247,10 +248,10 @@ pub(super) fn ask_before_running(
     cx.notify();
 }
 
-/// Takes the tab's session to estimate the flagged statements' rows, then gives it back,
-/// fills the estimates into the dialog if it is still open, and runs the batch if
-/// `run_when_free` was set meanwhile. Returns the sender whose drop stops the estimating;
-/// `None`, with nothing started, when the tab has no free session.
+/// Takes the tab's session to estimate the flagged statements' rows, fills each estimate
+/// into the dialog as it arrives while the dialog is open, then gives the session back and
+/// runs the batch if `run_when_free` was set meanwhile. Returns the sender whose drop stops
+/// the estimating; `None`, with nothing started, when the tab has no free session.
 fn estimate(
     tab: &mut QueryTab,
     batch: &str,
@@ -264,26 +265,30 @@ fn estimate(
     let session = tab.session.take()?;
     tab.status = Status::Estimating;
     let (stop, stopped) = oneshot::channel();
-    let estimating = tab
-        .runtime
-        .estimate_rows(session, batch.to_owned(), check, engine, stopped);
+    let (found, mut arriving) = mpsc::unbounded();
+    let estimating =
+        tab.runtime
+            .estimate_rows(session, batch.to_owned(), check, engine, found, stopped);
     let batch = batch.to_owned();
     cx.spawn_in(window, async move |this, cx| {
-        let (session, estimates) = estimating.await;
+        // Ends when the estimating finishes or is stopped, which closes `found`.
+        while let Some((index, estimate)) = arriving.next().await {
+            let _ = this.update(cx, |this, cx| {
+                if let Some(OpenDialog::Danger { state, .. }) = &mut this.dialog
+                    && let Some(flagged) = state.statements.get_mut(index)
+                    && flagged.rows.is_some()
+                {
+                    flagged.rows = Some(match estimate {
+                        Some(rows) if rows.is_finite() => Rows::About(rows.max(0.0).round() as u64),
+                        _ => Rows::Unknown,
+                    });
+                    cx.notify();
+                }
+            });
+        }
+        let session = estimating.await;
         let _ = this.update_in(cx, |this, window, cx| {
             this.give_back(session);
-            if let Some(OpenDialog::Danger { state, .. }) = &mut this.dialog {
-                for (flagged, estimate) in state.statements.iter_mut().zip(estimates) {
-                    if flagged.rows.is_some() {
-                        flagged.rows = Some(match estimate {
-                            Some(rows) if rows.is_finite() => {
-                                Rows::About(rows.max(0.0).round() as u64)
-                            }
-                            _ => Rows::Unknown,
-                        });
-                    }
-                }
-            }
             if run_when_free.get() {
                 this.go(batch, first_line, window, cx);
             }

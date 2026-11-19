@@ -30,10 +30,13 @@
 //! `{ "path": "C:\\plans\\join.sqlplan" }` before the key that opens or saves. A dialog with
 //! no path queued reads as cancelled; no real dialog opens under a script.
 //!
-//! An `"idle"` input waits, up to 30 s, until nothing is connecting, testing, running,
-//! switching or listing, so a script can check an outcome without guessing how long it takes.
-//! A `"running"` input waits, up to 30 s, until the active tab's run has started, so a script
-//! can cancel a run that is under way rather than one still being set up.
+//! Three inputs wait, each up to `WAIT_LIMIT`, so a script can check an outcome without
+//! guessing how long it takes. `"idle"` waits until nothing is connecting, testing, running,
+//! switching or listing. `"running"` waits until the active tab's run has started, so a
+//! script can cancel a run that is under way rather than one still being set up.
+//! `{ "until": "/tab_dialog/statements/0/rows/about" }` waits until the state line would
+//! hold a value at that JSON pointer (RFC 6901), for a moment the other two can't name,
+//! such as one estimate in while another is still pending.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -74,6 +77,8 @@ enum Input {
     Idle,
     /// Waits until the active tab's run has started. Written as the string `"running"`.
     Running,
+    /// Waits until the visible state has a non-null value at this JSON pointer.
+    Until(String),
 }
 
 /// A script read from disk, ready to play.
@@ -163,9 +168,20 @@ impl UiScript {
                         let path = path.clone();
                         let _ = cx.update(|_, cx| cx.global_mut::<ScriptedPaths>().push(path));
                     }
-                    Input::Idle => wait_until(&mut cx, &workbench, |wb, cx| !wb.is_busy(cx)).await,
+                    Input::Idle => {
+                        wait_until(&mut cx, &workbench, |wb, _, cx| !wb.is_busy(cx)).await;
+                    }
                     Input::Running => {
-                        wait_until(&mut cx, &workbench, Workbench::is_running).await;
+                        wait_until(&mut cx, &workbench, |wb, _, cx| wb.is_running(cx)).await;
+                    }
+                    Input::Until(pointer) => {
+                        wait_until(&mut cx, &workbench, |wb, window, cx| {
+                            serde_json::to_value(wb.visible_state(window, cx))
+                                .ok()
+                                .and_then(|state| state.pointer(pointer).cloned())
+                                .is_some_and(|value| !value.is_null())
+                        })
+                        .await;
                     }
                 }
                 pause(50).await;
@@ -230,7 +246,7 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(name)
 }
 
-/// How long one `idle` or `running` step waits. Two million-row saves and a million-row run
+/// How long one `idle`, `running` or `until` input waits. Two million-row saves and a million-row run
 /// take about 30 s on a loaded machine, so this leaves room for slower ones; the whole
 /// script still has the test harness's own deadline.
 const WAIT_LIMIT: Duration = Duration::from_secs(100);
@@ -241,12 +257,12 @@ const WAIT_LIMIT: Duration = Duration::from_secs(100);
 async fn wait_until(
     cx: &mut AsyncWindowContext,
     workbench: &WeakEntity<Workbench>,
-    done: impl Fn(&Workbench, &gpui::App) -> bool,
+    done: impl Fn(&Workbench, &gpui::Window, &gpui::App) -> bool,
 ) {
     let started = Instant::now();
     loop {
         let finished = cx
-            .update(|_, cx| workbench.read_with(cx, |wb, cx| done(wb, cx)))
+            .update(|window, cx| workbench.read_with(cx, |wb, cx| done(wb, window, cx)))
             .ok()
             .and_then(Result::ok)
             .unwrap_or(true);
@@ -255,7 +271,7 @@ async fn wait_until(
         }
         assert!(
             started.elapsed() < WAIT_LIMIT,
-            "the workbench was still busy after {} s",
+            "the awaited state didn't come within {} s",
             WAIT_LIMIT.as_secs()
         );
         let executor = cx.background_executor().clone();

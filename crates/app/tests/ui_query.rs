@@ -2,6 +2,7 @@
 //! from `dbide-test-servers` (CODE_STANDARDS.md, "UI E2E harness"): open a tab on a saved
 //! connection, run a batch with an error and jump to its line, cancel a long query, decline a
 //! DELETE with no WHERE once its estimated rows are in, run one anyway, and switch database.
+//! On PostgreSQL, the danger dialog also shows one estimate while another waits on a lock.
 //!
 //! The connection and its password are saved before the app starts, in a temp APPDATA and
 //! under the tests' Credential Manager service, which the test empties afterwards. Scripts are
@@ -11,10 +12,13 @@ mod lab;
 mod passwords;
 mod support;
 
+use dbide_engine::connections::{Connection, TlsMode};
 use dbide_engine::danger::Engine;
+use dbide_engine::session::{Event, Session as _};
 use dbide_test_servers::mssql::Mssql;
 use dbide_test_servers::mysql::MySql;
 use dbide_test_servers::postgres::Postgres;
+use futures::StreamExt as _;
 use lab::Server;
 use passwords::ForgetPasswords;
 use serde_json::{Value, json};
@@ -252,6 +256,89 @@ fn ui_pg_a_query_tab_runs_jumps_to_errors_cancels_asks_and_switches() {
         postgres.query(GONE).unwrap().trim(),
         "0",
         "Run anyway ran the DELETE"
+    );
+}
+
+/// Two flagged DELETEs where a second connection holds the second one's table: the dialog
+/// shows the first estimate while the second still waits, and declining leaves both tables
+/// as they were.
+#[test]
+fn ui_pg_danger_dialog_shows_each_estimate_as_it_arrives() {
+    let postgres = Postgres::start().expect("PostgreSQL test server");
+    postgres
+        .query(&format!(
+            "{SEED} CREATE TABLE held (id int); INSERT INTO held VALUES (1);"
+        ))
+        .unwrap();
+    let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+    let mut locker = runtime.block_on(async {
+        let mut details = Connection::new(Engine::PostgreSql, postgres.host());
+        details.port = Some(postgres.port());
+        details.user = Some(postgres.user().into());
+        details.database = Some(postgres.database().into());
+        details.tls = TlsMode::Off;
+        let mut session = dbide_engine::postgres::connect(&details, Some(postgres.password()))
+            .await
+            .expect("locking connection");
+        let events: Vec<_> = session
+            .run("BEGIN; LOCK TABLE held IN ACCESS EXCLUSIVE MODE")
+            .collect()
+            .await;
+        assert!(
+            !events.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{events:?}"
+        );
+        session
+    });
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let appdata = dir.path().join("appdata");
+    std::fs::create_dir(&appdata).expect("appdata folder");
+    let _forget = ForgetPasswords(&appdata);
+    Server {
+        engine: Engine::PostgreSql,
+        host: postgres.host(),
+        port: postgres.port(),
+        user: postgres.user(),
+        password: postgres.password(),
+        database: postgres.database(),
+    }
+    .save_as_lab(&appdata);
+    let mut asking = type_lines(&["DELETE FROM kept;", "DELETE FROM held;"]);
+    asking.extend([
+        json!({ "key": "f5" }),
+        json!({ "until": "/tab_dialog/statements/0/rows/about" }),
+        json!({ "shot": "danger-one-in" }),
+    ]);
+    let steps = json!([
+        { "name": "open a tab", "input": [{ "key": "f8" }, { "key": "ctrl-n" }, "idle"] },
+        { "name": "ask before two DELETEs", "input": asking },
+        { "name": "decline while one waits", "input": [{ "key": "escape" }, "idle"] },
+    ]);
+    let script = dir.path().join("script.json");
+    std::fs::write(&script, steps.to_string()).unwrap();
+    let lines = run_script(&script, Some(&appdata));
+
+    let one_in = state(&lines, "ask before two DELETEs");
+    let statements = &one_in["tab_dialog"]["statements"];
+    assert!(statements[0]["rows"]["about"].is_u64(), "{one_in:#}");
+    assert_eq!(statements[1]["rows"], "estimating", "{one_in:#}");
+    let declined = state(&lines, "decline while one waits");
+    assert_eq!(declined["tab_dialog"], Value::Null, "{declined:#}");
+    assert_eq!(active_tab(declined)["status"], "ready", "{declined:#}");
+
+    runtime.block_on(async {
+        let _: Vec<_> = locker.run("ROLLBACK").collect().await;
+    });
+    assert_eq!(
+        postgres.query(COUNT).unwrap().trim(),
+        "1",
+        "kept is unchanged"
+    );
+    assert_eq!(
+        postgres.query("SELECT count(*) FROM held;").unwrap().trim(),
+        "1",
+        "held is unchanged"
     );
 }
 
