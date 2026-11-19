@@ -53,6 +53,8 @@ pub enum ExplorerEvent {
         target: Box<QueryTarget>,
         text: String,
     },
+    /// A restored tab's connection is signed in: hand it this target (`Explorer::resume`).
+    Resume(Box<QueryTarget>),
 }
 
 /// One explorer row as the user sees it, top to bottom.

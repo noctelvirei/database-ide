@@ -188,7 +188,7 @@ fn ui_pg_menus_open_by_alt_letter_run_queries_and_list_the_shortcuts() {
     };
     let open = |step: &str| menu(state(&lines, step));
 
-    let file = strings(&["New query", "New connection", "Open…", "Exit"]);
+    let file = strings(&["New query", "New connection", "Open…", "Save", "Exit"]);
     assert_eq!(open("file"), (json!("File"), file));
     let edit = strings(&[
         "Undo",
@@ -207,6 +207,7 @@ fn ui_pg_menus_open_by_alt_letter_run_queries_and_list_the_shortcuts() {
         "Results [x]",
         "Next pane",
         "Previous pane",
+        "Query history",
     ]);
     assert_eq!(open("view"), (json!("View"), view));
     assert_eq!(open("query"), (json!("Query"), query("[ ]")));

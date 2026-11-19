@@ -23,6 +23,8 @@ enum AfterSignIn {
     Connect,
     /// Hand the connection to the workbench for a new query tab.
     OpenQuery,
+    /// Hand the connection to the workbench for a restored tab's first run.
+    Resume,
 }
 
 impl Explorer {
@@ -120,17 +122,55 @@ impl Explorer {
     ) {
         match after {
             AfterSignIn::Connect => self.connect(saved, password, window, cx),
-            AfterSignIn::OpenQuery => {
+            AfterSignIn::OpenQuery | AfterSignIn::Resume => {
                 self.dialog = None;
-                let settings = self.saved.effective_settings(&saved.id).ok();
-                cx.emit(ExplorerEvent::OpenQuery(Box::new(QueryTarget {
-                    saved: saved.clone(),
-                    colour: settings.as_ref().and_then(|s| s.colour).map(str::to_owned),
-                    danger_check: settings.is_none_or(|s| s.danger_check),
-                    password: password.map(HeldPassword::new),
-                })));
+                let mut target = self.query_target(saved);
+                target.password = password.map(HeldPassword::new);
+                let target = Box::new(target);
+                cx.emit(match after {
+                    AfterSignIn::Resume => ExplorerEvent::Resume(target),
+                    _ => ExplorerEvent::OpenQuery(target),
+                });
             }
         }
+    }
+
+    /// A query tab's target on `saved`, with its folders' colour and danger check, and no
+    /// password.
+    fn query_target(&self, saved: &SavedConnection) -> QueryTarget {
+        let settings = self.saved.effective_settings(&saved.id).ok();
+        QueryTarget {
+            saved: saved.clone(),
+            colour: settings.as_ref().and_then(|s| s.colour).map(str::to_owned),
+            danger_check: settings.is_none_or(|s| s.danger_check),
+            password: None,
+        }
+    }
+
+    /// The target of a tab restored on the saved connection `id`, on `database`, not signed
+    /// in; `None` when no saved connection has that id any more.
+    pub fn restored_target(&self, id: &str, database: Option<String>) -> Option<QueryTarget> {
+        let saved = self.saved.connections().iter().find(|c| c.id == id)?;
+        let mut target = self.query_target(saved);
+        target.saved.connection.database = database.or(target.saved.connection.database);
+        Some(target)
+    }
+
+    /// Signs in to the saved connection `id` for a restored tab's first run, the way
+    /// opening a query on it would; `ExplorerEvent::Resume` follows. False when no saved
+    /// connection has that id any more.
+    pub fn resume(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(saved) = self
+            .saved
+            .connections()
+            .iter()
+            .find(|c| c.id == id)
+            .cloned()
+        else {
+            return false;
+        };
+        self.sign_in(saved, AfterSignIn::Resume, window, cx);
+        true
     }
 
     fn ask_password(

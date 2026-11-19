@@ -8,13 +8,16 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-/// Plays `script` in the app and returns its state lines. With `appdata`, the app keeps its
-/// connections file there instead of the user's. At each `mark` step the app's private
+/// Plays `script` in the app and returns its state lines. The app keeps its connections,
+/// open tabs and history in `appdata`, or in a fresh temporary folder without one; never in
+/// the user's. At each `mark` step the app's private
 /// working set is sampled and added as a line `{"mark": name, "private_ws_mb": n}`.
 ///
 /// With `DBIDE_UI_SHOTS` set to a folder, the script runs through `.claude/skills/verify/ui-run.ps1`
 /// instead, which also saves the script's screenshots in a subfolder named after the test.
 pub fn run_script(script: &Path, appdata: Option<&Path>) -> Vec<Value> {
+    let own_appdata = tempfile::tempdir().expect("temp dir");
+    let appdata = appdata.unwrap_or(own_appdata.path());
     if let Some(shots) = std::env::var_os("DBIDE_UI_SHOTS") {
         return run_with_shots(script, appdata, Path::new(&shots));
     }
@@ -25,10 +28,8 @@ pub fn run_script(script: &Path, appdata: Option<&Path>) -> Vec<Value> {
         .arg("--ui-script")
         .arg(script)
         .arg("--ui-state")
-        .arg(&state);
-    if let Some(appdata) = appdata {
-        command.env("APPDATA", appdata);
-    }
+        .arg(&state)
+        .env("APPDATA", appdata);
     let mut app = command.spawn().expect("start the app");
     let marker = dir.path().join("state.jsonl.mark");
     let deadline = Instant::now() + Duration::from_secs(120);
@@ -64,7 +65,7 @@ pub fn run_script(script: &Path, appdata: Option<&Path>) -> Vec<Value> {
 
 /// Plays `script` through `.claude/skills/verify/ui-run.ps1`, saving its state lines and screenshots in
 /// `shots/<test name>`.
-fn run_with_shots(script: &Path, appdata: Option<&Path>, shots: &Path) -> Vec<Value> {
+fn run_with_shots(script: &Path, appdata: &Path, shots: &Path) -> Vec<Value> {
     let test = std::thread::current()
         .name()
         .unwrap_or("ui")
@@ -81,10 +82,8 @@ fn run_with_shots(script: &Path, appdata: Option<&Path>, shots: &Path) -> Vec<Va
         .arg("-Script")
         .arg(script)
         .arg("-OutDir")
-        .arg(&out);
-    if let Some(appdata) = appdata {
-        command.env("APPDATA", appdata);
-    }
+        .arg(&out)
+        .env("APPDATA", appdata);
     let output = command
         .output()
         .expect("run .claude/skills/verify/ui-run.ps1");

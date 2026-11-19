@@ -26,8 +26,8 @@ use serde::Serialize;
 
 use crate::keymap::{
     CancelRun, ClosePanel, CopyBlock, EstimatedPlan, FocusExplorer, Format, NewConnection,
-    NewQueryTab, NextPane, OpenFile, PickDatabase, PrevPane, Quit, Run, ShowAbout, ShowShortcuts,
-    ToggleActualPlan, ToggleResults, ToggleResultsToFile,
+    NewQueryTab, NextPane, OpenFile, PickDatabase, PrevPane, Quit, Run, SaveFile, ShowAbout,
+    ShowHistory, ShowShortcuts, ToggleActualPlan, ToggleResults, ToggleResultsToFile,
 };
 
 /// One menu of the bar, left to right.
@@ -67,6 +67,8 @@ impl Menu {
 pub struct Situation {
     /// The active tab's session is idle, so it can run, plan or change database.
     pub ready: bool,
+    /// Run can act: the tab is ready, or it is a restored tab that signs in first.
+    pub runnable: bool,
     /// The active tab is running, so Cancel can act.
     pub running: bool,
     pub actual_plan: bool,
@@ -113,6 +115,7 @@ fn items(menu: Menu, s: &Situation) -> Vec<Item> {
             item("New query", NewQueryTab, true),
             item("New connection", NewConnection, true),
             item("Open…", OpenFile, true),
+            item("Save", SaveFile, true),
             item("Exit", Quit, true),
         ],
         Menu::Edit => {
@@ -148,9 +151,10 @@ fn items(menu: Menu, s: &Situation) -> Vec<Item> {
             toggle("Results", ToggleResults, s.results_visible),
             item("Next pane", NextPane, true),
             item("Previous pane", PrevPane, true),
+            item("Query history", ShowHistory, true),
         ],
         Menu::Query => vec![
-            item("Run", Run, s.ready),
+            item("Run", Run, s.runnable),
             item("Cancel", CancelRun, s.running),
             item("Estimated plan", EstimatedPlan, s.ready),
             toggle("Include actual plan", ToggleActualPlan, s.actual_plan),

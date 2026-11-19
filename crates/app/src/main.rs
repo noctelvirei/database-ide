@@ -12,13 +12,18 @@ mod explorer;
 mod export_file;
 mod file_prompt;
 mod folder_dialog;
+mod history;
+mod history_panel;
 mod keymap;
 mod menu_bar;
 mod messages;
+mod open_tabs;
 mod palette;
 mod query_tab;
+mod replace_file;
 mod results;
 mod runtime;
+mod sql_file;
 mod ui_script;
 mod workbench;
 

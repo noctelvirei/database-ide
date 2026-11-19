@@ -24,6 +24,7 @@ use crate::results::{Results, ResultsEvent};
 use crate::runtime::{Job, RunUpdate, Runtime};
 
 pub mod dialogs;
+pub mod file;
 
 use dialogs::DialogState;
 
@@ -95,6 +96,12 @@ pub struct TabState {
     pub cursor_line: u32,
     /// The editor's find panel, while it is open.
     pub search: Option<SearchState>,
+    /// The `.sql` file the tab is tied to.
+    pub file: Option<std::path::PathBuf>,
+    /// True while the text differs from the file.
+    pub modified: bool,
+    /// The editor's text.
+    pub text: String,
 }
 
 /// What a user can see of the editor's find panel (Ctrl+F) or find and replace (Ctrl+H).
@@ -142,6 +149,12 @@ pub struct QueryTab {
     messages: Messages,
     /// The last run's result sets.
     results: Entity<Results>,
+    /// The `.sql` file the tab is tied to (Ctrl+O, Ctrl+S).
+    file: Option<file::TabFile>,
+    /// The current run's history entry, while it runs.
+    entry: Option<crate::history::Entry>,
+    /// F5 on a restored tab signs in first; run once connected.
+    run_when_connected: bool,
 }
 
 /// How often a running tab redraws its grids' row counts while rows arrive.
@@ -159,6 +172,19 @@ impl QueryTab {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let mut tab = Self::unconnected(title, target, runtime, window, cx);
+        tab.connect(window, cx);
+        tab
+    }
+
+    /// A tab titled `title` on `target`, not connected.
+    fn unconnected(
+        title: SharedString,
+        target: Option<QueryTarget>,
+        runtime: Runtime,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let editor = cx.new(|cx| {
             EditorState::new(window, cx)
                 .language("sql")
@@ -170,14 +196,16 @@ impl QueryTab {
             this.say(text.clone(), Tone::Plain, cx);
         })
         .detach();
-        let mut tab = Self {
+        Self {
+            database: target
+                .as_ref()
+                .and_then(|t| t.saved.connection.database.clone()),
             title,
             target,
             editor,
             runtime,
             status: Status::Unconnected,
             session: None,
-            database: None,
             cancel: None,
             cancel_pressed: false,
             run_cancelled: false,
@@ -191,9 +219,10 @@ impl QueryTab {
             dialog: None,
             messages: Messages::default(),
             results,
-        };
-        tab.connect(window, cx);
-        tab
+            file: None,
+            entry: None,
+            run_when_connected: false,
+        }
     }
 
     pub fn editor(&self) -> &Entity<EditorState> {
@@ -302,6 +331,9 @@ impl QueryTab {
                     query: search.query.clone(),
                     matches: search.matcher.label(),
                 }),
+            file: self.file_path().map(std::path::Path::to_path_buf),
+            modified: self.is_modified(cx),
+            text: self.editor.read(cx).value().to_string(),
         }
     }
 
@@ -309,18 +341,19 @@ impl QueryTab {
         self.dialog.as_ref().map(|dialog| dialog.state(cx))
     }
 
-    /// The tab's label in the tab list: its title, connection and database.
-    pub fn label(&self) -> SharedString {
+    /// The tab's label in the tab list: its file's name or title, with a dot while the text
+    /// differs from its file, then its connection and database.
+    pub fn label(&self, cx: &App) -> SharedString {
+        let name = match self.is_modified(cx) {
+            true => format!("● {}", self.name()),
+            false => self.name().to_string(),
+        };
         match (&self.target, &self.database) {
-            (Some(target), Some(database)) => format!(
-                "{} · {} · {database}",
-                self.title, target.saved.connection.name
-            )
-            .into(),
-            (Some(target), None) => {
-                format!("{} · {}", self.title, target.saved.connection.name).into()
+            (Some(target), Some(database)) => {
+                format!("{name} · {} · {database}", target.saved.connection.name).into()
             }
-            (None, _) => format!("{} · not connected", self.title).into(),
+            (Some(target), None) => format!("{name} · {}", target.saved.connection.name).into(),
+            (None, _) => format!("{name} · not connected").into(),
         }
     }
 
@@ -374,6 +407,9 @@ impl QueryTab {
     fn take_session(&mut self, cx: &mut Context<Self>) -> Option<Box<dyn Session>> {
         let why = match self.status {
             Status::Ready => return self.session.take(),
+            Status::Unconnected if self.target.is_some() => {
+                "This tab connects when you run it (F5)."
+            }
             Status::Unconnected => {
                 "This tab has no connection. Select a connection in the explorer (F8) and press Ctrl+N."
             }
@@ -413,7 +449,7 @@ impl QueryTab {
         );
         cx.spawn_in(window, async move |this, cx| {
             let outcome = connecting.await;
-            let _ = this.update(cx, |this, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 match outcome {
                     Ok(session) => {
                         this.give_back(session);
@@ -423,8 +459,12 @@ impl QueryTab {
                             Tone::Plain,
                             cx,
                         );
+                        if std::mem::take(&mut this.run_when_connected) {
+                            this.run(window, cx);
+                        }
                     }
                     Err(error) => {
+                        this.run_when_connected = false;
                         this.status = Status::Failed;
                         this.say(
                             format!("Couldn't connect to {name}. {}", error.message),
@@ -575,6 +615,10 @@ impl QueryTab {
     /// the batch has a dangerous statement and the connection asks for one. With Ctrl+M on,
     /// the run returns its actual plan too.
     pub fn run(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_asleep() {
+            self.wake(cx);
+            return;
+        }
         let Some((batch, first_line)) = self.batch(cx) else {
             return;
         };
@@ -625,6 +669,7 @@ impl QueryTab {
         self.cancel_pressed = false;
         self.run_cancelled = false;
         self.runs += 1;
+        self.start_entry(&batch, &job);
         self.job = job.clone();
         let run = self.runs;
         self.results.update(cx, |results, cx| results.clear(cx));
@@ -684,6 +729,12 @@ impl QueryTab {
         // The engine counts lines from one within the batch; the editor from zero.
         let editor_line =
             |line: Option<std::num::NonZeroU64>| line.map(|l| first_line + l.get() as u32 - 1);
+        match &update {
+            RunUpdate::Event(event) => self.note_event(event),
+            RunUpdate::Written(Err(error)) => self.note_failure(error.to_string()),
+            RunUpdate::Plan(Err(error)) => self.note_failure(error.to_string()),
+            _ => {}
+        }
         let message = match update {
             RunUpdate::Started(handle) => {
                 if self.cancel_pressed {
@@ -724,6 +775,7 @@ impl QueryTab {
             RunUpdate::Finished { session, results } => {
                 self.cancel = None;
                 self.give_back(session);
+                self.finish_entry(cx);
                 self.results.update(cx, |pane, cx| pane.keep(results, cx));
                 // PostgreSQL's and MySQL's actual plans run each statement in a transaction
                 // the engine rolls back (docs/spec.md, "Plans"); SQL Server's keep their

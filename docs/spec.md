@@ -139,18 +139,19 @@ SSMS's shortcuts, not remappable in v1:
 | F8 | Focus the object explorer |
 | Ctrl+O / Ctrl+S | Open / save a `.sql` file |
 | Ctrl+S in a grid / plan | Save the result set / the plan to a file |
+| Ctrl+Shift+H | Query history (ours; SSMS has none) |
 
 ### Menu bar
 
 A Windows menu bar across the top of the window, so every action can be found without knowing its key. It is a row of menu titles of our own, each opening gpui-component's `PopupMenu` built from the same actions the keymap binds; each item shows its shortcut, and an item that can't act now (Cancel with no run going) is greyed out. gpui-component's `AppMenuBar` was the first choice, but it cannot open a given menu from Alt+its letter, so the bar is ours; a fork exposing that would let us switch back.
 
-- **File:** New query, New connection, Open, Exit.
+- **File:** New query, New connection, Open, Save, Exit.
 - **Edit:** Undo, Redo, Cut, Copy, Paste, Select all, Find, Replace, Format. In a grid, Copy and Select all act on the grid.
-- **View:** Object explorer, Results (a tick shows when shown), Next pane, Previous pane.
+- **View:** Object explorer, Results (a tick shows when shown), Next pane, Previous pane, Query history.
 - **Query:** Run, Cancel, Estimated plan, Include actual plan and Results to file (a tick shows when on), Change database.
 - **Help:** Keyboard shortcuts (a panel listing every menu item's keys, read from the keymap), About (version, licences, the repository link).
 
-Alt+the underlined letter opens a menu, as in SSMS, and F10 opens File; Up, Down, Enter and Escape move through it, and Left and Right move to the next menu. Plain Alt alone does not focus the bar. No Tools menu in v1, since there are no settings to show. Each item lands with the feature behind it: Save, Comment and Uncomment, Plan tree ↔ graph and Refresh autocomplete join their menus when those are built, and later Save as, recent files and query history (File and View), plan files, grid edit mode, and Check for updates (Help).
+Alt+the underlined letter opens a menu, as in SSMS, and F10 opens File; Up, Down, Enter and Escape move through it, and Left and Right move to the next menu. Plain Alt alone does not focus the bar. No Tools menu in v1, since there are no settings to show. Each item lands with the feature behind it: Comment and Uncomment, Plan tree ↔ graph and Refresh autocomplete join their menus when those are built, and later Save as and recent files (File), plan files, grid edit mode, and Check for updates (Help).
 
 ### Formatting
 
@@ -159,8 +160,9 @@ Ctrl+K Ctrl+F formats the selection, or the whole tab, through the engine's form
 ### Files, restored tabs and history
 
 - `.sql` files open as UTF-8 or UTF-16, detected from the byte-order mark, and save in the encoding they were opened in. New files are UTF-8 without a BOM.
-- Every tab's text is saved to the app-data folder a second after typing stops and restored on start with its connection and database. No "save changes?" prompt on exit; a tab with a file shows a dot while it differs from the file.
-- Query history: each run's text, connection, database, start time, duration and outcome (rows or error) is appended to a history file in the app-data folder. A searchable history panel reopens an entry in a new tab. Entries older than 90 days are dropped.
+- Ctrl+O opens a `.sql` file in a new tab on the active tab's connection. Ctrl+S saves the tab to its file, asking where first for a tab with none.
+- Every tab's text is saved to the app-data folder a second after typing stops and on exit, and restored on start with its file, connection and database. A restored tab does not sign in until its first run (F5); passwords are never kept. No "save changes?" prompt on exit; a tab with a file shows a dot while it differs from the file.
+- Query history: each run's text, connection, database, start time, duration and outcome (rows or error) is appended to a history file in the app-data folder. A searchable history panel (Ctrl+Shift+H, View → Query history) lists runs newest first, with how long ago each ran, and reopens one in a new tab on its connection. Entries older than 90 days are dropped. Clock times wait for a time-zone dependency.
 
 ### Packaging and updates
 
