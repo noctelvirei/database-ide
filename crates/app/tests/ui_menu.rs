@@ -140,6 +140,18 @@ fn ui_pg_menus_open_by_alt_letter_run_queries_and_list_the_shortcuts() {
                 { "key": "alt-q" },
             ],
         },
+        { "name": "file, then the explorer", "input": [{ "key": "escape" }, { "key": "alt-f" }, { "key": "f8" }, "idle"] },
+        {
+            "name": "about, then the next tab",
+            "input": [
+                { "key": "alt-h" },
+                { "key": "down" },
+                { "key": "down" },
+                { "key": "enter" },
+                { "key": "ctrl-tab" },
+                "idle",
+            ],
+        },
     ]);
     let script = dir.path().join("script.json");
     std::fs::write(&script, steps.to_string()).unwrap();
@@ -242,5 +254,16 @@ fn ui_pg_menus_open_by_alt_letter_run_queries_and_list_the_shortcuts() {
     assert_eq!(
         open("query after a run ends under file"),
         (json!("Query"), query("[ ]"))
+    );
+
+    // A menu or panel that focus has left, by whatever key, is closed: Escape could not reach it.
+    let left_file = state(&lines, "file, then the explorer");
+    assert_eq!(left_file["focused_pane"], "Explorer");
+    assert_eq!(left_file["menu_bar"]["open"], Value::Null, "{left_file:#}");
+    let left_about = state(&lines, "about, then the next tab");
+    assert_eq!(
+        left_about["menu_bar"]["panel"],
+        Value::Null,
+        "{left_about:#}"
     );
 }

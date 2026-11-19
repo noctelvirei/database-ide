@@ -13,7 +13,7 @@
 //! opens the keyboard shortcuts or About in a panel over the window; Escape closes it.
 
 use gpui::{
-    Action, AsKeystroke as _, Context, DismissEvent, Entity, FocusHandle, Focusable as _,
+    Action, App, AsKeystroke as _, Context, DismissEvent, Entity, FocusHandle, Focusable as _,
     InteractiveElement as _, IntoElement, KeyBinding, KeyDownEvent, ParentElement as _, Render,
     SharedString, StatefulInteractiveElement as _, Styled as _, Window, deferred, div,
     prelude::FluentBuilder as _, px,
@@ -305,9 +305,25 @@ impl MenuBar {
         cx.notify();
     }
 
+    /// The open menu, while it holds focus. Whatever moves focus away (F8, Ctrl+Tab, a
+    /// click) leaves it out of Escape's reach, so a menu without focus counts as closed and
+    /// is not drawn.
+    fn focused_menu(&self, window: &Window, cx: &App) -> Option<&OpenMenu> {
+        self.open
+            .as_ref()
+            .filter(|open| open.popup.focus_handle(cx).contains_focused(window, cx))
+    }
+
+    /// The Help panel, while it holds focus, for the same reason as `focused_menu`.
+    fn focused_panel(&self, window: &Window, cx: &App) -> Option<&Panel> {
+        self.panel
+            .as_ref()
+            .filter(|_| self.panel_focus.contains_focused(window, cx))
+    }
+
     /// The situation the open menu was built for, if a menu is open.
-    pub fn situation(&self) -> Option<&Situation> {
-        self.open.as_ref().map(|open| &open.situation)
+    pub fn situation(&self, window: &Window, cx: &App) -> Option<&Situation> {
+        self.focused_menu(window, cx).map(|open| &open.situation)
     }
 
     /// Help's panels: the keyboard shortcuts of every menu item, or About.
@@ -339,8 +355,9 @@ impl MenuBar {
     }
 
     /// Where focus goes back to when the open Help panel closes, if one is open.
-    pub fn panel_return(&self) -> Option<&FocusHandle> {
-        self.panel.as_ref().and(self.panel_return.as_ref())
+    pub fn panel_return(&self, window: &Window, cx: &App) -> Option<&FocusHandle> {
+        self.focused_panel(window, cx)
+            .and(self.panel_return.as_ref())
     }
 
     fn show_panel(&mut self, panel: Panel, window: &mut Window, cx: &mut Context<Self>) {
@@ -350,9 +367,8 @@ impl MenuBar {
         cx.notify();
     }
 
-    /// Closes the open Help panel without moving focus: a click elsewhere, a move to a pane or
-    /// a menu takes focus from it, and Escape would no longer reach it.
-    pub fn dismiss_panel(&mut self, cx: &mut Context<Self>) {
+    /// Forgets the Help panel without moving focus, as a menu opening takes focus from it.
+    fn dismiss_panel(&mut self, cx: &mut Context<Self>) {
         if self.panel.take().is_some() {
             self.panel_return = None;
             cx.notify();
@@ -375,28 +391,26 @@ impl MenuBar {
         }
     }
 
-    pub fn state(&self) -> MenuBarState {
+    pub fn state(&self, window: &Window, cx: &App) -> MenuBarState {
+        let open = self.focused_menu(window, cx);
+        let panel = self.focused_panel(window, cx);
         MenuBarState {
-            open: self.open.as_ref().map(|o| o.menu),
-            items: self
-                .open
-                .as_ref()
-                .map(|o| o.items.clone())
-                .unwrap_or_default(),
-            panel: self.panel.as_ref().map(|p| match p {
+            open: open.map(|o| o.menu),
+            items: open.map(|o| o.items.clone()).unwrap_or_default(),
+            panel: panel.map(|p| match p {
                 Panel::Shortcuts(_) => "shortcuts",
                 Panel::About => "about",
             }),
-            shortcuts: match &self.panel {
+            shortcuts: match panel {
                 Some(Panel::Shortcuts(rows)) => rows.clone(),
                 _ => Vec::new(),
             },
         }
     }
 
-    fn panel(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+    fn panel(&self, window: &Window, cx: &mut Context<Self>) -> Option<impl IntoElement> {
         let theme = cx.theme();
-        let body = match self.panel.as_ref()? {
+        let body = match self.focused_panel(window, cx)? {
             Panel::Shortcuts(rows) => div()
                 .flex()
                 .flex_col()
@@ -430,7 +444,6 @@ impl MenuBar {
                 .key_context("MenuPanel")
                 .track_focus(&self.panel_focus)
                 .on_action(cx.listener(|this, _: &ClosePanel, w, cx| this.close_panel(w, cx)))
-                .on_mouse_down_out(cx.listener(|this, _, _, cx| this.dismiss_panel(cx)))
                 .absolute()
                 .top(px(40.))
                 .left(px(300.))
@@ -485,9 +498,10 @@ fn keys(binding: &KeyBinding) -> String {
 
 impl Render for MenuBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let _ = window;
         let theme = cx.theme().clone();
-        let open = self.open.as_ref().map(|o| (o.menu, o.popup.clone()));
+        let open = self
+            .focused_menu(window, cx)
+            .map(|o| (o.menu, o.popup.clone()));
         let titles = Menu::ALL.into_iter().map(|menu| {
             let (first, rest) = menu.title().split_at(1);
             let popup = open
@@ -541,7 +555,7 @@ impl Render for MenuBar {
                 }
             }))
             .children(titles)
-            .children(self.panel(cx))
+            .children(self.panel(window, cx))
     }
 }
 

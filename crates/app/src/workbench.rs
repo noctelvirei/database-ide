@@ -272,7 +272,6 @@ impl Workbench {
     }
 
     fn focus_pane(&mut self, pane: Pane, window: &mut Window, cx: &mut Context<Self>) {
-        self.menu_bar.update(cx, |bar, cx| bar.dismiss_panel(cx));
         match pane {
             Pane::Explorer => self
                 .explorer
@@ -395,7 +394,7 @@ impl Workbench {
             inspector: tab.results().read(cx).inspected(cx),
             clipboard: cx.read_from_clipboard().and_then(|item| item.text()),
             inspector_scrolled: f32::from(self.inspector_scroll.offset().y).abs(),
-            menu_bar: self.menu_bar.read(cx).state(),
+            menu_bar: self.menu_bar.read(cx).state(window, cx),
         }
     }
 
@@ -421,11 +420,11 @@ impl Workbench {
             },
             previous: window.focused(cx).unwrap_or(editor),
         };
-        if let Some(open) = bar.situation() {
+        if let Some(open) = bar.situation(window, cx) {
             situation.in_results = open.in_results;
             situation.edit_target = open.edit_target.clone();
             situation.previous = open.previous.clone();
-        } else if let Some(back) = bar.panel_return() {
+        } else if let Some(back) = bar.panel_return(window, cx) {
             situation.previous = back.clone();
         }
         situation
