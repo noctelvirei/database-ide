@@ -178,3 +178,60 @@ async fn pg_failed_danger_estimate_preserves_uncommitted_changes() {
     assert_eq!(estimates, vec![None]);
     commit_preserves_insert(&mut session, &database).await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_danger_estimates_report_progress_before_cancellation_and_preserve_rows() {
+    let database = database().await;
+    let mut session = open(&database).await;
+    setup(
+        &mut session,
+        "CREATE TABLE saved_rows(id int); CREATE TABLE locked_rows(id int); \
+         INSERT INTO locked_rows VALUES (11)",
+    )
+    .await;
+    setup(
+        &mut session,
+        "BEGIN; INSERT INTO saved_rows VALUES (7); ANALYZE saved_rows",
+    )
+    .await;
+    let pid = backend_pid(&mut session).await;
+    let mut locker = open(&database).await;
+    setup(
+        &mut locker,
+        "BEGIN; LOCK TABLE locked_rows IN ACCESS EXCLUSIVE MODE",
+    )
+    .await;
+    let batch = "DELETE FROM saved_rows; DELETE FROM locked_rows";
+    let check = danger::check(batch, Engine::PostgreSql);
+    assert_eq!(check.statements.len(), 2);
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    let mut on_estimate = |index, estimate| sender.send((index, estimate)).unwrap();
+    let mut estimates = Box::pin(danger::estimates::estimate_each(
+        &mut session,
+        batch,
+        &check,
+        Engine::PostgreSql,
+        &mut on_estimate,
+    ));
+    let first = tokio::select! {
+        () = &mut estimates => panic!("second estimate must wait for the lock"),
+        result = tokio::time::timeout(Duration::from_secs(10), receiver.recv()) => {
+            result.expect("first estimate must arrive before the lock is released").unwrap()
+        }
+    };
+    assert_eq!(first, (0, Some(1.0)));
+    tokio::select! {
+        () = &mut estimates => panic!("second estimate must wait for the lock"),
+        () = wait_for_lock(&mut locker, pid) => {}
+    }
+    drop(estimates);
+    assert_eq!(
+        receiver.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    );
+    // Keep the lock held so session reuse proves cancellation finished the waiting plan.
+    commit_preserves_insert(&mut session, &database).await;
+    setup(&mut locker, "ROLLBACK").await;
+    let events: Vec<_> = session.run("SELECT id FROM locked_rows").collect().await;
+    assert_eq!(events[1], Event::Rows(vec![vec![Value::Integer(11)]]));
+}
