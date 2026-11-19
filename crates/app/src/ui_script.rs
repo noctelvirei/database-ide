@@ -36,7 +36,7 @@
 //! can cancel a run that is under way rather than one still being set up.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::{
     AsyncWindowContext, KeyUpEvent, Keystroke, Modifiers, OperatingSystem, PlatformInput,
@@ -230,13 +230,21 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(name)
 }
 
-/// Polls `done` every 100 ms for up to 30 s, or until the window has gone.
+/// How long one `idle` or `running` step waits. Two million-row saves and a million-row run
+/// take about 30 s on a loaded machine, so this leaves room for slower ones; the whole
+/// script still has the test harness's own deadline.
+const WAIT_LIMIT: Duration = Duration::from_secs(100);
+
+/// Polls `done` every 100 ms until it holds or the window has gone. Panics, ending the
+/// script with a failure, if `done` still doesn't hold after `WAIT_LIMIT`: a step that
+/// carried on would take its state too early and fail later for no visible reason.
 async fn wait_until(
     cx: &mut AsyncWindowContext,
     workbench: &WeakEntity<Workbench>,
     done: impl Fn(&Workbench, &gpui::App) -> bool,
 ) {
-    for _ in 0..300 {
+    let started = Instant::now();
+    loop {
         let finished = cx
             .update(|_, cx| workbench.read_with(cx, |wb, cx| done(wb, cx)))
             .ok()
@@ -245,6 +253,11 @@ async fn wait_until(
         if finished {
             return;
         }
+        assert!(
+            started.elapsed() < WAIT_LIMIT,
+            "the workbench was still busy after {} s",
+            WAIT_LIMIT.as_secs()
+        );
         let executor = cx.background_executor().clone();
         executor.timer(Duration::from_millis(100)).await;
     }
