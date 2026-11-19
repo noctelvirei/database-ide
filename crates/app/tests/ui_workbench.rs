@@ -70,11 +70,6 @@ fn ui_every_ssms_shortcut_reaches_its_action_from_the_editor() {
         unconnected[unconnected.as_array().unwrap().len() - 1],
         "This tab has no connection. Select a connection in the explorer (F8) and press Ctrl+N."
     );
-    let messages = &state(&lines, "Ctrl+S")["messages"];
-    assert_eq!(
-        messages[messages.as_array().unwrap().len() - 1],
-        "SaveFile is not built yet."
-    );
 }
 
 #[test]

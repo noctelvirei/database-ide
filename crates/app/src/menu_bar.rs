@@ -26,8 +26,8 @@ use serde::Serialize;
 
 use crate::keymap::{
     CancelRun, ClosePanel, CopyBlock, EstimatedPlan, FocusExplorer, Format, NewConnection,
-    NewQueryTab, NextPane, OpenFile, PickDatabase, PrevPane, Quit, Run, ShowAbout, ShowShortcuts,
-    ToggleActualPlan, ToggleResults, ToggleResultsToFile,
+    NewQueryTab, NextPane, OpenFile, PickDatabase, PrevPane, Quit, Run, SaveFile, ShowAbout,
+    ShowHistory, ShowShortcuts, ToggleActualPlan, ToggleResults, ToggleResultsToFile,
 };
 
 /// One menu of the bar, left to right.
@@ -113,6 +113,7 @@ fn items(menu: Menu, s: &Situation) -> Vec<Item> {
             item("New query", NewQueryTab, true),
             item("New connection", NewConnection, true),
             item("Open…", OpenFile, true),
+            item("Save", SaveFile, true),
             item("Exit", Quit, true),
         ],
         Menu::Edit => {
@@ -148,6 +149,7 @@ fn items(menu: Menu, s: &Situation) -> Vec<Item> {
             toggle("Results", ToggleResults, s.results_visible),
             item("Next pane", NextPane, true),
             item("Previous pane", PrevPane, true),
+            item("Query history", ShowHistory, true),
         ],
         Menu::Query => vec![
             item("Run", Run, s.ready),

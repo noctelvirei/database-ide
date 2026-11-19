@@ -5,30 +5,37 @@
 //! U1 built the frame: the panes, moving focus between them, and every key in the keymap.
 //! U2 put the saved connections in the explorer (`explorer.rs`); U3 the query tabs
 //! (`query_tab.rs`) and the messages strip (`messages.rs`); U7 the plans (`results/plan.rs`).
-//! Actions whose feature is not built yet say so in the messages strip.
+//! Actions whose feature is not built yet say so in the messages strip. U10 kept the tabs,
+//! files and history (`workbench/files.rs`).
+
+mod files;
+
+use std::path::PathBuf;
 
 use gpui::{
     App, AppContext as _, Context, Entity, FocusHandle, Focusable as _, IntoElement, KeyDownEvent,
-    ParentElement as _, Render, ScrollHandle, SharedString, Styled as _, Window, div, prelude::*,
-    px,
+    ParentElement as _, Render, ScrollHandle, SharedString, Styled as _, Subscription, WeakEntity,
+    Window, div, prelude::*, px,
 };
 use gpui_component::button::Button;
-use gpui_component::input::Editor;
+use gpui_component::input::{Editor, InputEvent};
 use gpui_component::{ActiveTheme as _, Disableable as _};
 use serde::Serialize;
 
 use crate::explorer::{Explorer, ExplorerEvent, ExplorerState};
+use crate::history_panel::{HistoryPanel, HistoryState};
 use crate::keymap::{
     CancelRun, CommentLines, EstimatedPlan, FocusExplorer, Format, GoToError, NewConnection,
     NewQueryTab, NextError, NextPane, NextQueryTab, OpenEditMenu, OpenFile, OpenFileMenu,
     OpenHelpMenu, OpenQueryMenu, OpenViewMenu, PickDatabase, PrevPane, PreviousError, Quit,
-    RefreshAutocomplete, Run, SaveFile, ShowAbout, ShowShortcuts, ToggleActualPlan, TogglePlanView,
-    ToggleResults, ToggleResultsToFile, UncommentLines,
+    RefreshAutocomplete, Run, SaveFile, ShowAbout, ShowHistory, ShowShortcuts, ToggleActualPlan,
+    TogglePlanView, ToggleResults, ToggleResultsToFile, UncommentLines,
 };
 use crate::menu_bar::{Menu, MenuBar, MenuBarState, Situation};
 use crate::messages::Tone;
 use crate::palette;
 use crate::query_tab::dialogs::DialogState;
+use crate::query_tab::file::QueryTabEvent;
 use crate::query_tab::{QueryTab, QueryTarget, TabState};
 use crate::results::plan::PlanState;
 use crate::results::{GridState, Inspected};
@@ -103,6 +110,8 @@ pub struct VisibleState {
     /// The text on the system clipboard, so a script can check a copy.
     pub clipboard: Option<String>,
     pub menu_bar: MenuBarState,
+    /// The query history panel, while it is open.
+    pub history: Option<HistoryState>,
 }
 
 /// Work to run when the window first draws.
@@ -123,14 +132,26 @@ pub struct Workbench {
     /// The inspector value's scroll position.
     inspector_scroll: ScrollHandle,
     last_action: Option<&'static str>,
-    /// True while Ctrl+O asks for a file or reads it.
+    /// True while Ctrl+O asks for a file or reads it, or the history loads.
     opening: bool,
     /// Called once, from the first `render`.
     on_first_frame: Option<FirstFrameHook>,
+    /// Where the open tabs and the query history are kept; `None` without an app-data folder.
+    tabs_file: Option<PathBuf>,
+    history_file: Option<PathBuf>,
+    /// Restored tabs waiting for the explorer to sign in to their connection.
+    waking: Vec<WeakEntity<QueryTab>>,
+    /// Bumped by every change; a pending save runs only if no later change came.
+    save_generation: u64,
+    /// The query history panel, while it is open.
+    history: Option<HistoryPanel>,
+    /// Keeps the open tabs when the app quits.
+    _save_on_quit: Subscription,
 }
 
 impl Workbench {
-    /// Builds the workbench with one unconnected query tab, its editor focused.
+    /// Builds the workbench with the tabs kept from the last session, or one unconnected
+    /// tab, the first one's editor focused.
     /// `on_first_frame` runs once, when the window first draws: the startup measurement and
     /// the UI script hook in there.
     pub fn new(
@@ -154,6 +175,7 @@ impl Workbench {
                     let editor = this.active_tab().read(cx).editor().clone();
                     editor.update(cx, |editor, cx| editor.set_value(text.clone(), window, cx));
                 }
+                ExplorerEvent::Resume(target) => this.resume_waking(target, window, cx),
             },
         )
         .detach();
@@ -170,8 +192,17 @@ impl Workbench {
             last_action: None,
             opening: false,
             on_first_frame: Some(Box::new(on_first_frame)),
+            tabs_file: crate::open_tabs::path(),
+            history_file: crate::history::path(),
+            waking: Vec::new(),
+            save_generation: 0,
+            history: None,
+            _save_on_quit: cx.on_app_quit(|this, cx| {
+                this.save_tabs(cx);
+                async {}
+            }),
         };
-        this.open_tab(None, window, cx);
+        this.restore_tabs(window, cx);
         // Repaint the pane outlines whenever focus moves.
         for pane in Pane::ALL {
             if pane == Pane::Editor {
@@ -188,6 +219,12 @@ impl Workbench {
         &self.tabs[self.active]
     }
 
+    /// The title the next new tab gets.
+    fn next_title(&mut self) -> SharedString {
+        self.next_tab_number += 1;
+        format!("Query {}", self.next_tab_number - 1).into()
+    }
+
     /// Opens a tab on `target` (or unconnected), makes it active and focuses its editor.
     fn open_tab(
         &mut self,
@@ -195,12 +232,33 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let title: SharedString = format!("Query {}", self.next_tab_number).into();
-        self.next_tab_number += 1;
-        let runtime = self.runtime.clone();
+        let (title, runtime) = (self.next_title(), self.runtime.clone());
         let tab = cx.new(|cx| QueryTab::new(title, target, runtime, window, cx));
+        self.add_tab(tab, window, cx);
+        self.schedule_save(cx);
+    }
+
+    /// Adds `tab` to the list, makes it active and focuses its editor.
+    fn add_tab(&mut self, tab: Entity<QueryTab>, window: &mut Window, cx: &mut Context<Self>) {
         // The tab list, the strip and the Stop button show the tab's state.
         cx.observe(&tab, |_, _, cx| cx.notify()).detach();
+        cx.subscribe_in(
+            &tab,
+            window,
+            |this, tab, event: &QueryTabEvent, window, cx| {
+                this.on_tab_event(tab, event, window, cx);
+            },
+        )
+        .detach();
+        // Typing changes the tab's dot and is kept a second after it stops.
+        let editor = tab.read(cx).editor().clone();
+        cx.subscribe(&editor, |this, _, event: &InputEvent, cx| {
+            if let InputEvent::Change = event {
+                this.schedule_save(cx);
+                cx.notify();
+            }
+        })
+        .detach();
         // The inspector shows the results' selected cell.
         let results = tab.read(cx).results().clone();
         cx.observe(&results, |_, _, cx| cx.notify()).detach();
@@ -315,8 +373,8 @@ impl Workbench {
         self.note(format!("{name} is not built yet."), cx);
     }
 
-    /// Ctrl+O: asks for a file and opens a `.sqlplan` in the active tab's results, in place
-    /// of its last run's.
+    /// Ctrl+O: asks for a file and opens a `.sql` file in a new tab, or a `.sqlplan` in the
+    /// active tab's results in place of its last run's.
     fn open_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let asked = crate::file_prompt::open_path(cx);
         let tab = self.active_tab().clone();
@@ -329,6 +387,16 @@ impl Workbench {
                 let _ = this.update(cx, |this, _| finish(this));
                 return;
             };
+            let is_sql = path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("sql"));
+            if is_sql {
+                let _ = this.update_in(cx, |this, window, cx| {
+                    finish(this);
+                    this.open_sql_file(path, window, cx);
+                });
+                return;
+            }
             let shown = path.display().to_string();
             let is_plan = path
                 .extension()
@@ -337,7 +405,7 @@ impl Workbench {
                 let _ = this.update(cx, |this, cx| {
                     finish(this);
                     this.note(
-                        format!("Opening {shown} is not built yet: only .sqlplan files open."),
+                        format!("Couldn't open {shown}: only .sql and .sqlplan files open."),
                         cx,
                     );
                 });
@@ -395,6 +463,7 @@ impl Workbench {
             clipboard: cx.read_from_clipboard().and_then(|item| item.text()),
             inspector_scrolled: f32::from(self.inspector_scroll.offset().y).abs(),
             menu_bar: self.menu_bar.read(cx).state(window, cx),
+            history: self.history.as_ref().map(|panel| panel.state(cx)),
         }
     }
 
@@ -506,7 +575,7 @@ impl Workbench {
                 .when(ix == self.active, |row| row.bg(theme.accent))
                 .cursor_pointer()
                 .child(div().w(px(4.)).bg(marker))
-                .child(div().text_sm().child(tab.label()))
+                .child(div().text_sm().child(tab.label(cx)))
                 .on_click(cx.listener(move |this, _, window, cx| this.show_tab(ix, window, cx)))
         });
         self.pane(Pane::QueryTabs, focused, cx).children(rows)
@@ -760,7 +829,14 @@ impl Render for Workbench {
                 this.last_action = Some("OpenFile");
                 this.open_file(w, cx);
             }))
-            .on_action(cx.listener(|this, _: &SaveFile, _, cx| this.not_built("SaveFile", cx)))
+            .on_action(cx.listener(|this, _: &SaveFile, w, cx| {
+                this.last_action = Some("SaveFile");
+                this.save_file(w, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ShowHistory, w, cx| {
+                this.last_action = Some("ShowHistory");
+                this.show_history(w, cx);
+            }))
             .on_action(
                 cx.listener(|this, _: &OpenFileMenu, w, cx| this.open_menu(Menu::File, w, cx)),
             )

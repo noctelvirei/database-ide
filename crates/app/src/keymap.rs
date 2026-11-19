@@ -79,6 +79,8 @@ actions!(
         OpenHelpMenu,
         /// Closes the app (File, Exit).
         Quit,
+        /// Opens the query history panel (Ctrl+Shift+H).
+        ShowHistory,
         /// Lists every menu item's keys (Help, Keyboard shortcuts).
         ShowShortcuts,
         /// Shows the version, licences and repository (Help, About).
@@ -219,6 +221,7 @@ pub fn bind(cx: &mut App) {
         // context the focus sits inside, so the tab's Ctrl+S is scoped to the workbench to let a
         // grid's and a plan's Ctrl+S win.
         KeyBinding::new("ctrl-s", SaveFile, Some("Workbench")),
+        KeyBinding::new("ctrl-shift-h", ShowHistory, Some("Workbench")),
         // Scoped to the workbench, like Ctrl+S, so a dialog's own keys stay its own.
         KeyBinding::new("alt-f", OpenFileMenu, Some("Workbench")),
         KeyBinding::new("f10", OpenFileMenu, Some("Workbench")),

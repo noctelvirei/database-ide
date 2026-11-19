@@ -2,8 +2,7 @@
 //! picks the format, and saving over an existing file only replaces it once the new one is
 //! complete.
 
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::Path;
 
 use dbide_engine::danger::Engine;
 use dbide_engine::export::{self, FileReport, Format};
@@ -73,7 +72,7 @@ fn file_stem(path: &Path) -> String {
 /// then replaces `path`: a failed export leaves an existing file as it was, and two saves to
 /// one file don't touch each other's rows. Blocking; call it off the UI thread.
 pub fn write(reader: &Reader, path: &Path, format: &Format) -> Result<FileReport, export::Error> {
-    let staging = staging_path(path);
+    let staging = crate::replace_file::staging_path(path);
     let mut report = export::write(reader, &staging, format).inspect_err(|_| {
         // The engine keeps a failed write as `<name>.partial`; nobody knows this hidden name.
         let mut partial = staging.clone().into_os_string();
@@ -102,15 +101,4 @@ pub fn written(file: &FileReport) -> String {
     } else {
         format!("Wrote {rows} to {}.", file.path.display())
     }
-}
-
-/// A staging name beside `path` that no other save uses: `dir/~name.ext.<process>-<n>.saving`
-/// for `dir/name.ext`, `n` counting this process's saves.
-fn staging_path(path: &Path) -> PathBuf {
-    static SAVES: AtomicU64 = AtomicU64::new(0);
-    let save = SAVES.fetch_add(1, Ordering::Relaxed);
-    let mut name = std::ffi::OsString::from("~");
-    name.push(path.file_name().unwrap_or_default());
-    name.push(format!(".{}-{save}.saving", std::process::id()));
-    path.with_file_name(name)
 }
