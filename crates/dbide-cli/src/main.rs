@@ -6,6 +6,7 @@ use dbide_engine::format;
 use dbide_engine::session::{self, Event};
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
 
 #[derive(Parser)]
 #[command(disable_help_subcommand = true)]
@@ -104,9 +105,13 @@ async fn run() -> Result<(), Error> {
                 None => batch.expect("clap requires batch or file"),
             };
             let mut session = session::connect(&parsed.connection, password).await?;
-            let report =
-                export::run_to_file(session.run(&batch), &output, &export::Format::default())
-                    .await?;
+            let report = export::run_to_file(
+                session.run(&batch),
+                &output,
+                &export::Format::default(),
+                &AtomicU64::new(0),
+            )
+            .await?;
             let mut failed = false;
             for event in report.events {
                 match event {

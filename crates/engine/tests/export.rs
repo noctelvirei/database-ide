@@ -1,3 +1,6 @@
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use dbide_engine::export::{self, Format};
 use dbide_engine::session::{Column, TypeCategory, Value};
 use dbide_engine::spill::Store;
@@ -563,10 +566,12 @@ async fn run_to_file_writes_two_result_files_and_returns_messages_and_counts() {
         tokio_util::sync::CancellationToken::new(),
     );
     let directory = tempfile::tempdir().unwrap();
+    let rows_written = AtomicU64::new(99);
     let report = export::run_to_file(
         run,
         &directory.path().join("rows.csv"),
         &Format::Csv { bom: false },
+        &rows_written,
     )
     .await
     .unwrap();
@@ -586,6 +591,61 @@ async fn run_to_file_writes_two_result_files_and_returns_messages_and_counts() {
     assert!(matches!(report.events[2], Event::Done { .. }));
     assert_eq!(report.files[0].rows, 1);
     assert_eq!(report.files[1].max_page_rows, 0);
+    assert_eq!(rows_written.load(Ordering::Relaxed), 2);
+}
+
+#[tokio::test]
+async fn run_to_file_publishes_progress_before_the_run_ends() {
+    use dbide_engine::session::{Event, Run};
+    use futures::SinkExt;
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("rows.csv");
+    let rows_written = Arc::new(AtomicU64::new(0));
+    let progress = Arc::clone(&rows_written);
+    let (mut sender, receiver) = futures::channel::mpsc::channel(1);
+    let writer = tokio::spawn(async move {
+        let run = Run::new(receiver, tokio_util::sync::CancellationToken::new());
+        export::run_to_file(run, &path, &Format::default(), &progress).await
+    });
+
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        sender
+            .send(Event::ResultSetStarted {
+                columns: columns(&["a"]),
+            })
+            .await
+            .unwrap();
+        sender
+            .send(Event::Rows(vec![vec![Value::Integer(1)]; 2048]))
+            .await
+            .unwrap();
+        // Withhold the remaining rows until the polling task has observed progress.
+        while rows_written.load(Ordering::Relaxed) == 0 {
+            assert!(!writer.is_finished());
+            tokio::task::yield_now().await;
+        }
+        let observed = rows_written.load(Ordering::Relaxed);
+        assert!(observed > 0 && observed < 4096);
+        assert!(!writer.is_finished());
+        sender
+            .send(Event::ResultSetStarted {
+                columns: columns(&["b"]),
+            })
+            .await
+            .unwrap();
+        sender
+            .send(Event::Rows(vec![vec![Value::Integer(2)]; 2048]))
+            .await
+            .unwrap();
+        drop(sender);
+        let report = writer.await.unwrap().unwrap();
+        assert_eq!(rows_written.load(Ordering::Relaxed), 4096);
+        assert_eq!(report.files[0].rows, 2048);
+        assert_eq!(report.files[1].rows, 2048);
+    })
+    .await
+    .expect("export must publish progress while waiting for more rows");
 }
 
 #[tokio::test]
@@ -608,10 +668,12 @@ async fn cancelled_run_to_file_leaves_a_partial_file_and_returns_the_error() {
     });
     let run = Run::new(source, token);
     let directory = tempfile::tempdir().unwrap();
+    let rows_written = AtomicU64::new(0);
     let report = export::run_to_file(
         run,
         &directory.path().join("rows.csv"),
         &Format::Csv { bom: false },
+        &rows_written,
     )
     .await
     .unwrap();
@@ -625,6 +687,7 @@ async fn cancelled_run_to_file_leaves_a_partial_file_and_returns_the_error() {
     );
     assert!(!directory.path().join("rows-1.csv").exists());
     assert!(matches!(&report.events[1], Event::Error { text, .. } if text == "Run was cancelled"));
+    assert_eq!(rows_written.load(Ordering::Relaxed), 1);
 }
 
 #[tokio::test]
@@ -635,11 +698,18 @@ async fn run_to_file_rejects_rows_without_a_header() {
         tokio_util::sync::CancellationToken::new(),
     );
     let directory = tempfile::tempdir().unwrap();
+    let rows_written = AtomicU64::new(99);
     assert!(
-        export::run_to_file(run, &directory.path().join("rows.csv"), &Format::default())
-            .await
-            .is_err()
+        export::run_to_file(
+            run,
+            &directory.path().join("rows.csv"),
+            &Format::default(),
+            &rows_written
+        )
+        .await
+        .is_err()
     );
+    assert_eq!(rows_written.load(Ordering::Relaxed), 0);
 }
 
 #[tokio::test]
@@ -650,18 +720,25 @@ async fn run_to_file_rejects_a_row_with_the_wrong_width() {
             Event::ResultSetStarted {
                 columns: columns(&["a"]),
             },
-            Event::Rows(vec![vec![]]),
+            Event::Rows(vec![vec![Value::Integer(1)], vec![]]),
         ]),
         tokio_util::sync::CancellationToken::new(),
     );
     let directory = tempfile::tempdir().unwrap();
+    let rows_written = AtomicU64::new(0);
     assert_eq!(
-        export::run_to_file(run, &directory.path().join("rows.csv"), &Format::default())
-            .await
-            .unwrap_err()
-            .to_string(),
+        export::run_to_file(
+            run,
+            &directory.path().join("rows.csv"),
+            &Format::default(),
+            &rows_written
+        )
+        .await
+        .unwrap_err()
+        .to_string(),
         "Invalid result row: expected 1 cells, received 0"
     );
+    assert_eq!(rows_written.load(Ordering::Relaxed), 1);
     assert!(directory.path().join("rows-1.csv.partial").exists());
     assert!(!directory.path().join("rows-1.csv").exists());
 }
@@ -688,6 +765,7 @@ async fn run_to_file_preserves_server_errors_and_empty_results() {
         run,
         &directory.path().join("rows.csv"),
         &Format::Csv { bom: false },
+        &AtomicU64::new(0),
     )
     .await
     .unwrap();
@@ -726,6 +804,7 @@ async fn cancelled_file(format: Format, extension: &str) -> Vec<u8> {
         run,
         &directory.path().join(format!("rows.{extension}")),
         &format,
+        &AtomicU64::new(0),
     )
     .await
     .unwrap();
