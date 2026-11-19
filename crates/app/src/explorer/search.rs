@@ -1,6 +1,6 @@
-//! Searching every database of a connection for objects by name (docs/spec.md, "Object
-//! explorer and Script as"). The filter box only filters the rows already loaded; Ctrl+Enter
-//! in it searches every user database of the selected connection, including ones never
+//! The explorer's filter box, and searching every database of a connection for objects by
+//! name (docs/spec.md, "Object explorer and Script as"). The filter box only filters the rows
+//! already loaded; Ctrl+Enter in it searches every user database of the selected connection, including ones never
 //! opened, and lists the hits under the connection in a "Search" row. A hit works like an
 //! object row: Script as, Ctrl+N on its database. Databases the search couldn't open are
 //! named in the messages strip with the reason.
@@ -11,7 +11,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use dbide_engine::objects::{Kind as ObjectKind, Object, Search};
-use gpui::Context;
+use gpui::{Context, Focusable as _, IntoElement, ParentElement as _, Styled as _, Window, div};
+use gpui_component::input::Input;
 
 use super::Explorer;
 use super::Kind;
@@ -64,6 +65,39 @@ fn connection_of(id: &str) -> &str {
 }
 
 impl Explorer {
+    /// The filter's text, trimmed and in lower case.
+    pub(super) fn needle(&self, cx: &gpui::App) -> String {
+        self.filter.read(cx).value().trim().to_lowercase()
+    }
+
+    /// Ctrl+F: moves focus to the filter box.
+    pub(super) fn focus_filter(&self, window: &mut Window, cx: &mut Context<Self>) {
+        self.filter.focus_handle(cx).focus(window, cx);
+    }
+
+    /// Enter in the filter box: back to the tree, on the first row that matches.
+    pub(super) fn select_first_match(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let needle = self.needle(cx);
+        let rows = &self.object_rows;
+        self.tree.update(cx, |tree, cx| {
+            let first = (0..).map_while(|ix| tree.entry(ix)).position(|entry| {
+                let item = entry.item();
+                let note = rows
+                    .get(item.id.as_ref())
+                    .is_some_and(|(k, _)| k.is_placeholder());
+                !note && item.label.to_lowercase().contains(&needle)
+            });
+            if first.is_some() {
+                tree.set_selected_index(first, cx);
+            }
+        });
+        self.focus(window, cx);
+    }
+
+    pub(super) fn filter_box(&self) -> impl IntoElement {
+        div().px_2().pb_1().child(Input::new(&self.filter))
+    }
+
     /// The filter's text changed: an empty filter drops every search; otherwise the selected
     /// row's connection, before the new text hides it, becomes the one Ctrl+Enter searches.
     pub(super) fn filter_changed(&mut self, cx: &mut Context<Self>) {
@@ -109,9 +143,25 @@ impl Explorer {
             );
             return;
         };
+        self.start_search(&connection, name, cx);
+    }
+
+    /// Refresh on a search hit: runs `connection`'s last search again.
+    pub(super) fn search_again(&mut self, connection: &str, cx: &mut Context<Self>) {
+        let name = self.servers.get(connection).and_then(|s| s.search.as_ref());
+        if let Some(name) = name.map(|f| f.name.clone()) {
+            self.start_search(connection, name, cx);
+        }
+    }
+
+    /// Searches every database of connected `connection` for `name`, replacing its last
+    /// search.
+    fn start_search(&mut self, connection: &str, name: String, cx: &mut Context<Self>) {
         static SEARCHES: AtomicU64 = AtomicU64::new(0);
         let generation = SEARCHES.fetch_add(1, Ordering::Relaxed);
-        let server = self.servers.get_mut(&connection).expect("checked above");
+        let Some(server) = self.servers.get_mut(connection) else {
+            return;
+        };
         let call = Explore::Search {
             generation,
             search: Search {
@@ -127,7 +177,7 @@ impl Explorer {
             name,
             hits: Hits::Searching,
         });
-        self.request(&connection, None, call, cx);
+        self.request(connection, None, call, cx);
         self.rebuild(None, cx);
     }
 

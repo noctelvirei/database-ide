@@ -21,7 +21,7 @@ use gpui::{
     Action, AppContext as _, Context, DismissEvent, Entity, Focusable as _, IntoElement,
     ParentElement as _, SharedString, Styled as _, Window, div, px,
 };
-use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::input::{InputEvent, InputState};
 use gpui_component::menu::PopupMenu;
 
 use super::search::Found;
@@ -126,10 +126,13 @@ impl Server {
         self.saved.connection.engine
     }
 
-    /// The object in `database` with catalog key `key`: a loaded row, or a search hit.
-    fn object(&self, database: &str, key: &str) -> Option<&Object> {
-        let listed = self.catalogs.get(database).and_then(|c| c.find(key));
-        listed.or_else(|| self.search.as_ref()?.hit(database, key))
+    /// The object in `database` with catalog key `key`: the last search's hit when `hit`,
+    /// otherwise the loaded row, so each row acts on the object it shows.
+    fn object(&self, database: &str, key: &str, hit: bool) -> Option<&Object> {
+        match hit {
+            true => self.search.as_ref()?.hit(database, key),
+            false => self.catalogs.get(database)?.find(key),
+        }
     }
 
     fn slot(&mut self, database: Option<&str>) -> Option<&mut Slot> {
@@ -225,6 +228,8 @@ enum Node {
         connection: String,
         database: String,
         key: String,
+        /// A search hit (`h`) rather than a loaded row (`o`).
+        hit: bool,
     },
     Note,
 }
@@ -243,10 +248,11 @@ impl Node {
                 connection: owned(connection),
                 database: owned(database),
             },
-            [connection, "o" | "h", database, key] => Node::Object {
+            [connection, kind @ ("o" | "h"), database, key] => Node::Object {
                 connection: owned(connection),
                 database: owned(database),
                 key: owned(key),
+                hit: *kind == "h",
             },
             [_, .., "n"] => Node::Note,
             _ => return None,
@@ -421,39 +427,6 @@ impl Explorer {
         filter
     }
 
-    /// The filter's text, trimmed and in lower case.
-    pub(super) fn needle(&self, cx: &gpui::App) -> String {
-        self.filter.read(cx).value().trim().to_lowercase()
-    }
-
-    /// Ctrl+F: moves focus to the filter box.
-    pub(super) fn focus_filter(&self, window: &mut Window, cx: &mut Context<Self>) {
-        self.filter.focus_handle(cx).focus(window, cx);
-    }
-
-    /// Enter in the filter box: back to the tree, on the first row that matches.
-    fn select_first_match(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let needle = self.needle(cx);
-        let rows = &self.object_rows;
-        self.tree.update(cx, |tree, cx| {
-            let first = (0..).map_while(|ix| tree.entry(ix)).position(|entry| {
-                let item = entry.item();
-                let note = rows
-                    .get(item.id.as_ref())
-                    .is_some_and(|(k, _)| k.is_placeholder());
-                !note && item.label.to_lowercase().contains(&needle)
-            });
-            if first.is_some() {
-                tree.set_selected_index(first, cx);
-            }
-        });
-        self.focus(window, cx);
-    }
-
-    pub(super) fn filter_box(&self) -> impl IntoElement {
-        div().px_2().pb_1().child(Input::new(&self.filter))
-    }
-
     /// The rows under connection `id`: its databases once connected, otherwise none.
     pub(super) fn object_branches(&self, id: &str) -> Vec<Branch> {
         let Some(server) = self.servers.get(id) else {
@@ -573,6 +546,7 @@ impl Explorer {
                 connection,
                 database,
                 key,
+                hit: false,
             }) => {
                 let Some(catalog) = self
                     .servers
@@ -592,7 +566,8 @@ impl Explorer {
                     self.request(&connection, Some(&database), Explore::Indexes(table), cx);
                 }
             }
-            Some(Node::Group { .. } | Node::Note) => {}
+            // A search hit lists nothing under it.
+            Some(Node::Group { .. } | Node::Object { hit: true, .. } | Node::Note) => {}
         }
     }
 
@@ -855,6 +830,7 @@ impl Explorer {
             connection,
             database,
             key,
+            hit,
         } = Node::parse(&self.selected(cx)?)?
         else {
             return None;
@@ -862,7 +838,7 @@ impl Explorer {
         let object = self
             .servers
             .get(&connection)?
-            .object(&database, &key)?
+            .object(&database, &key, hit)?
             .clone();
         Some((connection, database, object))
     }
@@ -888,6 +864,11 @@ impl Explorer {
     pub(super) fn refresh(&mut self, cx: &mut Context<Self>) {
         let Some(id) = self.selected(cx) else { return };
         match Node::parse(&id) {
+            Some(Node::Object {
+                connection,
+                hit: true,
+                ..
+            }) => return self.search_again(&connection, cx),
             None => {
                 let Some(server) = self.servers.get_mut(&id) else {
                     return;
@@ -925,11 +906,12 @@ impl Explorer {
                 connection,
                 database,
                 key,
+                hit,
             }) => {
                 let Some(server) = self.servers.get(&connection) else {
                     return Vec::new();
                 };
-                let Some(object) = server.object(&database, &key) else {
+                let Some(object) = server.object(&database, &key, hit) else {
                     return Vec::new();
                 };
                 let forms: [(&'static str, Script, Box<dyn Action>); 3] = [
