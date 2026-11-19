@@ -543,7 +543,7 @@ fn export_refuses_a_result_still_receiving_rows() {
 }
 
 #[tokio::test]
-async fn run_to_file_writes_two_result_files_and_returns_messages_and_counts() {
+async fn run_to_file_writes_two_result_files_and_delivers_messages_and_counts() {
     use dbide_engine::session::{Event, Run, Severity};
     let message = Event::Message {
         text: "hello".into(),
@@ -567,11 +567,13 @@ async fn run_to_file_writes_two_result_files_and_returns_messages_and_counts() {
     );
     let directory = tempfile::tempdir().unwrap();
     let rows_written = AtomicU64::new(99);
+    let mut events = Vec::new();
     let report = export::run_to_file(
         run,
         &directory.path().join("rows.csv"),
         &Format::Csv { bom: false },
         &rows_written,
+        |event| events.push(event),
     )
     .await
     .unwrap();
@@ -586,12 +588,67 @@ async fn run_to_file_writes_two_result_files_and_returns_messages_and_counts() {
         std::fs::read_to_string(&report.files[1].path).unwrap(),
         "b\r\n2\r\n"
     );
-    assert_eq!(report.events[0], message);
-    assert_eq!(report.events[1], Event::RowCount(1));
-    assert!(matches!(report.events[2], Event::Done { .. }));
+    assert_eq!(events[0], message);
+    assert_eq!(events[1], Event::RowCount(1));
+    assert!(matches!(events[2], Event::Done { .. }));
     assert_eq!(report.files[0].rows, 1);
     assert_eq!(report.files[1].max_page_rows, 0);
     assert_eq!(rows_written.load(Ordering::Relaxed), 2);
+}
+
+#[tokio::test]
+async fn run_to_file_delivers_messages_before_rows_end() {
+    use dbide_engine::session::{Event, Run, Severity};
+    use futures::StreamExt;
+    use std::sync::atomic::AtomicBool;
+
+    let delivered = Arc::new(AtomicBool::new(false));
+    let observed = Arc::clone(&delivered);
+    let first = Event::Message {
+        text: "before rows".into(),
+        severity: Severity::Info,
+        line: None,
+    };
+    let last = Event::Message {
+        text: "after rows".into(),
+        severity: Severity::Info,
+        line: None,
+    };
+    let source = futures::stream::iter(vec![
+        first.clone(),
+        Event::ResultSetStarted {
+            columns: columns(&["a"]),
+        },
+        Event::Rows(vec![vec![Value::Integer(1)]; 4096]),
+        last.clone(),
+    ])
+    .inspect(move |event| {
+        if matches!(event, Event::Rows(_)) {
+            assert!(
+                observed.load(Ordering::Relaxed),
+                "message must precede rows"
+            );
+        }
+    });
+    let directory = tempfile::tempdir().unwrap();
+    let run = Run::new(source, tokio_util::sync::CancellationToken::new());
+    let mut events = Vec::new();
+    let report = export::run_to_file(
+        run,
+        &directory.path().join("rows.csv"),
+        &Format::default(),
+        &AtomicU64::new(0),
+        |event| {
+            delivered.store(true, Ordering::Relaxed);
+            events.push(event);
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(events[..2], [first, last]);
+    assert!(matches!(events[2], Event::Done { .. }));
+    assert_eq!(events.len(), 3);
+    assert_eq!(report.files[0].rows, 4096);
 }
 
 #[tokio::test]
@@ -606,7 +663,7 @@ async fn run_to_file_publishes_progress_before_the_run_ends() {
     let (mut sender, receiver) = futures::channel::mpsc::channel(1);
     let writer = tokio::spawn(async move {
         let run = Run::new(receiver, tokio_util::sync::CancellationToken::new());
-        export::run_to_file(run, &path, &Format::default(), &progress).await
+        export::run_to_file(run, &path, &Format::default(), &progress, |_| {}).await
     });
 
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
@@ -669,11 +726,13 @@ async fn cancelled_run_to_file_leaves_a_partial_file_and_returns_the_error() {
     let run = Run::new(source, token);
     let directory = tempfile::tempdir().unwrap();
     let rows_written = AtomicU64::new(0);
+    let mut events = Vec::new();
     let report = export::run_to_file(
         run,
         &directory.path().join("rows.csv"),
         &Format::Csv { bom: false },
         &rows_written,
+        |event| events.push(event),
     )
     .await
     .unwrap();
@@ -686,7 +745,7 @@ async fn cancelled_run_to_file_leaves_a_partial_file_and_returns_the_error() {
         "a\r\n1\r\n"
     );
     assert!(!directory.path().join("rows-1.csv").exists());
-    assert!(matches!(&report.events[1], Event::Error { text, .. } if text == "Run was cancelled"));
+    assert!(matches!(&events[1], Event::Error { text, .. } if text == "Run was cancelled"));
     assert_eq!(rows_written.load(Ordering::Relaxed), 1);
 }
 
@@ -704,7 +763,8 @@ async fn run_to_file_rejects_rows_without_a_header() {
             run,
             &directory.path().join("rows.csv"),
             &Format::default(),
-            &rows_written
+            &rows_written,
+            |_| {},
         )
         .await
         .is_err()
@@ -714,9 +774,15 @@ async fn run_to_file_rejects_rows_without_a_header() {
 
 #[tokio::test]
 async fn run_to_file_rejects_a_row_with_the_wrong_width() {
-    use dbide_engine::session::{Event, Run};
+    use dbide_engine::session::{Event, Run, Severity};
+    let message = Event::Message {
+        text: "before failure".into(),
+        severity: Severity::Info,
+        line: None,
+    };
     let run = Run::new(
         futures::stream::iter(vec![
+            message.clone(),
             Event::ResultSetStarted {
                 columns: columns(&["a"]),
             },
@@ -726,18 +792,21 @@ async fn run_to_file_rejects_a_row_with_the_wrong_width() {
     );
     let directory = tempfile::tempdir().unwrap();
     let rows_written = AtomicU64::new(0);
+    let mut events = Vec::new();
     assert_eq!(
         export::run_to_file(
             run,
             &directory.path().join("rows.csv"),
             &Format::default(),
-            &rows_written
+            &rows_written,
+            |event| events.push(event),
         )
         .await
         .unwrap_err()
         .to_string(),
         "Invalid result row: expected 1 cells, received 0"
     );
+    assert_eq!(events, [message]);
     assert_eq!(rows_written.load(Ordering::Relaxed), 1);
     assert!(directory.path().join("rows-1.csv.partial").exists());
     assert!(!directory.path().join("rows-1.csv").exists());
@@ -761,15 +830,17 @@ async fn run_to_file_preserves_server_errors_and_empty_results() {
         tokio_util::sync::CancellationToken::new(),
     );
     let directory = tempfile::tempdir().unwrap();
+    let mut events = Vec::new();
     let report = export::run_to_file(
         run,
         &directory.path().join("rows.csv"),
         &Format::Csv { bom: false },
         &AtomicU64::new(0),
+        |event| events.push(event),
     )
     .await
     .unwrap();
-    assert_eq!(report.events[0], error);
+    assert_eq!(events[0], error);
     assert_eq!(report.files[0].rows, 0);
     assert_eq!(
         report.files[0].path,
@@ -805,6 +876,7 @@ async fn cancelled_file(format: Format, extension: &str) -> Vec<u8> {
         &directory.path().join(format!("rows.{extension}")),
         &format,
         &AtomicU64::new(0),
+        |_| {},
     )
     .await
     .unwrap();

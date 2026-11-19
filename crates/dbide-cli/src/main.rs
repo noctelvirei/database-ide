@@ -105,16 +105,13 @@ async fn run() -> Result<(), Error> {
                 None => batch.expect("clap requires batch or file"),
             };
             let mut session = session::connect(&parsed.connection, password).await?;
+            let mut failed = false;
             let report = export::run_to_file(
                 session.run(&batch),
                 &output,
                 &export::Format::default(),
                 &AtomicU64::new(0),
-            )
-            .await?;
-            let mut failed = false;
-            for event in report.events {
-                match event {
+                |event| match event {
                     Event::Message { text, severity, .. } => println!("{severity:?}: {text}"),
                     Event::RowCount(count) => println!("{count} rows"),
                     Event::Error { text, line, code } => {
@@ -126,8 +123,9 @@ async fn run() -> Result<(), Error> {
                         failed = true;
                     }
                     _ => {}
-                }
-            }
+                },
+            )
+            .await?;
             for file in report.files {
                 println!("{}: {} rows", file.path.display(), file.rows);
             }

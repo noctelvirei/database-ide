@@ -224,17 +224,27 @@ impl Runtime {
                     rows_written,
                 } = &job
                 {
-                    let written = match export::run_to_file(run, path, format, rows_written).await {
-                        Ok(report) => {
-                            for event in report.events {
-                                if updates.send(RunUpdate::Event(event)).await.is_err() {
-                                    return;
-                                }
-                            }
-                            Ok(report.files)
-                        }
-                        Err(error) => Err(error.to_string()),
+                    let (events, mut incoming) = mpsc::unbounded();
+                    let write = async move {
+                        Ok::<_, mpsc::SendError>(
+                            export::run_to_file(run, path, format, rows_written, move |event| {
+                                let _ = events.unbounded_send(event);
+                            })
+                            .await,
+                        )
                     };
+                    let forward = async {
+                        while let Some(event) = incoming.next().await {
+                            updates.send(RunUpdate::Event(event)).await?;
+                        }
+                        Ok(())
+                    };
+                    // Dropping the writer cancels the run if the UI stops receiving updates.
+                    let written = match futures::future::try_join(write, forward).await {
+                        Ok((report, ())) => report.map(|report| report.files),
+                        Err(_) => return,
+                    }
+                    .map_err(|error| error.to_string());
                     if updates.send(RunUpdate::Written(written)).await.is_err() {
                         return;
                     }
