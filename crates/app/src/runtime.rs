@@ -365,30 +365,35 @@ impl Runtime {
         })
     }
 
-    /// The rows each of `check`'s flagged statements would change, in finding order, with
-    /// the session back. The statements are planned, never run; `None` where the optimizer
-    /// gives no estimate or the statement isn't an UPDATE or DELETE (`danger::estimates`).
-    /// Sending on `stop`'s sender, or dropping it, cancels the planning on the server and
-    /// gives the session back promptly with every estimate `None`.
+    /// Plans each of `check`'s flagged statements, never running them, and sends
+    /// `(index into check.statements, rows)` on `found` as soon as each estimate is made, in
+    /// finding order. Rows are `None` where the optimizer gives no estimate or the statement
+    /// isn't an UPDATE or DELETE (`danger::estimates`). Resolves to the session once every
+    /// estimate is sent, or promptly once `stop`'s sender sends or is dropped, which cancels
+    /// the planning on the server; estimates not yet made are then never sent. `found`
+    /// closes when the future resolves.
     pub fn estimate_rows(
         &self,
         session: Box<dyn Session>,
         batch: String,
         check: DangerCheck,
         engine: Engine,
+        found: mpsc::UnboundedSender<(usize, Option<f64>)>,
         stop: oneshot::Receiver<()>,
-    ) -> impl Future<Output = (Box<dyn Session>, Vec<Option<f64>>)> + use<> {
-        self.with_session(session, move |session| {
+    ) -> impl Future<Output = Box<dyn Session>> + use<> {
+        let estimating = self.with_session(session, move |session| {
             Box::pin(async move {
-                let planning = estimates::estimate_rows(session, &batch, &check, engine);
+                let mut send = |index, rows| {
+                    // A closed receiver means the dialog has gone; the stop follows.
+                    let _ = found.unbounded_send((index, rows));
+                };
+                let planning = estimates::estimate_each(session, &batch, &check, engine, &mut send);
                 // Dropping the planning drops its run, which cancels it before the session's
                 // next batch (the engine's `Run` contract).
-                match futures::future::select(Box::pin(planning), stop).await {
-                    futures::future::Either::Left((rows, _)) => rows,
-                    futures::future::Either::Right(_) => vec![None; check.statements.len()],
-                }
+                let _ = futures::future::select(Box::pin(planning), stop).await;
             })
-        })
+        });
+        async move { estimating.await.0 }
     }
 
     /// The server's user databases, by name, with the session back.
