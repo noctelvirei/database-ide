@@ -1,7 +1,7 @@
 //! Query tabs as a user drives them against the real SQL Server, PostgreSQL and MySQL servers
 //! from `dbide-test-servers` (CODE_STANDARDS.md, "UI E2E harness"): open a tab on a saved
 //! connection, run a batch with an error and jump to its line, cancel a long query, decline a
-//! DELETE with no WHERE, and switch database.
+//! DELETE with no WHERE once its estimated rows are in, run one anyway, and switch database.
 //!
 //! The connection and its password are saved before the app starts, in a temp APPDATA and
 //! under the tests' Credential Manager service, which the test empties afterwards. Scripts are
@@ -107,7 +107,12 @@ fn drive_a_query_tab(lab: &Lab) -> Vec<Value> {
             "name": "ask before a DELETE",
             "input": [{ "key": "ctrl-a" }, { "text": "DELETE FROM kept" }, { "key": "f5" }],
         },
+        { "name": "estimate the DELETE", "input": ["idle", { "shot": "danger" }] },
         { "name": "decline the DELETE", "input": [{ "key": "escape" }, "idle"] },
+        {
+            "name": "run a DELETE anyway",
+            "input": [{ "key": "ctrl-a" }, { "text": "DELETE FROM gone" }, { "key": "f5" }, { "key": "enter" }, "idle"],
+        },
         { "name": "list databases", "input": [{ "key": "ctrl-u" }, "idle"] },
         {
             "name": "switch database",
@@ -173,6 +178,9 @@ fn drive_a_query_tab(lab: &Lab) -> Vec<Value> {
     let asking = state(&lines, "ask before a DELETE");
     assert_eq!(asking["tab_dialog"]["dialog"], "danger", "{asking:#}");
     assert_eq!(asking["tab_dialog"]["statements"][0]["line"], 1);
+    let estimated = state(&lines, "estimate the DELETE");
+    let rows = &estimated["tab_dialog"]["statements"][0]["rows"];
+    assert!(rows["about"].is_u64(), "{estimated:#}");
     let declined = state(&lines, "decline the DELETE");
     assert_eq!(declined["tab_dialog"], Value::Null);
     assert_eq!(declined["focused_pane"], "Editor");
@@ -192,8 +200,10 @@ fn drive_a_query_tab(lab: &Lab) -> Vec<Value> {
     lines
 }
 
-const SEED: &str = "CREATE TABLE kept (id int); INSERT INTO kept VALUES (1);";
+const SEED: &str = "CREATE TABLE kept (id int); INSERT INTO kept VALUES (1);
+    CREATE TABLE gone (id int); INSERT INTO gone VALUES (1);";
 const COUNT: &str = "SELECT count(*) FROM kept;";
+const GONE: &str = "SELECT count(*) FROM gone;";
 
 #[test]
 fn ui_mssql_a_query_tab_runs_jumps_to_errors_cancels_asks_and_switches() {
@@ -213,6 +223,11 @@ fn ui_mssql_a_query_tab_runs_jumps_to_errors_cancels_asks_and_switches() {
         other_database: "master",
     });
     assert_eq!(mssql.query(COUNT).unwrap().trim(), "1", "the DELETE ran");
+    assert_eq!(
+        mssql.query(GONE).unwrap().trim(),
+        "0",
+        "Run anyway ran the DELETE"
+    );
 }
 
 #[test]
@@ -233,6 +248,11 @@ fn ui_pg_a_query_tab_runs_jumps_to_errors_cancels_asks_and_switches() {
         other_database: "postgres",
     });
     assert_eq!(postgres.query(COUNT).unwrap().trim(), "1", "the DELETE ran");
+    assert_eq!(
+        postgres.query(GONE).unwrap().trim(),
+        "0",
+        "Run anyway ran the DELETE"
+    );
 }
 
 #[test]
@@ -253,4 +273,9 @@ fn ui_mysql_a_query_tab_runs_jumps_to_errors_cancels_asks_and_switches() {
         other_database: "information_schema",
     });
     assert_eq!(mysql.query(COUNT).unwrap().trim(), "1", "the DELETE ran");
+    assert_eq!(
+        mysql.query(GONE).unwrap().trim(),
+        "0",
+        "Run anyway ran the DELETE"
+    );
 }

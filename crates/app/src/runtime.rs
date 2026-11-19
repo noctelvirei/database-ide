@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
 use dbide_engine::connections::Connection;
-use dbide_engine::danger::Engine;
+use dbide_engine::danger::{DangerCheck, Engine, estimates};
 use dbide_engine::export::{self, FileReport, Format};
 use dbide_engine::objects::{self, Index, Kind, Object, Script, Search, SearchReport};
 use dbide_engine::plan::{self, Plan};
@@ -362,6 +362,21 @@ impl Runtime {
                     .await
                     .map_err(|error| error.to_string())
             })
+        })
+    }
+
+    /// The rows each of `check`'s flagged statements would change, in finding order, with
+    /// the session back. The statements are planned, never run; `None` where the optimizer
+    /// gives no estimate or the statement isn't an UPDATE or DELETE (`danger::estimates`).
+    pub fn estimate_rows(
+        &self,
+        session: Box<dyn Session>,
+        batch: String,
+        check: DangerCheck,
+        engine: Engine,
+    ) -> impl Future<Output = (Box<dyn Session>, Vec<Option<f64>>)> + use<> {
+        self.with_session(session, move |session| {
+            Box::pin(async move { estimates::estimate_rows(session, &batch, &check, engine).await })
         })
     }
 
