@@ -742,6 +742,37 @@ fn deleting_a_subtree_returns_only_its_connection_credential_ids() {
 }
 
 #[test]
+fn credman_concurrent_stores_and_deletes_all_take_effect() {
+    let start = std::sync::Barrier::new(8);
+    std::thread::scope(|scope| {
+        for thread in 0..8 {
+            let start = &start;
+            scope.spawn(move || {
+                let mut tree = Connections::default();
+                let mut cleanup = CredentialCleanup::new(Vec::new());
+                start.wait();
+                for entry in 0..20 {
+                    let mut connection = Connection::new(Engine::SqlServer, "sql01.example.test");
+                    connection.sign_in = SignInMethod::Password;
+                    let id = tree.add_connection(connection, None).unwrap();
+                    cleanup.ids.push(id.clone());
+                    let saved = tree.connections().last().unwrap();
+                    let secret = format!("fixture-secret-{thread}-{entry}");
+
+                    cleanup.credentials.store(saved, &secret).unwrap();
+                    assert_eq!(
+                        cleanup.credentials.read(saved).unwrap().unwrap().expose(),
+                        secret
+                    );
+                    cleanup.credentials.delete(&id).unwrap();
+                    assert!(cleanup.credentials.read(saved).unwrap().is_none());
+                }
+            });
+        }
+    });
+}
+
+#[test]
 fn credman_failed_save_after_delete_keeps_the_password() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("connections.toml");
