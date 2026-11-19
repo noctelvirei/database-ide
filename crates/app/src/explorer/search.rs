@@ -1,9 +1,11 @@
 //! The explorer's filter box, and searching every database of a connection for objects by
 //! name (docs/spec.md, "Object explorer and Script as"). The filter box only filters the rows
-//! already loaded; Ctrl+Enter in it searches every user database of the selected connection, including ones never
-//! opened, and lists the hits under the connection in a "Search" row. A hit works like an
-//! object row: Script as, Ctrl+N on its database. Databases the search couldn't open are
-//! named in the messages strip with the reason.
+//! already loaded. Ctrl+Enter in it searches every user database of a connection, including
+//! ones never opened: the selected row's connection, or, once the filter has hidden that row,
+//! the connection selected before, or the only connected one. The hits list under the
+//! connection in a "Search" row and act on the object the search found: Script as, and
+//! Refresh, which runs the search again. Databases the search couldn't open are named in the
+//! messages strip with the reason.
 //!
 //! A new search replaces the last one on that connection, and clearing the filter drops every
 //! search; a reply to a replaced search is ignored.

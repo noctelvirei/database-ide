@@ -83,7 +83,7 @@ Clipboard text with headers, CSV, `.xlsx` (constant-memory writing), INSERT scri
 
 Per engine: databases, schemas, tables, views, procedures, functions, indexes; a table's columns, keys and indexes; filter and search across databases; Script as CREATE / ALTER / SELECT from the system catalogs.
 
-In the explorer, Ctrl+F filters the rows already loaded. Ctrl+Enter in the filter box searches every user database of the selected row's connection (or the only connected one) for tables, views, materialized views, procedures and functions whose name holds the text, up to 500 hits, through one short-lived session per database. The hits list under the connection in a Search row and work like object rows (Script as). Each database the search can't open is named in the messages strip with the reason. Clearing the filter drops the search.
+In the explorer, Ctrl+F filters the rows already loaded. Ctrl+Enter in the filter box searches every user database of the selected row's connection (once the filter hides that row, the connection selected before it did, or the only connected one) for tables, views, materialized views, procedures and functions whose name holds the text, up to 500 hits, through one short-lived session per database. The hits list under the connection in a Search row; Script as on a hit scripts the object the search found, and Refresh on a hit runs the search again. Each database the search can't open is named in the messages strip with the reason. Clearing the filter drops the search.
 
 ## Formatter
 
