@@ -11,8 +11,9 @@
 use std::fmt;
 
 use dbide_engine::connections::SavedConnection;
-use dbide_engine::danger::{self, DangerCheck};
-use dbide_engine::session::{CancelHandle, Event, Session, Severity};
+use dbide_engine::danger::{self, DangerCheck, Engine};
+use dbide_engine::plan::Plan;
+use dbide_engine::session::{CancelHandle, Event, PlanMode, Session, Severity};
 use futures::StreamExt as _;
 use gpui::{App, AppContext as _, Context, Entity, SharedString, Window};
 use gpui_component::input::{EditorState, Position};
@@ -20,7 +21,7 @@ use serde::Serialize;
 
 use crate::messages::{Message, Messages, Tone};
 use crate::results::{Results, ResultsEvent};
-use crate::runtime::{RunUpdate, Runtime};
+use crate::runtime::{Job, RunUpdate, Runtime};
 
 pub mod dialogs;
 
@@ -84,6 +85,8 @@ pub struct TabState {
     pub database: Option<String>,
     pub colour: Option<&'static str>,
     pub status: Status,
+    /// True when F5 returns the actual plan with the run (Ctrl+M).
+    pub actual_plan: bool,
     /// The editor caret's line, counted from one.
     pub cursor_line: u32,
     /// The editor's find panel, while it is open.
@@ -120,6 +123,10 @@ pub struct QueryTab {
     runs: u64,
     /// True while the formatter works on the tab's text.
     formatting: bool,
+    /// What the current or last run asked of the server.
+    job: Job,
+    /// Ctrl+M: F5 returns the actual plan with the run.
+    include_actual_plan: bool,
     /// False while another tab is on screen: a database list that loads then is dropped,
     /// so its picker never opens over another tab's editor.
     shown: bool,
@@ -168,6 +175,8 @@ impl QueryTab {
             run_cancelled: false,
             runs: 0,
             formatting: false,
+            job: Job::Run,
+            include_actual_plan: false,
             shown: true,
             dialog: None,
             messages: Messages::default(),
@@ -185,13 +194,13 @@ impl QueryTab {
         self.target.as_ref()
     }
 
-    /// True while the tab waits on the server, the formatter, or a copy from its results.
+    /// True while the tab waits on the server, the formatter, or a copy or save from its results.
     pub fn is_busy(&self, cx: &gpui::App) -> bool {
         matches!(
             self.status,
             Status::Connecting | Status::Running | Status::Switching | Status::Listing
         ) || self.formatting
-            || self.results.read(cx).is_copying()
+            || self.results.read(cx).is_working()
     }
 
     /// Ctrl+K Ctrl+F: formats the selection, or the whole tab, in the connection's dialect,
@@ -270,6 +279,7 @@ impl QueryTab {
             database: self.database.clone(),
             colour: crate::palette::name(self.target.as_ref().and_then(|t| t.colour.as_deref())),
             status: self.status,
+            actual_plan: self.include_actual_plan,
             cursor_line: self.editor.read(cx).cursor_position().line + 1,
             search: Some(self.editor.read(cx).search_session())
                 .filter(|search| search.open)
@@ -416,12 +426,12 @@ impl QueryTab {
         cx.notify();
     }
 
-    /// F5: runs the selection, or the whole tab, after the danger check's confirmation when
-    /// the batch has a dangerous statement and the connection asks for one.
-    pub fn run(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// The selection, or the whole tab, with the editor line it starts on (from zero); `None`,
+    /// saying why, when the session is busy or there is nothing to run.
+    fn batch(&mut self, cx: &mut Context<Self>) -> Option<(String, u32)> {
         if self.status != Status::Ready {
             self.take_session(cx);
-            return;
+            return None;
         }
         let editor = self.editor.read(cx);
         let text = editor.value();
@@ -437,8 +447,70 @@ impl QueryTab {
         };
         if batch.trim().is_empty() {
             self.say("There's nothing to run.", Tone::Plain, cx);
-            return;
+            return None;
         }
+        Some((batch, first_line))
+    }
+
+    /// What F5 asks of the server: the results, or with Ctrl+M on, the actual plan too.
+    pub fn run_job(&self) -> Job {
+        if self.include_actual_plan {
+            Job::Plan(PlanMode::Actual)
+        } else {
+            Job::Run
+        }
+    }
+
+    /// Ctrl+M: turns returning the actual plan with each run on or off.
+    pub fn toggle_actual_plan(&mut self, cx: &mut Context<Self>) {
+        self.include_actual_plan = !self.include_actual_plan;
+        let text = if self.include_actual_plan {
+            "Include actual plan is on: F5 runs the batch and shows each statement's plan."
+        } else {
+            "Include actual plan is off."
+        };
+        self.say(text, Tone::Plain, cx);
+    }
+
+    /// Ctrl+L: shows the estimated plan of the selection, or the whole tab, without running
+    /// it, so it needs no danger check.
+    pub fn estimated_plan(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((batch, first_line)) = self.batch(cx) {
+            self.start_run(
+                batch,
+                first_line,
+                Job::Plan(PlanMode::Estimated),
+                window,
+                cx,
+            );
+        }
+    }
+
+    /// Shows a plan opened from a file in place of the last run's results. Returns false,
+    /// saying why, while a run is filling the results.
+    pub fn show_plan(&mut self, plan: Plan, cx: &mut Context<Self>) -> bool {
+        if self.status == Status::Running {
+            self.say(
+                "This tab's run is still filling its results. Open the plan when it ends, or in another tab.",
+                Tone::Plain,
+                cx,
+            );
+            return false;
+        }
+        self.results.update(cx, |results, cx| {
+            results.clear(cx);
+            results.add_plan(plan, true, cx);
+        });
+        true
+    }
+
+    /// F5: runs the selection, or the whole tab, after the danger check's confirmation when
+    /// the batch has a dangerous statement and the connection asks for one. With Ctrl+M on,
+    /// the run returns its actual plan too.
+    pub fn run(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((batch, first_line)) = self.batch(cx) else {
+            return;
+        };
         let Some(target) = &self.target else { return };
         if target.danger_check {
             let check = danger::check(&batch, target.saved.connection.engine);
@@ -454,7 +526,7 @@ impl QueryTab {
                 );
             }
         }
-        self.start_run(batch, first_line, window, cx);
+        self.start_run(batch, first_line, self.run_job(), window, cx);
     }
 
     fn ask_before_running(
@@ -468,12 +540,13 @@ impl QueryTab {
         dialogs::ask_before_running(self, batch, first_line, check, window, cx);
     }
 
-    /// Sends `batch` to the server. `first_line` is the editor line the batch starts on,
-    /// counted from zero, so the run's line numbers map back to the editor.
+    /// Sends `batch` to the server for `job`. `first_line` is the editor line the batch
+    /// starts on, counted from zero, so the run's line numbers map back to the editor.
     fn start_run(
         &mut self,
         batch: String,
         first_line: u32,
+        job: Job,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -485,9 +558,10 @@ impl QueryTab {
         self.cancel_pressed = false;
         self.run_cancelled = false;
         self.runs += 1;
+        self.job = job;
         let run = self.runs;
         self.results.update(cx, |results, cx| results.clear(cx));
-        let mut updates = self.runtime.run(session, batch);
+        let mut updates = self.runtime.run(session, batch, job);
         // Row counts grow on the runtime without an update; redraw them while the run lasts.
         let results = self.results.downgrade();
         cx.spawn(async move |this, cx| {
@@ -551,10 +625,41 @@ impl QueryTab {
                     .update(cx, |results, cx| results.add(reader, window, cx));
                 return;
             }
+            RunUpdate::Plan(Ok(plan)) => {
+                // `.sqlplan` files hold SQL Server's showplan only.
+                let savable = self.engine() == Some(Engine::SqlServer);
+                self.results
+                    .update(cx, |results, cx| results.add_plan(plan, savable, cx));
+                return;
+            }
+            RunUpdate::Plan(Err(error)) => Message {
+                text: format!("Couldn't read the plan: {error}").into(),
+                tone: Tone::Error,
+                line: None,
+            },
             RunUpdate::Finished { session, results } => {
                 self.cancel = None;
                 self.give_back(session);
                 self.results.update(cx, |pane, cx| pane.keep(results, cx));
+                // PostgreSQL's and MySQL's actual plans run each statement in a transaction
+                // the engine rolls back (docs/spec.md, "Plans"); SQL Server's keep their
+                // changes, as in SSMS.
+                let rolled_back = match self.engine() {
+                    Some(Engine::PostgreSql) => Some("PostgreSQL"),
+                    Some(Engine::MySql) => Some("MySQL"),
+                    Some(Engine::SqlServer) | None => None,
+                };
+                if self.job == Job::Plan(PlanMode::Actual)
+                    && let Some(server) = rolled_back
+                {
+                    self.say(
+                        format!(
+                            "{server} ran the statements for their actual plans, then rolled back their changes."
+                        ),
+                        Tone::Plain,
+                        cx,
+                    );
+                }
                 return;
             }
             RunUpdate::Event(event) => match event {
@@ -596,11 +701,16 @@ impl QueryTab {
                 Event::Done { elapsed } => {
                     Message::plain(format!("Finished in {:.2} s.", elapsed.as_secs_f64()))
                 }
-                // U4 shows result sets and plans.
+                // The runtime turns these into result sets and plans.
                 Event::ResultSetStarted { .. } | Event::Rows(_) | Event::Plan { .. } => return,
             },
         };
         self.messages.push(message);
+    }
+
+    /// The engine of the tab's connection.
+    fn engine(&self) -> Option<Engine> {
+        self.target.as_ref().map(|t| t.saved.connection.engine)
     }
 
     /// True once the runtime has started the current run, so a cancel reaches the server.

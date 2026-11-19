@@ -1,0 +1,52 @@
+{
+  "query": "/* select#1 */ select straight_join `dbide_test_probe`.`trees`.`id` AS `id`,`dbide_test_probe`.`trees`.`name` AS `name`,`dbide_test_probe`.`leaves`.`id` AS `id`,`dbide_test_probe`.`leaves`.`tree_id` AS `tree_id` from `dbide_test_probe`.`trees` join `dbide_test_probe`.`leaves` FORCE INDEX (`tree_idx`) where (`dbide_test_probe`.`leaves`.`tree_id` = `dbide_test_probe`.`trees`.`id`)",
+  "inputs": [
+    {
+      "operation": "Table scan on trees",
+      "table_name": "trees",
+      "access_type": "table",
+      "actual_rows": 2.0,
+      "schema_name": "dbide_test_probe",
+      "actual_loops": 1,
+      "used_columns": [
+        "id",
+        "name"
+      ],
+      "estimated_rows": 2.0,
+      "actual_last_row_ms": 0.0192,
+      "actual_first_row_ms": 0.018600000000000002,
+      "estimated_total_cost": 0.45
+    },
+    {
+      "covering": true,
+      "operation": "Covering index lookup on leaves using tree_idx (tree_id=trees.id)",
+      "index_name": "tree_idx",
+      "table_name": "leaves",
+      "access_type": "index",
+      "actual_rows": 1.5,
+      "schema_name": "dbide_test_probe",
+      "actual_loops": 2,
+      "used_columns": [
+        "id",
+        "tree_id"
+      ],
+      "estimated_rows": 1.5,
+      "lookup_condition": "tree_id=trees.id",
+      "index_access_type": "index_lookup",
+      "actual_last_row_ms": 0.00655,
+      "actual_first_row_ms": 0.00485,
+      "estimated_total_cost": 0.3251372118551043
+    }
+  ],
+  "join_type": "inner join",
+  "operation": "Nested loop inner join",
+  "query_type": "select",
+  "access_type": "join",
+  "actual_rows": 3.0,
+  "actual_loops": 1,
+  "estimated_rows": 3.0,
+  "join_algorithm": "nested_loop",
+  "actual_last_row_ms": 0.034999999999999996,
+  "actual_first_row_ms": 0.0298,
+  "estimated_total_cost": 1.2502744237102086
+}

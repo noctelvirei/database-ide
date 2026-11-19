@@ -16,7 +16,10 @@ use std::sync::Arc;
 use dbide_engine::connections::Connection;
 use dbide_engine::danger::Engine;
 use dbide_engine::objects::{self, Index, Kind, Object, Script};
-use dbide_engine::session::{self, CancelHandle, ConnectError, ConnectErrorKind, Event, Session};
+use dbide_engine::plan::{self, Plan};
+use dbide_engine::session::{
+    self, CancelHandle, ConnectError, ConnectErrorKind, Event, PlanMode, Session,
+};
 use dbide_engine::spill::{Reader, Store};
 use futures::channel::{mpsc, oneshot};
 use futures::future::BoxFuture;
@@ -34,7 +37,10 @@ pub enum RunUpdate {
     /// A result set has started. Its rows appear in the reader as they arrive, and it is
     /// complete once the next result set starts or the run finishes.
     ResultSet(Reader),
-    /// One engine event other than a result set or its rows.
+    /// One statement's plan, or batch's on SQL Server, parsed off the UI thread; the error
+    /// says why a payload couldn't be read.
+    Plan(Result<Plan, String>),
+    /// One engine event other than a result set, its rows or a plan.
     Event(Event),
     /// The run is over: the session is free for the next one, and `results` owns the
     /// run's spill files, in result order. Dropping a store deletes its file and ends its
@@ -43,6 +49,16 @@ pub enum RunUpdate {
         session: Box<dyn Session>,
         results: Vec<Store>,
     },
+}
+
+/// What a run asks of the server.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Job {
+    /// Runs the batch for its results.
+    Run,
+    /// Returns the batch's plans: estimated without running it, or actual by running it
+    /// (docs/spec.md, "Plans").
+    Plan(PlanMode),
 }
 
 /// One catalog call the object explorer makes on a session (docs/spec.md, "Object explorer
@@ -164,15 +180,23 @@ impl Runtime {
         self.0.spawn(async move { drop(session) });
     }
 
-    /// Runs `batch` on `session`. The receiver yields the run's updates and ends after
-    /// `Finished`; if the UI drops it, the run is cancelled, the session closed and the
+    /// Does `job` with `batch` on `session`. The receiver yields the run's updates and ends
+    /// after `Finished`; if the UI drops it, the run is cancelled, the session closed and the
     /// spill files deleted.
-    pub fn run(&self, mut session: Box<dyn Session>, batch: String) -> mpsc::Receiver<RunUpdate> {
+    pub fn run(
+        &self,
+        mut session: Box<dyn Session>,
+        batch: String,
+        job: Job,
+    ) -> mpsc::Receiver<RunUpdate> {
         let (mut updates, receiver) = mpsc::channel(RUN_UPDATES_BUFFERED);
         self.0.spawn(async move {
             let mut results = Results::default();
             {
-                let mut run = session.run(&batch);
+                let mut run = match job {
+                    Job::Run => session.run(&batch),
+                    Job::Plan(mode) => session.plan(&batch, mode),
+                };
                 if updates
                     .send(RunUpdate::Started(run.cancel_handle()))
                     .await
@@ -190,6 +214,9 @@ impl Runtime {
                             Some(error) => RunUpdate::Event(error),
                             None => continue,
                         },
+                        Event::Plan { payload, format } => RunUpdate::Plan(
+                            plan::parse(&payload, format).map_err(|error| error.to_string()),
+                        ),
                         other => RunUpdate::Event(other),
                     };
                     // A UI that went away drops the run, which cancels it.
