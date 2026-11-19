@@ -151,6 +151,11 @@ fn ui_pg_a_restored_tab_signs_in_on_f5_and_the_history_reopens_a_run() {
             { "name": "history", "input": [{ "key": "ctrl-shift-h" }, "idle"] },
             { "name": "search", "input": [{ "text": "seven" }] },
             { "name": "reopen", "input": [{ "key": "enter" }, "idle"] },
+            {
+                "name": "actual plan run",
+                "input": [{ "key": "ctrl-m" }, { "key": "f5" }, "idle", { "key": "ctrl-shift-h" }, "idle"],
+            },
+            { "name": "Ctrl+N beside it", "input": [{ "key": "escape" }, { "key": "ctrl-n" }, "idle"] },
         ]),
     );
 
@@ -190,6 +195,24 @@ fn ui_pg_a_restored_tab_signs_in_on_f5_and_the_history_reopens_a_run() {
     assert_eq!(reopened["history"], Value::Null, "the panel closes");
     assert_eq!(reopened["active_tab"], 3, "{reopened:#}");
     assert_eq!(reopened["editor_text"], "SELECT 7 AS seven");
+    assert_eq!(
+        reopened["focused_pane"], "Editor",
+        "the reopened tab takes the keys"
+    );
     assert_eq!(reopened["tabs"][3]["connection"], "Lab");
     assert_eq!(reopened["tabs"][3]["status"], "unconnected");
+
+    let planned = &state(&lines, "actual plan run")["history"]["matches"];
+    assert_eq!(planned.as_array().unwrap().len(), 4, "{planned:#}");
+    assert!(
+        planned[0]
+            .as_str()
+            .unwrap()
+            .starts_with("SELECT 7 AS seven"),
+        "a run with its actual plan is in the history: {planned:#}"
+    );
+
+    let beside = state(&lines, "Ctrl+N beside it");
+    assert_eq!(beside["active_tab"], 4, "{beside:#}");
+    assert_eq!(beside["tabs"][4]["connection"], "Lab");
 }

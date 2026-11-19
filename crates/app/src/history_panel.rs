@@ -94,6 +94,9 @@ impl HistoryPanel {
                     None => "No runs match.",
                 }))
                 .on_ok(move |_, window, cx| {
+                    // Closed now, not by the dialog after its exit animation, so the focus
+                    // it hands back lands before the reopened tab takes it.
+                    window.close_dialog(cx);
                     if let Some(entry) = first.clone() {
                         reopen_first(entry, window, cx);
                     }

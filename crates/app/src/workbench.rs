@@ -294,8 +294,7 @@ impl Workbench {
             // The explorer signs in, then asks for the tab with `ExplorerEvent::OpenQuery`.
             return;
         }
-        let target = self.active_tab().read(cx).target().cloned();
-        self.open_tab(target, window, cx);
+        self.open_beside_active(window, cx);
     }
 
     /// Puts one of the app's notices in the strip of the tab on screen.

@@ -5,12 +5,19 @@
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
 /// How long an entry is kept.
 const KEPT: Duration = Duration::from_secs(90 * 24 * 60 * 60);
+
+/// Held for every append and every read-and-prune, so a prune never drops a run this app
+/// appends meanwhile.
+// shortcut: guards one app only; two apps sharing the file can still lose a run to a prune.
+// Upgrade to a lock file if people run several at once.
+static FILE: Mutex<()> = Mutex::new(());
 
 /// One run, as the history panel lists it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -64,6 +71,7 @@ pub fn append(path: &Path, entry: &Entry) -> std::io::Result<()> {
     }
     let mut line = serde_json::to_vec(entry).map_err(std::io::Error::other)?;
     line.push(b'\n');
+    let _held = FILE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     // One write per line, so a concurrent reader sees whole lines or none of this one.
     std::fs::OpenOptions::new()
         .create(true)
@@ -72,9 +80,10 @@ pub fn append(path: &Path, entry: &Entry) -> std::io::Result<()> {
         .write_all(&line)
 }
 
-/// The history at `path`, newest first, without entries older than 90 days at `now_ms`.
+/// The history at `path`, latest start first, without entries older than 90 days at `now_ms`.
 /// Rewrites the file when it dropped any. A missing file is an empty history. Blocking.
 pub fn load(path: &Path, now_ms: u64) -> Vec<Entry> {
+    let _held = FILE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let Ok(text) = std::fs::read_to_string(path) else {
         return Vec::new();
     };
@@ -96,12 +105,11 @@ pub fn load(path: &Path, now_ms: u64) -> Vec<Entry> {
             rewritten.extend(serde_json::to_vec(entry).expect("entry serialises"));
             rewritten.push(b'\n');
         }
-        // shortcut: a run appended between the read and this rewrite is lost; rare, since
-        // only the history panel rewrites. Upgrade with a lock file if it shows up.
         let _ = crate::replace_file::write(path, &rewritten);
     }
+    // Runs are appended as they finish, so a long run lands after a later short one.
     let mut newest_first = kept;
-    newest_first.reverse();
+    newest_first.sort_by_key(|entry| std::cmp::Reverse(entry.started_ms));
     newest_first
 }
 
@@ -200,6 +208,22 @@ mod tests {
         );
         let file = std::fs::read_to_string(&path).unwrap();
         assert_eq!(file.lines().count(), 2, "the dropped run leaves the file");
+    }
+
+    #[test]
+    fn a_long_run_that_finished_last_lists_by_when_it_started() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.jsonl");
+        append(&path, &run("SELECT 'short, started later'", NOW_MS)).unwrap();
+        append(&path, &run("SELECT 'long, started first'", NOW_MS - 60_000)).unwrap();
+
+        assert_eq!(
+            load(&path, NOW_MS),
+            [
+                run("SELECT 'short, started later'", NOW_MS),
+                run("SELECT 'long, started first'", NOW_MS - 60_000),
+            ]
+        );
     }
 
     #[test]

@@ -61,6 +61,13 @@ impl Workbench {
     ) {
         match event {
             QueryTabEvent::SignIn(id) => {
+                // The explorer's sign-in is modal, so a tab still waiting from before had its
+                // sign-in cancelled; it must not run when this one signs in.
+                for earlier in std::mem::take(&mut self.waking) {
+                    if let Some(earlier) = earlier.upgrade().filter(|e| e != tab) {
+                        earlier.update(cx, |earlier, _| earlier.stop_waiting());
+                    }
+                }
                 self.waking.push(tab.downgrade());
                 let found = self
                     .explorer
@@ -75,8 +82,8 @@ impl Workbench {
         }
     }
 
-    /// The explorer signed in for restored tabs: each one waiting on that connection
-    /// connects, and runs if F5 asked for it.
+    /// The explorer signed in for a restored tab: the one waiting on that connection
+    /// connects and runs.
     pub(super) fn resume_waking(
         &mut self,
         target: &QueryTarget,
@@ -166,8 +173,7 @@ impl Workbench {
                 this.opening = false;
                 match read {
                     Ok((text, encoding)) => {
-                        let target = this.active_tab().read(cx).target().cloned();
-                        this.open_tab(target, window, cx);
+                        this.open_beside_active(window, cx);
                         let tab = this.active_tab().clone();
                         tab.update(cx, |tab, cx| {
                             tab.load_file(path, text, encoding, window, cx)
@@ -181,6 +187,29 @@ impl Workbench {
             });
         })
         .detach();
+    }
+
+    /// Opens an empty tab on the active tab's connection and database. Beside a restored
+    /// tab that hasn't signed in yet, the new tab also waits for its first run, since the
+    /// active tab holds no password to connect with.
+    pub(super) fn open_beside_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let active = self.active_tab().read(cx);
+        if !active.is_asleep() {
+            let target = active.target().cloned();
+            self.open_tab(target, window, cx);
+            return;
+        }
+        let kept = active.saved(cx);
+        self.open_saved(
+            SavedTab {
+                connection_id: kept.connection_id,
+                database: kept.database,
+                ..SavedTab::default()
+            },
+            window,
+            cx,
+        );
+        self.schedule_save(cx);
     }
 
     /// Ctrl+S outside a grid or plan: saves the active tab to its `.sql` file.

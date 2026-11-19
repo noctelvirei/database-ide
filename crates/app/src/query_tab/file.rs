@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use dbide_engine::session::Event;
+use dbide_engine::session::{Event, PlanMode};
 use gpui::{App, Context, EventEmitter, SharedString, Window};
 
 use super::{QueryTab, QueryTarget, Status};
@@ -172,11 +172,12 @@ impl QueryTab {
     }
 
     /// True for a restored tab that keeps its connection but hasn't connected yet.
-    pub(super) fn is_asleep(&self) -> bool {
+    pub fn is_asleep(&self) -> bool {
         self.status == Status::Unconnected && self.target.is_some()
     }
 
     /// F5 on a restored tab: asks the workbench to sign in, then runs once connected.
+    /// Asking again replaces an earlier request the user may have cancelled.
     pub(super) fn wake(&mut self, cx: &mut Context<Self>) {
         let Some(target) = &self.target else { return };
         let (id, name) = (
@@ -188,9 +189,18 @@ impl QueryTab {
         cx.emit(QueryTabEvent::SignIn(id));
     }
 
+    /// Another tab asked to sign in after this one, so this one's sign-in was cancelled:
+    /// its F5 no longer runs once connected.
+    pub fn stop_waiting(&mut self) {
+        self.run_when_connected = false;
+    }
+
     /// The workbench signed in for this tab: connects on `target`, keeping the tab's
-    /// database, and runs if F5 asked for it.
+    /// database, and runs. Does nothing unless the tab is still waiting for its F5.
     pub fn resume(&mut self, mut target: QueryTarget, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.run_when_connected {
+            return;
+        }
         if !self.is_asleep() {
             return;
         }
@@ -199,9 +209,10 @@ impl QueryTab {
         self.connect(window, cx);
     }
 
-    /// Starts the history entry for a run of `batch` as `job`; plans leave none.
+    /// Starts the history entry for a run of `batch` as `job`; an estimated plan, which
+    /// runs nothing, leaves none.
     pub(super) fn start_entry(&mut self, batch: &str, job: &Job) {
-        if !matches!(job, Job::Run | Job::ToFile { .. }) {
+        if matches!(job, Job::Plan(PlanMode::Estimated)) {
             self.entry = None;
             return;
         }
