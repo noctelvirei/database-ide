@@ -24,10 +24,29 @@ pub async fn estimate_rows(
     check: &DangerCheck,
     engine: Engine,
 ) -> Vec<Option<f64>> {
-    let statements = candidates(batch, engine);
     let mut estimates = Vec::with_capacity(check.statements.len());
+    estimate_each(session, batch, check, engine, &mut |_, estimate| {
+        estimates.push(estimate);
+    })
+    .await;
+    estimates
+}
+
+/// Reports each finding's estimate once, in order, as soon as it is resolved.
+/// Indices refer to `check.statements`; estimates follow `estimate_rows`' rules.
+/// Dropping the future cancels the current plan, preserves the caller's transaction,
+/// and leaves estimates already delivered to the callback available to the caller.
+/// The callback is `Send` so the future can run on a multi-threaded runtime.
+pub async fn estimate_each(
+    session: &mut dyn Session,
+    batch: &str,
+    check: &DangerCheck,
+    engine: Engine,
+    on_estimate: &mut (dyn FnMut(usize, Option<f64>) + Send),
+) {
+    let statements = candidates(batch, engine);
     let mut next = 0;
-    for finding in &check.statements {
+    for (finding_index, finding) in check.statements.iter().enumerate() {
         let found = statements
             .iter()
             .enumerate()
@@ -36,12 +55,12 @@ pub async fn estimate_rows(
                 statement.kind == finding.kind && statement.line == finding.line
             });
         let Some((index, statement)) = found else {
-            estimates.push(None);
+            on_estimate(finding_index, None);
             continue;
         };
         next = index + 1;
         let Some(sql) = statement.sql else {
-            estimates.push(None);
+            on_estimate(finding_index, None);
             continue;
         };
         let mut run = session.plan(sql, PlanMode::Estimated);
@@ -56,9 +75,8 @@ pub async fn estimate_rows(
                 _ => {}
             }
         }
-        estimates.push(if failed { None } else { estimate });
+        on_estimate(finding_index, if failed { None } else { estimate });
     }
-    estimates
 }
 
 fn rows(payload: &str, format: PlanFormat) -> Option<f64> {
