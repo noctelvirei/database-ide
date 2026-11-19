@@ -54,6 +54,11 @@ _Avoid_: IntelliSense, completion
 The searchable record of past runs: their SQL, connection, database, time and outcome.
 _Avoid_: Log, journal
 
+**Autocomplete context**:
+What the editor knows about partial SQL at the caret: the fragment being typed, its qualifier,
+the statement's tables, views and CTEs, and whether to suggest.
+_Avoid_: Parser state
+
 **Results grid**:
 The table of rows a run returns, shown under the editor, where rows can be read, copied and edited.
 _Avoid_: Data view, output
