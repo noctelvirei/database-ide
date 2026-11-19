@@ -7,6 +7,7 @@
 use std::fs::File;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use futures::StreamExt;
 
@@ -202,11 +203,17 @@ pub fn write(reader: &Reader, path: &Path, format: &Format) -> Result<FileReport
 /// returned for the messages tab. Any Error marks the active and subsequent files partial;
 /// cancellation stops further rows and finalizes the active `.partial` file. Local errors
 /// return Err and leave `.partial` files. Server errors remain events in a successful report.
+/// `rows_written` resets to zero when first polled and counts data rows accepted by the
+/// encoders across all files, excluding headers; it does not guarantee flushed output.
+/// A borrow lets callers share an `Arc<AtomicU64>` with a polling thread without transferring
+/// ownership. Poll with relaxed ordering; this counter does not signal run completion.
 pub async fn run_to_file(
     mut run: Run<'_>,
     path: &Path,
     format: &Format,
+    rows_written: &AtomicU64,
 ) -> Result<RunReport, Error> {
+    rows_written.store(0, Ordering::Relaxed);
     let mut report = RunReport::default();
     let mut output: Option<Output> = None;
     let mut complete = true;
@@ -231,6 +238,7 @@ pub async fn run_to_file(
                         actual: row.len(),
                     })?;
                     current.row(&row)?;
+                    rows_written.fetch_add(1, Ordering::Relaxed);
                 }
             }
             event => {
