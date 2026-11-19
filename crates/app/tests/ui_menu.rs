@@ -1,7 +1,7 @@
 //! The menu bar as a user drives it, against the real PostgreSQL server from
 //! `dbide-test-servers` (CODE_STANDARDS.md, "UI E2E harness"): Alt+letter opens each menu,
-//! Left and Right move between them, Query runs and toggles, greyed items follow the run, and
-//! Help lists the keyboard shortcuts.
+//! Left and Right move between them, Query runs and toggles, greyed items follow the run,
+//! Help lists the keyboard shortcuts, and a grid keeps its keys after Edit.
 
 mod lab;
 mod passwords;
@@ -56,7 +56,20 @@ fn ui_pg_menus_open_by_alt_letter_run_queries_and_list_the_shortcuts() {
     .save_as_lab(&appdata);
 
     let steps = json!([
-        { "name": "open a tab", "input": [{ "key": "f8" }, { "key": "ctrl-n" }, "idle", { "text": "SELECT 1 AS one" }] },
+        // Lab is selected in the explorer, but focus is back on the unconnected first tab.
+        {
+            "name": "new query from file",
+            "input": [
+                "idle",
+                { "key": "f8" },
+                { "key": "shift-f6" },
+                { "key": "alt-f" },
+                { "key": "down" },
+                { "key": "enter" },
+                "idle",
+            ],
+        },
+        { "name": "open a tab", "input": [{ "key": "f8" }, { "key": "ctrl-n" }, "idle", { "text": "SELECT g FROM generate_series(1, 3) AS g" }] },
         { "name": "file", "input": [{ "key": "alt-f" }, { "shot": "file-menu" }] },
         { "name": "edit", "input": [{ "key": "escape" }, { "key": "alt-e" }] },
         { "name": "view", "input": [{ "key": "escape" }, { "key": "alt-v" }] },
@@ -85,10 +98,29 @@ fn ui_pg_menus_open_by_alt_letter_run_queries_and_list_the_shortcuts() {
             "input": [{ "key": "alt-h" }, { "key": "down" }, { "key": "enter" }, { "shot": "shortcuts" }],
         },
         { "name": "shortcuts closed", "input": [{ "key": "escape" }] },
+        {
+            "name": "grid keys after edit",
+            "input": [
+                { "key": "f6" },
+                { "key": "f6" },
+                { "key": "ctrl-end" },
+                { "key": "alt-e" },
+                { "key": "escape" },
+                { "key": "up" },
+            ],
+        },
     ]);
     let script = dir.path().join("script.json");
     std::fs::write(&script, steps.to_string()).unwrap();
     let lines = run_script(&script, Some(&appdata));
+    // File, New query opens on the focused tab's connection (none), not the explorer's selection.
+    let new_query = state(&lines, "new query from file");
+    assert_eq!(new_query["active_tab"], 1);
+    assert_eq!(
+        new_query["tabs"][1]["connection"],
+        Value::Null,
+        "{new_query:#}"
+    );
     let strings = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     let query = |plan: &str| {
         vec![
@@ -159,4 +191,12 @@ fn ui_pg_menus_open_by_alt_letter_run_queries_and_list_the_shortcuts() {
     assert!(!rows.iter().any(|row| row["action"] == "Exit"));
     let closed = state(&lines, "shortcuts closed");
     assert_eq!(closed["menu_bar"]["panel"], Value::Null);
+
+    // Opening Edit over a grid and closing it leaves the grid's own keys working.
+    let grid = state(&lines, "grid keys after edit");
+    assert_eq!(
+        grid["results"][0]["block"],
+        json!({ "rows": { "start": 1, "end": 2 }, "columns": { "start": 0, "end": 1 } }),
+        "{grid:#}"
+    );
 }

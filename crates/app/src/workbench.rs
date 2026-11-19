@@ -19,11 +19,11 @@ use serde::Serialize;
 
 use crate::explorer::{Explorer, ExplorerEvent, ExplorerState};
 use crate::keymap::{
-    CancelRun, CommentLines, EstimatedPlan, FocusExplorer, Format, GoToError, NewQueryTab,
-    NextError, NextPane, NextQueryTab, OpenEditMenu, OpenFile, OpenFileMenu, OpenHelpMenu,
-    OpenQueryMenu, OpenViewMenu, PickDatabase, PrevPane, PreviousError, Quit, RefreshAutocomplete,
-    Run, SaveFile, ShowAbout, ShowShortcuts, ToggleActualPlan, TogglePlanView, ToggleResults,
-    ToggleResultsToFile, UncommentLines,
+    CancelRun, CommentLines, EstimatedPlan, FocusExplorer, Format, GoToError, NewConnection,
+    NewQueryTab, NextError, NextPane, NextQueryTab, OpenEditMenu, OpenFile, OpenFileMenu,
+    OpenHelpMenu, OpenQueryMenu, OpenViewMenu, PickDatabase, PrevPane, PreviousError, Quit,
+    RefreshAutocomplete, Run, SaveFile, ShowAbout, ShowShortcuts, ToggleActualPlan, TogglePlanView,
+    ToggleResults, ToggleResultsToFile, UncommentLines,
 };
 use crate::menu_bar::{Menu, MenuBar, MenuBarState, Situation};
 use crate::messages::Tone;
@@ -414,11 +414,11 @@ impl Workbench {
             results_to_file: tab.results_to_file,
             results_visible: self.results_visible,
             in_results,
-            explorer: self.focus_handle_of(Pane::Explorer, cx),
-            edit_target: if in_results {
-                self.focus_handle_of(Pane::Results, cx)
-            } else {
-                editor.clone()
+            // In the results, the focused grid itself, so its own keys still work once the
+            // menu hands focus back; its actions reach the results by bubbling.
+            edit_target: match window.focused(cx) {
+                Some(focused) if in_results => focused,
+                _ => editor.clone(),
             },
             previous: window.focused(cx).unwrap_or(editor),
         }
@@ -739,6 +739,11 @@ impl Render for Workbench {
                 this.active_tab()
                     .clone()
                     .update(cx, |tab, cx| tab.pick_database(w, cx));
+            }))
+            // Insert is bound in the explorer only; File, New connection reaches it from anywhere.
+            .on_action(cx.listener(|this, _: &NewConnection, w, cx| {
+                this.explorer
+                    .update(cx, |explorer, cx| explorer.new_connection(w, cx));
             }))
             .on_action(cx.listener(|this, _: &OpenFile, w, cx| {
                 this.last_action = Some("OpenFile");

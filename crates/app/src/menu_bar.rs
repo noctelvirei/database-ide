@@ -5,8 +5,8 @@
 //! The bar is built from gpui-component's `PopupMenu` rather than its `AppMenuBar`, whose
 //! menus can't be opened by Alt+letter without changing gpui-kit. A menu is built when it
 //! opens, from the workbench's situation at that moment, so greyed and ticked items are
-//! always current. Its actions go to the focus that was active before it opened (the editor
-//! for Edit, the explorer for File, so New connection and New query act there).
+//! always current. Its actions go to the focus that was active before it opened, or for Edit
+//! outside the results, to the editor.
 //!
 //! Alt+F, Alt+E, Alt+V, Alt+Q and Alt+H open a menu, and F10 opens File; Left and Right move
 //! to the next menu, and the menu's own Up, Down, Enter and Escape move through it. Help
@@ -73,8 +73,7 @@ pub struct Situation {
     pub results_visible: bool,
     /// The results pane had focus: Edit's Copy and Select all work on its grid.
     pub in_results: bool,
-    /// Where the actions of File, of Edit and of the other menus go.
-    pub explorer: FocusHandle,
+    /// Where Edit's actions go, and the other menus' (the focus before the menu opened).
     pub edit_target: FocusHandle,
     pub previous: FocusHandle,
 }
@@ -167,7 +166,6 @@ fn items(menu: Menu, s: &Situation) -> Vec<Item> {
 /// Where `menu`'s actions go.
 fn target(menu: Menu, s: &Situation) -> FocusHandle {
     match menu {
-        Menu::File => s.explorer.clone(),
         Menu::Edit => s.edit_target.clone(),
         _ => s.previous.clone(),
     }
