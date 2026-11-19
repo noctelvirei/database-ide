@@ -121,6 +121,8 @@ pub struct QueryTab {
     run_cancelled: bool,
     /// Counts the tab's runs, so a task started for one run stops when the next begins.
     runs: u64,
+    /// True while the formatter works on the tab's text.
+    formatting: bool,
     /// What the current or last run asked of the server.
     job: Job,
     /// Ctrl+M: F5 returns the actual plan with the run.
@@ -172,6 +174,7 @@ impl QueryTab {
             cancel_pressed: false,
             run_cancelled: false,
             runs: 0,
+            formatting: false,
             job: Job::Run,
             include_actual_plan: false,
             shown: true,
@@ -191,12 +194,79 @@ impl QueryTab {
         self.target.as_ref()
     }
 
-    /// True while the tab waits on the server, or on a copy or save from its results.
+    /// True while the tab waits on the server, the formatter, or a copy or save from its results.
     pub fn is_busy(&self, cx: &gpui::App) -> bool {
         matches!(
             self.status,
             Status::Connecting | Status::Running | Status::Switching | Status::Listing
-        ) || self.results.read(cx).is_working()
+        ) || self.formatting
+            || self.results.read(cx).is_working()
+    }
+
+    /// Ctrl+K Ctrl+F: formats the selection, or the whole tab, in the connection's dialect,
+    /// as one undo step (docs/spec.md, "Formatter"). The formatter works off the UI thread;
+    /// if the text changes meanwhile, the result is dropped. When it refuses, the text stays
+    /// as it was and the messages strip says why.
+    pub fn format(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(engine) = self.target.as_ref().map(|t| t.saved.connection.engine) else {
+            self.say(
+                "Formatting follows the connection's SQL dialect, and this tab has no connection.",
+                Tone::Plain,
+                cx,
+            );
+            return;
+        };
+        if self.formatting {
+            return;
+        }
+        let editor = self.editor.read(cx);
+        let whole = editor.value();
+        let selected = editor.selected_range();
+        let part = if selected.is_empty() {
+            whole.to_string()
+        } else {
+            whole[selected.clone()].to_string()
+        };
+        self.formatting = true;
+        cx.spawn_in(window, async move |this, cx| {
+            // The formatter trims a fragment's outer whitespace; a selection keeps its own, so
+            // a line break after a `--` comment, say, still ends the comment.
+            let formatted = cx
+                .background_spawn(async move {
+                    let core = part.trim();
+                    let lead = &part[..part.len() - part.trim_start().len()];
+                    let trail = &part[part.trim_end().len()..];
+                    dbide_engine::format::format(core, engine)
+                        .map(|text| format!("{lead}{text}{trail}"))
+                })
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.formatting = false;
+                let editor = this.editor.read(cx);
+                if editor.value() != whole || editor.selected_range() != selected {
+                    this.say(
+                        "The text changed while it was formatting, so it was left as it is. Format it again.",
+                        Tone::Plain,
+                        cx,
+                    );
+                    return;
+                }
+                match formatted {
+                    Ok(text) => this.editor.update(cx, |editor, cx| {
+                        if selected.is_empty() {
+                            editor.replace_all(text, window, cx);
+                        } else {
+                            // Only the formatted range changes, not other cursors' selections.
+                            editor.set_selected_range(selected, cx);
+                            editor.replace(text, window, cx);
+                        }
+                    }),
+                    Err(error) => this.say(format!("Couldn't format: {error}."), Tone::Error, cx),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     pub fn state(&self, cx: &gpui::App) -> TabState {
