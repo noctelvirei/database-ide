@@ -98,13 +98,11 @@ pub struct FileReport {
     pub max_page_rows: usize,
 }
 
-/// Files and non-row events for the UI; event order and native error details are preserved.
+/// Files written by a run, in result-set order.
 #[derive(Debug, Default)]
 pub struct RunReport {
     /// One file per result set, including empty result sets.
     pub files: Vec<FileReport>,
-    /// Messages, row counts, plans, errors and Done, in stream order.
-    pub events: Vec<Event>,
 }
 
 /// Lossless display text shared by text exports, before destination escaping.
@@ -199,10 +197,13 @@ pub fn write(reader: &Reader, path: &Path, format: &Format) -> Result<FileReport
 }
 
 /// Consumes a Run directly, without a grid or spill store. `rows.csv` produces
-/// `rows-1.csv`, `rows-2.csv`, etc., even for a single result set. Non-row events are
-/// returned for the messages tab. Any Error marks the active and subsequent files partial;
-/// cancellation stops further rows and finalizes the active `.partial` file. Local errors
-/// return Err and leave `.partial` files. Server errors remain events in a successful report.
+/// `rows-1.csv`, `rows-2.csv`, etc., even for a single result set. Messages, row counts,
+/// plans, errors and Done are handed to `on_event` in stream order, before polling the
+/// next event; already delivered events remain available if a local error ends the export.
+/// Result-set headers and rows go only to files. Any Error marks the active and subsequent
+/// files partial; cancellation stops further rows and finalizes the active `.partial` file.
+/// Local errors return Err and leave `.partial` files. Server errors go to `on_event`
+/// without failing the report.
 /// `rows_written` resets to zero when first polled and counts data rows accepted by the
 /// encoders across all files, excluding headers; it does not guarantee flushed output.
 /// A borrow lets callers share an `Arc<AtomicU64>` with a polling thread without transferring
@@ -212,6 +213,7 @@ pub async fn run_to_file(
     path: &Path,
     format: &Format,
     rows_written: &AtomicU64,
+    mut on_event: impl FnMut(Event),
 ) -> Result<RunReport, Error> {
     rows_written.store(0, Ordering::Relaxed);
     let mut report = RunReport::default();
@@ -245,7 +247,7 @@ pub async fn run_to_file(
                 if matches!(event, Event::Error { .. }) {
                     complete = false;
                 }
-                report.events.push(event);
+                on_event(event);
             }
         }
     }
