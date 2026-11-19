@@ -13,6 +13,7 @@ mod export_file;
 mod file_prompt;
 mod folder_dialog;
 mod keymap;
+mod menu_bar;
 mod messages;
 mod palette;
 mod query_tab;

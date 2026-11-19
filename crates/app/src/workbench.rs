@@ -19,11 +19,13 @@ use serde::Serialize;
 
 use crate::explorer::{Explorer, ExplorerEvent, ExplorerState};
 use crate::keymap::{
-    CancelRun, CommentLines, EstimatedPlan, FocusExplorer, Format, GoToError, NewQueryTab,
-    NextError, NextPane, NextQueryTab, OpenFile, PickDatabase, PrevPane, PreviousError,
-    RefreshAutocomplete, Run, SaveFile, ToggleActualPlan, TogglePlanView, ToggleResults,
-    ToggleResultsToFile, UncommentLines,
+    CancelRun, CommentLines, EstimatedPlan, FocusExplorer, Format, GoToError, NewConnection,
+    NewQueryTab, NextError, NextPane, NextQueryTab, OpenEditMenu, OpenFile, OpenFileMenu,
+    OpenHelpMenu, OpenQueryMenu, OpenViewMenu, PickDatabase, PrevPane, PreviousError, Quit,
+    RefreshAutocomplete, Run, SaveFile, ShowAbout, ShowShortcuts, ToggleActualPlan, TogglePlanView,
+    ToggleResults, ToggleResultsToFile, UncommentLines,
 };
+use crate::menu_bar::{Menu, MenuBar, MenuBarState, Situation};
 use crate::messages::Tone;
 use crate::palette;
 use crate::query_tab::dialogs::DialogState;
@@ -100,6 +102,7 @@ pub struct VisibleState {
     pub inspector_scrolled: f32,
     /// The text on the system clipboard, so a script can check a copy.
     pub clipboard: Option<String>,
+    pub menu_bar: MenuBarState,
 }
 
 /// Work to run when the window first draws.
@@ -113,6 +116,7 @@ pub struct Workbench {
     next_tab_number: u32,
     runtime: Runtime,
     explorer: Entity<Explorer>,
+    menu_bar: Entity<MenuBar>,
     /// Focus handles for the panes that don't own one; the editor and explorer do.
     pane_focus: [FocusHandle; 6],
     results_visible: bool,
@@ -159,6 +163,7 @@ impl Workbench {
             next_tab_number: 1,
             runtime,
             explorer,
+            menu_bar: cx.new(MenuBar::new),
             pane_focus,
             results_visible: true,
             inspector_scroll: ScrollHandle::new(),
@@ -389,7 +394,52 @@ impl Workbench {
             inspector: tab.results().read(cx).inspected(cx),
             clipboard: cx.read_from_clipboard().and_then(|item| item.text()),
             inspector_scrolled: f32::from(self.inspector_scroll.offset().y).abs(),
+            menu_bar: self.menu_bar.read(cx).state(window, cx),
         }
+    }
+
+    /// What the menus need to know now. The tab's state is always current; the focus is the
+    /// one before any menu or Help panel took it.
+    fn situation(&self, window: &Window, cx: &App) -> Situation {
+        let bar = self.menu_bar.read(cx);
+        let tab = self.active_tab().read(cx).state(cx);
+        let mut situation = Situation {
+            ready: tab.status == crate::query_tab::Status::Ready,
+            running: tab.status == crate::query_tab::Status::Running,
+            actual_plan: tab.actual_plan,
+            results_to_file: tab.results_to_file,
+            results_visible: self.results_visible,
+            in_results: false,
+            edit_target: self.focus_handle_of(Pane::Editor, cx),
+            previous: self.focus_handle_of(Pane::Editor, cx),
+        };
+        if let Some(open) = bar.situation(window, cx) {
+            situation.in_results = open.in_results;
+            situation.edit_target = open.edit_target.clone();
+            situation.previous = open.previous.clone();
+            return situation;
+        }
+        let Some(before) = bar.panel_return(window, cx).cloned().or(window.focused(cx)) else {
+            return situation;
+        };
+        // In the results, the focused grid itself, so its own keys still work once the menu
+        // hands focus back; its actions reach the results by bubbling.
+        if self
+            .focus_handle_of(Pane::Results, cx)
+            .contains(&before, window)
+        {
+            situation.in_results = true;
+            situation.edit_target = before.clone();
+        }
+        situation.previous = before;
+        situation
+    }
+
+    /// Alt+its letter, F10 or a click: opens `menu`.
+    fn open_menu(&mut self, menu: Menu, window: &mut Window, cx: &mut Context<Self>) {
+        let situation = self.situation(window, cx);
+        self.menu_bar
+            .update(cx, |bar, cx| bar.open(menu, situation, window, cx));
     }
 
     fn pane(&self, pane: Pane, focused: Option<Pane>, cx: &App) -> gpui::Stateful<gpui::Div> {
@@ -619,7 +669,7 @@ impl Render for Workbench {
             .key_context("Workbench")
             .size_full()
             .flex()
-            .flex_row()
+            .flex_col()
             .bg(theme.background)
             .text_color(theme.foreground)
             .on_action(cx.listener(|this, _: &NextPane, w, cx| {
@@ -701,14 +751,53 @@ impl Render for Workbench {
                     .clone()
                     .update(cx, |tab, cx| tab.pick_database(w, cx));
             }))
+            // Insert is bound in the explorer only; File, New connection reaches it from anywhere.
+            .on_action(cx.listener(|this, _: &NewConnection, w, cx| {
+                this.explorer
+                    .update(cx, |explorer, cx| explorer.new_connection(w, cx));
+            }))
             .on_action(cx.listener(|this, _: &OpenFile, w, cx| {
                 this.last_action = Some("OpenFile");
                 this.open_file(w, cx);
             }))
             .on_action(cx.listener(|this, _: &SaveFile, _, cx| this.not_built("SaveFile", cx)))
-            .child(left)
-            .child(middle)
-            .child(inspector)
+            .on_action(
+                cx.listener(|this, _: &OpenFileMenu, w, cx| this.open_menu(Menu::File, w, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &OpenEditMenu, w, cx| this.open_menu(Menu::Edit, w, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &OpenViewMenu, w, cx| this.open_menu(Menu::View, w, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &OpenQueryMenu, w, cx| this.open_menu(Menu::Query, w, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &OpenHelpMenu, w, cx| this.open_menu(Menu::Help, w, cx)),
+            )
+            .on_action(cx.listener(|_, _: &Quit, _, cx| cx.quit()))
+            .on_action(cx.listener(|this, _: &ShowShortcuts, w, cx| {
+                this.last_action = Some("ShowShortcuts");
+                let situation = this.situation(w, cx);
+                this.menu_bar
+                    .update(cx, |bar, cx| bar.show_shortcuts(&situation, w, cx));
+            }))
+            .on_action(cx.listener(|this, _: &ShowAbout, w, cx| {
+                this.last_action = Some("ShowAbout");
+                this.menu_bar.update(cx, |bar, cx| bar.show_about(w, cx));
+            }))
+            .child(self.menu_bar.clone())
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_row()
+                    .child(left)
+                    .child(middle)
+                    .child(inspector),
+            )
     }
 }
 

@@ -442,7 +442,8 @@ impl Explorer {
         Ok(value)
     }
 
-    fn new_connection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Opens the new connection dialog (Insert, or File, New connection from anywhere).
+    pub fn new_connection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.editable(cx) {
             let parent = self.target_folder(cx);
             self.open_connection_dialog(None, parent, window, cx);

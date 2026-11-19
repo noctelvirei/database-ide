@@ -14,6 +14,9 @@
 //! grid's result set to a file. A plan's keys work while it has focus; its Ctrl+S saves the
 //! plan rather than the tab.
 //!
+//! The menu bar's keys (menu_bar.rs) work anywhere in the workbench: Alt+F, Alt+E, Alt+V,
+//! Alt+Q and Alt+H open its menus, F10 opens File, and Escape closes Help's panels.
+//!
 //! The explorer's keys work while it has focus, so they don't take keys from the editor.
 //! They follow Windows' file explorer where it has one: F2 renames, Delete deletes,
 //! Alt+Enter opens properties, Ctrl+Shift+N makes a folder, Ctrl+X and Ctrl+V move.
@@ -64,6 +67,24 @@ actions!(
         OpenFile,
         /// Saves the tab to its `.sql` file (Ctrl+S).
         SaveFile,
+        /// Opens the menu bar's File menu (Alt+F, F10).
+        OpenFileMenu,
+        /// Opens the menu bar's Edit menu (Alt+E).
+        OpenEditMenu,
+        /// Opens the menu bar's View menu (Alt+V).
+        OpenViewMenu,
+        /// Opens the menu bar's Query menu (Alt+Q).
+        OpenQueryMenu,
+        /// Opens the menu bar's Help menu (Alt+H).
+        OpenHelpMenu,
+        /// Closes the app (File, Exit).
+        Quit,
+        /// Lists every menu item's keys (Help, Keyboard shortcuts).
+        ShowShortcuts,
+        /// Shows the version, licences and repository (Help, About).
+        ShowAbout,
+        /// Closes Help's open panel (Escape).
+        ClosePanel,
     ]
 );
 
@@ -198,6 +219,14 @@ pub fn bind(cx: &mut App) {
         // context the focus sits inside, so the tab's Ctrl+S is scoped to the workbench to let a
         // grid's and a plan's Ctrl+S win.
         KeyBinding::new("ctrl-s", SaveFile, Some("Workbench")),
+        // Scoped to the workbench, like Ctrl+S, so a dialog's own keys stay its own.
+        KeyBinding::new("alt-f", OpenFileMenu, Some("Workbench")),
+        KeyBinding::new("f10", OpenFileMenu, Some("Workbench")),
+        KeyBinding::new("alt-e", OpenEditMenu, Some("Workbench")),
+        KeyBinding::new("alt-v", OpenViewMenu, Some("Workbench")),
+        KeyBinding::new("alt-q", OpenQueryMenu, Some("Workbench")),
+        KeyBinding::new("alt-h", OpenHelpMenu, Some("Workbench")),
+        KeyBinding::new("escape", ClosePanel, Some("MenuPanel")),
         KeyBinding::new("insert", NewConnection, Some("Explorer")),
         KeyBinding::new("ctrl-shift-n", NewFolder, Some("Explorer")),
         KeyBinding::new("alt-enter", EditItem, Some("Explorer")),
