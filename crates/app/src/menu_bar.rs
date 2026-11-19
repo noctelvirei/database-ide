@@ -19,6 +19,7 @@ use gpui::{
     prelude::FluentBuilder as _, px,
 };
 use gpui_component::ActiveTheme as _;
+use gpui_component::h_flex;
 use gpui_component::kbd::Kbd;
 use gpui_component::menu::PopupMenu;
 use serde::Serialize;
@@ -250,8 +251,29 @@ impl MenuBar {
             })
             .collect();
         let context = target(menu, &situation);
-        let popup = PopupMenu::build(window, cx, move |mut popup, _, _| {
+        let popup = PopupMenu::build(window, cx, move |mut popup, window, _| {
             for item in built {
+                // PopupMenu shows only a binding's first keystroke, so an item bound to a chord
+                // (Format, Ctrl+K Ctrl+F) draws its row itself, with every keystroke.
+                let chord = window
+                    .highest_precedence_binding_for_action_in(&*item.action, &context)
+                    .map(|binding| {
+                        binding
+                            .keystrokes()
+                            .iter()
+                            .map(|k| k.as_keystroke().clone())
+                            .collect::<Vec<_>>()
+                    })
+                    .filter(|strokes| strokes.len() > 1);
+                if let (Some(strokes), None) = (chord, item.checked) {
+                    let label = item.label;
+                    popup = popup.menu_element_with_disabled(
+                        item.action,
+                        !item.enabled,
+                        move |_, _| chord_row(label, strokes.clone()),
+                    );
+                    continue;
+                }
                 popup = match item.checked {
                     Some(on) => popup.menu_with_check_and_disabled(
                         item.label,
@@ -431,6 +453,24 @@ impl MenuBar {
                 ),
         ))
     }
+}
+
+/// A menu row for an item bound to a chord: its label, then each keystroke as PopupMenu draws
+/// a single one.
+fn chord_row(label: &'static str, strokes: Vec<gpui::Keystroke>) -> impl IntoElement {
+    h_flex()
+        .w_full()
+        .gap_3()
+        .items_center()
+        .justify_between()
+        .child(label)
+        .child(h_flex().gap_1().children(strokes.into_iter().map(|stroke| {
+            Kbd::new(stroke)
+                .p_0()
+                .flex_nowrap()
+                .border_0()
+                .bg(gpui::transparent_white())
+        })))
 }
 
 /// A binding's keystrokes as Windows writes them: `Ctrl+K Ctrl+F`.

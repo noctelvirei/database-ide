@@ -71,7 +71,10 @@ fn ui_pg_menus_open_by_alt_letter_run_queries_and_list_the_shortcuts() {
         },
         { "name": "open a tab", "input": [{ "key": "f8" }, { "key": "ctrl-n" }, "idle", { "text": "SELECT g FROM generate_series(1, 3) AS g" }] },
         { "name": "file", "input": [{ "key": "alt-f" }, { "shot": "file-menu" }] },
-        { "name": "edit", "input": [{ "key": "escape" }, { "key": "alt-e" }] },
+        {
+            "name": "edit",
+            "input": [{ "key": "escape" }, { "key": "alt-e" }, { "shot": "edit-menu" }],
+        },
         { "name": "view", "input": [{ "key": "escape" }, { "key": "alt-v" }] },
         { "name": "query", "input": [{ "key": "escape" }, { "key": "alt-q" }] },
         { "name": "help", "input": [{ "key": "escape" }, { "key": "alt-h" }] },
