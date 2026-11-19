@@ -21,7 +21,6 @@ use crate::session::{ConnectError, ConnectErrorKind, Event, PlanMode, Run, Sessi
 pub(crate) mod batches;
 mod execution;
 mod grid_edit;
-mod plans;
 mod values;
 
 /// Connection and plan failures; credentials are never retained in diagnostics.
@@ -35,9 +34,6 @@ pub enum Error {
     /// Transport or server diagnostic with credentials removed.
     #[error("SQL Server: {0}")]
     Server(String),
-    /// A flagged statement could not be isolated for estimation.
-    #[error("Cannot parse SQL Server batch for danger estimates: {0}")]
-    Parse(String),
 }
 
 /// One serialized SQL Server session. Dropped runs finish attention cleanup before reuse.
@@ -329,16 +325,6 @@ fn closed() -> Event {
         line: None,
         code: None,
     }
-}
-
-/// Estimates each flagged UPDATE/DELETE without running it; other findings return None.
-/// Ambiguous same-line statements are matched in source order.
-pub async fn estimate_rows(
-    session: &mut Mssql,
-    batch: &str,
-    flagged: &[crate::danger::DangerousStatement],
-) -> Result<Vec<Option<f64>>, Error> {
-    plans::estimate_rows(session, batch, flagged).await
 }
 
 #[cfg(test)]

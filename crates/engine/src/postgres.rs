@@ -40,9 +40,6 @@ pub enum Error {
     /// A plan cannot be isolated without touching a caller-owned transaction.
     #[error("Actual plans require a session outside a transaction")]
     ActiveTransaction,
-    /// A flagged statement did not identify an UPDATE or DELETE in this batch.
-    #[error("Danger estimate requires an UPDATE or DELETE at the flagged line")]
-    EstimateStatement,
     /// Cancellation delivery failed; the transport is discarded before another run.
     #[error("Could not deliver cancellation; connection discarded")]
     CancelFailed,
@@ -490,16 +487,4 @@ async fn idle_query(
             Some(notice) = notices.recv() => { let _ = notice.acknowledged.send(()); }
         }
     }
-}
-
-/// Estimates flagged UPDATE/DELETE rows in finding order without executing those statements.
-/// Other danger kinds, and an UPDATE/DELETE inside a CTE, return None; rows come from
-/// the top estimated-plan node after adding RETURNING 1 where absent (PostgreSQL
-/// otherwise reports zero for a ModifyTable root).
-pub async fn estimate_rows(
-    session: &mut Postgres,
-    batch: &str,
-    flagged: &[crate::danger::DangerousStatement],
-) -> Result<Vec<Option<f64>>, Error> {
-    plans::estimate_rows(session, batch, flagged).await
 }

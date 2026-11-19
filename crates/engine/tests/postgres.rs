@@ -431,9 +431,13 @@ async fn pg_danger_estimate_matches_analyzed_table_cardinality() {
     )
     .await;
     let findings = danger::check("DELETE FROM t", Engine::PostgreSql);
-    let estimates = postgres::estimate_rows(&mut session, "DELETE FROM t", &findings.statements)
-        .await
-        .unwrap();
+    let estimates = danger::estimates::estimate_rows(
+        &mut session,
+        "DELETE FROM t",
+        &findings,
+        Engine::PostgreSql,
+    )
+    .await;
     assert_eq!(estimates, vec![Some(1000.0)]);
     let rows: Vec<_> = session.run("SELECT count(*) FROM t").collect().await;
     assert_eq!(rows[1], Event::Rows(vec![vec![Value::Integer(1000)]]));
@@ -450,9 +454,8 @@ async fn pg_danger_estimate_skips_a_safe_delete_on_the_same_line() {
     .await;
     let script = "DELETE FROM t WHERE id = 1; DELETE FROM t";
     let findings = danger::check(script, Engine::PostgreSql);
-    let estimates = postgres::estimate_rows(&mut session, script, &findings.statements)
-        .await
-        .unwrap();
+    let estimates =
+        danger::estimates::estimate_rows(&mut session, script, &findings, Engine::PostgreSql).await;
     assert_eq!(estimates, vec![Some(1000.0)]);
 }
 
@@ -763,9 +766,8 @@ async fn pg_danger_estimate_of_a_delete_inside_a_cte_is_unknown() {
     setup(&mut session, "CREATE TABLE t (id int)").await;
     let batch = "WITH removed AS (DELETE FROM t RETURNING *) SELECT * FROM removed";
     let check = danger::check(batch, Engine::PostgreSql);
-    let estimates = postgres::estimate_rows(&mut session, batch, &check.statements)
-        .await
-        .unwrap();
+    let estimates =
+        danger::estimates::estimate_rows(&mut session, batch, &check, Engine::PostgreSql).await;
     assert_eq!(estimates, vec![None]);
 }
 

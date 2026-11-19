@@ -2,7 +2,7 @@
 
 use mysql_async::{Conn, consts::StatusFlags, prelude::Queryable};
 use sqlparser::{
-    ast::Statement,
+    ast::{FromTable, Statement},
     dialect::MySqlDialect,
     parser::{Parser, ParserError},
     tokenizer::{Location, Token, Tokenizer},
@@ -157,22 +157,33 @@ async fn explain(
     statements: &[ParsedStatement<'_>],
 ) -> Result<(), ()> {
     let password = conn.opts().pass().map(str::to_owned);
-    if let Err(error) = conn
-        .query_drop("SET SESSION explain_json_format_version=2")
-        .await
-    {
-        send(
-            request,
-            diagnostics::error(&error, None, password.as_deref()),
-        )
-        .await;
-        return if error.is_fatal() { Err(()) } else { Ok(()) };
-    }
     for (index, statement) in statements.iter().enumerate() {
         if request.cancel.is_cancelled() || request.stopped.is_cancelled() {
             break;
         }
         let actual = mode == PlanMode::Actual;
+        // Version 2 omits estimates for single-table data changes without iterator plans.
+        let single_table_change = match &statement.statement {
+            Statement::Update(update) => update.table.joins.is_empty() && update.from.is_none(),
+            Statement::Delete(delete) if delete.tables.is_empty() && delete.using.is_none() => {
+                let (FromTable::WithFromKeyword(tables) | FromTable::WithoutKeyword(tables)) =
+                    &delete.from;
+                tables.len() == 1 && tables[0].joins.is_empty()
+            }
+            _ => false,
+        };
+        let version = if !actual && single_table_change { 1 } else { 2 };
+        if let Err(error) = conn
+            .query_drop(format!("SET SESSION explain_json_format_version={version}"))
+            .await
+        {
+            send(
+                request,
+                diagnostics::error(&error, None, password.as_deref()),
+            )
+            .await;
+            return if error.is_fatal() { Err(()) } else { Ok(()) };
+        }
         if actual && let Err(error) = conn.query_drop("START TRANSACTION").await {
             send(
                 request,
