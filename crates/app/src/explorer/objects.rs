@@ -2,7 +2,7 @@
 //! its databases, each database's tables, views, procedures and functions, and each table's
 //! indexes, each list loaded the first time its row is opened. Also the filter box, the item
 //! menu (the context-menu key or Shift+F10) and Script as, which opens the script in a new
-//! query tab.
+//! query tab. Searching every database is in `search.rs`; its hits work like object rows.
 //!
 //! A connected connection keeps the session it connected with, which lists the databases, and
 //! opens one more session per database the user opens, because a PostgreSQL session can't
@@ -24,28 +24,31 @@ use gpui::{
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::PopupMenu;
 
+use super::search::Found;
 use super::{Explorer, ExplorerEvent, Kind};
 use crate::keymap::{RefreshItem, ScriptAlter, ScriptCreate, ScriptSelect};
 use crate::query_tab::{HeldPassword, QueryTarget};
 use crate::runtime::{Explore, Explored, Runtime};
 
 /// Separates the parts of an object row's ID; saved folder and connection IDs never hold it.
-const SEP: char = '\u{1f}';
+pub(super) const SEP: char = '\u{1f}';
 
 /// What a connected connection holds for its object tree.
 pub(super) struct Server {
     /// The connect attempt this server came from; replies made under another are stale.
     attempt: u64,
     /// The details the connection connected with; database sessions open from them.
-    saved: SavedConnection,
+    pub(super) saved: SavedConnection,
     /// The sign-in password, held while connected so database sessions and query tabs
     /// opened from the tree don't ask again.
-    password: Option<HeldPassword>,
+    pub(super) password: Option<HeldPassword>,
     /// The session the connection connected with; it lists the databases.
     root: Slot,
     databases: Load<Vec<String>>,
     /// The databases the user has opened, by name.
     catalogs: HashMap<String, Catalog>,
+    /// The last search of every database (Ctrl+Enter in the filter box).
+    pub(super) search: Option<Found>,
 }
 
 /// One database's session and what it has loaded.
@@ -99,6 +102,7 @@ impl Server {
             },
             databases: Load::Unloaded,
             catalogs: HashMap::new(),
+            search: None,
         }
     }
 
@@ -118,8 +122,14 @@ impl Server {
             .any(|slot| slot.busy || !slot.queue.is_empty())
     }
 
-    fn engine(&self) -> Engine {
+    pub(super) fn engine(&self) -> Engine {
         self.saved.connection.engine
+    }
+
+    /// The object in `database` with catalog key `key`: a loaded row, or a search hit.
+    fn object(&self, database: &str, key: &str) -> Option<&Object> {
+        let listed = self.catalogs.get(database).and_then(|c| c.find(key));
+        listed.or_else(|| self.search.as_ref()?.hit(database, key))
     }
 
     fn slot(&mut self, database: Option<&str>) -> Option<&mut Slot> {
@@ -200,8 +210,8 @@ impl Group {
 }
 
 /// What an object row stands for, read from its ID. The IDs are the parts joined by `SEP`:
-/// `connection d database`, `connection g database group`, `connection o database key`, and
-/// a placeholder's is its parent's ID followed by `n`.
+/// `connection d database`, `connection g database group`, `connection o database key` (or
+/// `h` for a search hit), and a placeholder's is its parent's ID followed by `n`.
 enum Node {
     Database {
         connection: String,
@@ -233,7 +243,7 @@ impl Node {
                 connection: owned(connection),
                 database: owned(database),
             },
-            [connection, "o", database, key] => Node::Object {
+            [connection, "o" | "h", database, key] => Node::Object {
                 connection: owned(connection),
                 database: owned(database),
                 key: owned(key),
@@ -264,7 +274,7 @@ impl Node {
     }
 }
 
-fn row_id(parts: &[&str]) -> String {
+pub(super) fn row_id(parts: &[&str]) -> String {
     parts.join(&SEP.to_string())
 }
 
@@ -279,7 +289,7 @@ pub(super) struct Branch {
 
 impl Branch {
     /// A placeholder row under `parent`: a failed load or an empty list.
-    fn note(parent: &str, label: impl Into<String>) -> Branch {
+    pub(super) fn note(parent: &str, label: impl Into<String>) -> Branch {
         Branch {
             id: format!("{parent}{SEP}n"),
             label: label.into(),
@@ -290,7 +300,7 @@ impl Branch {
     }
 
     /// The placeholder under `parent` while its list loads, or before it first does.
-    fn loading(parent: &str) -> Branch {
+    pub(super) fn loading(parent: &str) -> Branch {
         Branch {
             kind: Kind::Loading,
             ..Branch::note(parent, "Loading…")
@@ -350,7 +360,7 @@ fn listed<T>(
 
 /// An object's label: `schema.name`, or the name alone on MySQL, where the schema is the
 /// database; a routine's arguments follow its name.
-fn label(engine: Engine, object: &Object) -> String {
+pub(super) fn label(engine: Engine, object: &Object) -> String {
     let name = match &object.schema {
         Some(schema) if engine != Engine::MySql => format!("{schema}.{}", object.name),
         _ => object.name.clone(),
@@ -361,7 +371,7 @@ fn label(engine: Engine, object: &Object) -> String {
     }
 }
 
-fn row_kind(kind: ObjectKind) -> Kind {
+pub(super) fn row_kind(kind: ObjectKind) -> Kind {
     match kind {
         ObjectKind::Table => Kind::Table,
         ObjectKind::View | ObjectKind::MaterializedView => Kind::View,
@@ -388,13 +398,23 @@ pub(super) struct OpenMenu {
 impl Explorer {
     /// The filter box, filtering the rows as the user types.
     pub(super) fn new_filter(window: &mut Window, cx: &mut Context<Self>) -> Entity<InputState> {
-        let filter =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Filter what's loaded (Ctrl+F)"));
+        let filter = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Filter what's loaded (Ctrl+F); Ctrl+Enter searches all databases")
+        });
         cx.subscribe_in(
             &filter,
             window,
             |this, _, event: &InputEvent, window, cx| match event {
-                InputEvent::Change => this.rebuild(None, cx),
+                InputEvent::Change => {
+                    if this.needle(cx).is_empty() {
+                        this.clear_searches();
+                    }
+                    this.rebuild(None, cx);
+                }
+                InputEvent::PressEnter {
+                    secondary: true, ..
+                } => this.search_databases(cx),
                 InputEvent::PressEnter { .. } => this.select_first_match(window, cx),
                 InputEvent::Focus | InputEvent::Blur => {}
             },
@@ -441,12 +461,16 @@ impl Explorer {
         let Some(server) = self.servers.get(id) else {
             return Vec::new();
         };
-        listed(id, Some(&server.databases), "databases", |names| {
+        let databases = listed(id, Some(&server.databases), "databases", |names| {
             names
                 .iter()
                 .map(|database| self.database_branch(id, server, database))
                 .collect()
-        })
+        });
+        self.search_branch(id, server)
+            .into_iter()
+            .chain(databases)
+            .collect()
     }
 
     fn database_branch(&self, connection: &str, server: &Server, database: &str) -> Branch {
@@ -584,7 +608,7 @@ impl Explorer {
     }
 
     /// Queues `call` on the connection's own session (`database` absent) or the database's.
-    fn request(
+    pub(super) fn request(
         &mut self,
         connection: &str,
         database: Option<&str>,
@@ -727,6 +751,10 @@ impl Explorer {
         outcome: Result<Explored, String>,
         cx: &mut Context<Self>,
     ) {
+        if let Explore::Search { search, .. } = &call {
+            self.searched(connection, search, outcome, cx);
+            return;
+        }
         if let Explore::Script(object, _) = &call {
             match outcome {
                 Ok(Explored::Script(text)) => {
@@ -772,7 +800,9 @@ impl Explorer {
                     catalog.indexes.insert(table.id.key, indexes);
                 }
             }
-            (Explore::Script(..), _) => unreachable!("Script as is handled above"),
+            (Explore::Script(..) | Explore::Search { .. }, _) => {
+                unreachable!("Script as and searches are handled above")
+            }
         }
         // Rows left open below the new list load their own lists now.
         self.load_open_rows(cx);
@@ -834,16 +864,18 @@ impl Explorer {
         let object = self
             .servers
             .get(&connection)?
-            .catalogs
-            .get(&database)?
-            .find(&key)?
+            .object(&database, &key)?
             .clone();
         Some((connection, database, object))
     }
 
-    /// Script as `form` on the selected object.
+    /// Script as `form` on the selected object, on its database's session, which opens now
+    /// for a search hit in a database never opened.
     pub(super) fn script(&mut self, form: Script, cx: &mut Context<Self>) {
         if let Some((connection, database, object)) = self.selected_object(cx) {
+            if let Some(server) = self.servers.get_mut(&connection) {
+                server.catalogs.entry(database.clone()).or_default();
+            }
             self.request(
                 &connection,
                 Some(&database),
@@ -899,7 +931,7 @@ impl Explorer {
                 let Some(server) = self.servers.get(&connection) else {
                     return Vec::new();
                 };
-                let Some(object) = server.catalogs.get(&database).and_then(|c| c.find(&key)) else {
+                let Some(object) = server.object(&database, &key) else {
                     return Vec::new();
                 };
                 let forms: [(&'static str, Script, Box<dyn Action>); 3] = [

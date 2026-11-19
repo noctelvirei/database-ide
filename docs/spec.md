@@ -83,6 +83,8 @@ Clipboard text with headers, CSV, `.xlsx` (constant-memory writing), INSERT scri
 
 Per engine: databases, schemas, tables, views, procedures, functions, indexes; a table's columns, keys and indexes; filter and search across databases; Script as CREATE / ALTER / SELECT from the system catalogs.
 
+In the explorer, Ctrl+F filters the rows already loaded. Ctrl+Enter in the filter box searches every user database of the selected row's connection (or the only connected one) for tables, views, materialized views, procedures and functions whose name holds the text, up to 500 hits, through one short-lived session per database. The hits list under the connection in a Search row and work like object rows (Script as). Each database the search can't open is named in the messages strip with the reason. Clearing the filter drops the search.
+
 ## Formatter
 
 The engine formats SQL text for one engine's dialect. It changes layout and the case of structural keywords only; identifiers, literals and comments are copied byte for byte.
@@ -137,6 +139,7 @@ SSMS's shortcuts, not remappable in v1:
 | Ctrl+Shift+R | Refresh autocomplete |
 | Ctrl+U | Pick the current database |
 | F8 | Focus the object explorer |
+| Ctrl+Enter in the explorer filter | Search every database of the connection |
 | Ctrl+O / Ctrl+S | Open / save a `.sql` file |
 | Ctrl+S in a grid / plan | Save the result set / the plan to a file |
 | Ctrl+Shift+H | Query history (ours; SSMS has none) |

@@ -39,6 +39,7 @@ use crate::runtime::Runtime;
 
 mod connect;
 mod objects;
+mod search;
 
 use objects::{Branch, OpenMenu, Server, filtered};
 
