@@ -39,6 +39,7 @@ use crate::runtime::Runtime;
 
 mod connect;
 mod objects;
+mod search;
 
 use objects::{Branch, OpenMenu, Server, filtered};
 
@@ -166,6 +167,8 @@ pub struct Explorer {
     object_rows: HashMap<String, (Kind, String)>,
     filter: Entity<InputState>,
     menu: Option<OpenMenu>,
+    /// The connection Ctrl+Enter searches when the filter has hidden the selected row.
+    search_target: Option<String>,
 }
 
 impl EventEmitter<ExplorerEvent> for Explorer {}
@@ -226,6 +229,7 @@ impl Explorer {
             object_rows: HashMap::new(),
             filter,
             menu: None,
+            search_target: None,
         };
         this.rebuild(None, cx);
         this

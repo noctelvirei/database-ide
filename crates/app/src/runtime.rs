@@ -18,7 +18,7 @@ use std::sync::atomic::AtomicU64;
 use dbide_engine::connections::Connection;
 use dbide_engine::danger::Engine;
 use dbide_engine::export::{self, FileReport, Format};
-use dbide_engine::objects::{self, Index, Kind, Object, Script};
+use dbide_engine::objects::{self, Index, Kind, Object, Script, Search, SearchReport};
 use dbide_engine::plan::{self, Plan};
 use dbide_engine::session::{
     self, CancelHandle, ConnectError, ConnectErrorKind, Event, PlanMode, Session,
@@ -87,6 +87,15 @@ pub enum Explore {
     Indexes(Object),
     /// An object's script in `form`, for a new query tab.
     Script(Object, Script),
+    /// Objects named like `search.name` in every user database, each searched through its own
+    /// short-lived session opened from `details` with `password`. `generation` comes back
+    /// unchanged and tells this search's reply from an earlier one's.
+    Search {
+        generation: u64,
+        search: Search,
+        details: Connection,
+        password: Option<String>,
+    },
 }
 
 /// What an `Explore` call returns, in the same order as its variants.
@@ -95,6 +104,7 @@ pub enum Explored {
     Objects(Vec<Object>),
     Indexes(Vec<Index>),
     Script(String),
+    Search(SearchReport),
 }
 
 /// The object kinds the explorer lists under a database.
@@ -150,7 +160,61 @@ async fn explore(
         Explore::Script(object, form) => {
             Explored::Script(catalog!(engine, script(session, &object, form))?)
         }
+        Explore::Search {
+            search,
+            details,
+            password,
+            ..
+        } => Explored::Search(search_all(session, engine, &search, details, password).await?),
     })
+}
+
+/// `search` across every user database of the server `session` is on.
+async fn search_all(
+    session: &mut dyn Session,
+    engine: Engine,
+    search: &Search,
+    details: Connection,
+    password: Option<String>,
+) -> Result<SearchReport, String> {
+    // A session on `database`, as the explorer's own database sessions open.
+    let on = |database: String| {
+        let mut details = details.clone();
+        details.database = Some(database);
+        (details, password.clone())
+    };
+    match engine {
+        Engine::SqlServer => objects::mssql::search_all(session, search, |database| {
+            let (details, password) = on(database);
+            async move {
+                dbide_engine::mssql::connect(&details, password.as_deref())
+                    .await
+                    .map_err(|e| e.message)
+            }
+        })
+        .await
+        .map_err(|e| e.to_string()),
+        Engine::PostgreSql => objects::postgres::search_all(session, search, |database| {
+            let (details, password) = on(database);
+            async move {
+                dbide_engine::postgres::connect(&details, password.as_deref())
+                    .await
+                    .map_err(|e| e.message)
+            }
+        })
+        .await
+        .map_err(|e| e.to_string()),
+        Engine::MySql => objects::mysql::search_all(session, search, |database| {
+            let (details, password) = on(database);
+            async move {
+                dbide_engine::mysql::connect(&details, password.as_deref())
+                    .await
+                    .map_err(|e| e.message)
+            }
+        })
+        .await
+        .map_err(|e| e.to_string()),
+    }
 }
 
 /// How many updates may wait for the UI before the run pauses for it to catch up.
