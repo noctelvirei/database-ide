@@ -215,6 +215,9 @@ impl Results {
     /// each plan's selected operator. With no plan shown, says which view plans will get.
     pub fn toggle_plan_view(&mut self, cx: &mut Context<Self>) {
         self.plan_graph = !self.plan_graph;
+        for plan in &self.plans {
+            plan.reveal();
+        }
         if self.plans.is_empty() {
             let view = if self.plan_graph {
                 "a graph"

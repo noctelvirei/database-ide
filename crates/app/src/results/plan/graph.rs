@@ -7,8 +7,8 @@
 //! its first input, as SSMS draws it.
 
 use gpui::{
-    Context, InteractiveElement as _, ParentElement as _, Pixels, Point,
-    StatefulInteractiveElement as _, Styled as _, div, img, prelude::*, px,
+    Bounds, Context, InteractiveElement as _, ParentElement as _, Pixels,
+    StatefulInteractiveElement as _, Styled as _, Window, canvas, div, img, point, prelude::*, px,
 };
 use gpui_component::ActiveTheme as _;
 
@@ -117,29 +117,57 @@ fn segment(x: f32, y: f32, length: f32, width: f32, across: bool) -> gpui::Div {
 }
 
 impl PlanView {
-    /// Scrolls the graph so the selected operator's box is in view.
-    pub(super) fn reveal(&self) {
-        let layout = &self.layout;
-        let (x, y) = layout.corner(self.selected);
-        let view = self.graph_scroll.bounds().size;
-        let offset = self.graph_scroll.offset();
-        let mut to: Point<Pixels> = offset;
-        let fit = |start: f32, length: f32, view: Pixels, offset: Pixels| -> Pixels {
-            let shown = -f32::from(offset);
-            let view = f32::from(view);
-            if start < shown {
-                px(-start + MARGIN)
-            } else if start + length > shown + view {
-                px(-(start + length - view + MARGIN))
-            } else {
-                offset
+    /// Asks for the graph to scroll the selected operator's box into view the next time it is
+    /// drawn at a known size: at once when it is shown, otherwise when F9 shows it.
+    pub(in crate::results) fn reveal(&self) {
+        self.reveal_pending.set(true);
+    }
+
+    /// An empty element laid over the graph's scroll area, the same size, drawn just before
+    /// it. If `reveal` asked, it scrolls the selected box into view by the least amount while
+    /// the frame is laid out: the area's size is known only then, and gpui's own
+    /// `scroll_to_item` uses the last frame's size, which a graph just shown doesn't have.
+    fn scroller(&self) -> impl IntoElement {
+        let pending = self.reveal_pending.clone();
+        let scroll = self.graph_scroll.clone();
+        let (x, y) = self.layout.corner(self.selected);
+        let reveal = move |area: Bounds<Pixels>, _: &mut Window, _: &mut gpui::App| {
+            if !pending.replace(false) {
+                return;
             }
+            // The offset is how far the graph is scrolled, as a negative distance.
+            let fit = |start: f32, length: f32, view: Pixels, offset: Pixels| -> Pixels {
+                let (shown, view) = (-f32::from(offset), f32::from(view));
+                if start < shown {
+                    px(MARGIN - start)
+                } else if start + length > shown + view {
+                    px(view - start - length - MARGIN)
+                } else {
+                    offset
+                }
+            };
+            let offset = scroll.offset();
+            scroll.set_offset(point(
+                fit(x, BOX_WIDTH, area.size.width, offset.x).min(px(0.)),
+                fit(y, BOX_HEIGHT, area.size.height, offset.y).min(px(0.)),
+            ));
         };
-        to.x = fit(x, BOX_WIDTH, view.width, offset.x).min(px(0.));
-        to.y = fit(y, BOX_HEIGHT, view.height, offset.y).min(px(0.));
-        if to != offset {
-            self.graph_scroll.set_offset(to);
-        }
+        canvas(reveal, |_, (), _, _| {}).absolute().size_full()
+    }
+
+    /// True when the selected operator's whole box was inside the graph's visible area when
+    /// the graph was last drawn.
+    pub(super) fn selected_in_view(&self) -> bool {
+        let view = self.graph_scroll.bounds();
+        let offset = self.graph_scroll.offset();
+        self.graph_scroll
+            .bounds_for_item(self.selected)
+            .is_some_and(|item| {
+                let first = item.origin + offset;
+                let last = first + gpui::point(item.size.width, item.size.height)
+                    - gpui::point(px(1.), px(1.));
+                view.contains(&first) && view.contains(&last)
+            })
     }
 
     /// The graph of this plan's operators. `ix` is the plan's section in the results pane,
@@ -253,19 +281,24 @@ impl PlanView {
                 }))
         });
         let (width, height) = layout.size();
+        // The boxes come first, so a box's child index is its row (`selected_in_view`); the
+        // last child spans the whole graph, so the scroll area covers every box.
         div()
             .id(("plan-graph", ix))
+            .relative()
             .flex_1()
             .min_h_0()
-            .overflow_scroll()
-            .track_scroll(&self.graph_scroll)
+            .child(self.scroller())
             .child(
                 div()
-                    .relative()
-                    .w(px(width))
-                    .h(px(height))
+                    .id(("plan-graph-area", ix))
+                    .absolute()
+                    .size_full()
+                    .overflow_scroll()
+                    .track_scroll(&self.graph_scroll)
+                    .children(boxes)
                     .children(arrows)
-                    .children(boxes),
+                    .child(div().absolute().w(px(width)).h(px(height))),
             )
     }
 }

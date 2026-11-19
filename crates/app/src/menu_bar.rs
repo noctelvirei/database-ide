@@ -444,7 +444,15 @@ impl MenuBar {
                 .child(div().text_lg().child("Database IDE"))
                 .child(format!("Version {}", env!("CARGO_PKG_VERSION")))
                 .child("Licensed under MIT OR Apache-2.0.")
-                .child(env!("CARGO_PKG_REPOSITORY")),
+                .child(env!("CARGO_PKG_REPOSITORY"))
+                // The embedded plan icons' licence asks for its notice in every copy.
+                .child(
+                    div()
+                        .pt_2()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child(include_str!("../assets/plan-icons/LICENSE.txt")),
+                ),
         };
         Some(deferred(
             div()

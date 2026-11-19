@@ -55,6 +55,8 @@ pub struct PlanView {
     layout: Layout,
     /// The graph's scroll position, so the selection stays in view there too.
     graph_scroll: ScrollHandle,
+    /// True when the selection moved since the graph last scrolled to it (`graph.rs`).
+    reveal_pending: std::rc::Rc<std::cell::Cell<bool>>,
     focus_handle: FocusHandle,
 }
 
@@ -74,6 +76,8 @@ pub struct PlanState {
     pub focused: bool,
     /// True when shown as a graph rather than the tree table.
     pub graph: bool,
+    /// In the graph, true when the selected operator's whole box is in view.
+    pub selected_in_view: bool,
     /// Index into `operators` of the selected operator.
     pub selected: usize,
     pub operators: Vec<OperatorState>,
@@ -147,6 +151,7 @@ impl PlanView {
                     scroll: ScrollHandle::new(),
                     layout,
                     graph_scroll: ScrollHandle::new(),
+                    reveal_pending: std::rc::Rc::new(std::cell::Cell::new(true)),
                     focus_handle: cx.focus_handle(),
                 }
             })
@@ -199,6 +204,7 @@ impl PlanView {
             actual: self.actual,
             focused,
             graph,
+            selected_in_view: graph && self.selected_in_view(),
             selected: self.selected,
             operators: self
                 .rows

@@ -255,6 +255,55 @@ fn assert_rolled_back(lines: &[Value]) {
 }
 
 #[test]
+fn ui_pg_graph_scrolls_to_the_selected_operator() {
+    let db = Postgres::start().expect("PostgreSQL test server");
+    let server = Server {
+        engine: Engine::PostgreSql,
+        host: db.host(),
+        port: db.port(),
+        user: db.user(),
+        password: db.password(),
+        database: db.database(),
+    };
+    for n in 1..=6 {
+        db.query(&format!("CREATE TABLE t{n} (id INT PRIMARY KEY)"))
+            .unwrap();
+    }
+    // Six tables joined in a chain: a plan wider and taller than the results pane.
+    let chain = "SELECT * FROM t1 JOIN t2 ON t2.id = t1.id JOIN t3 ON t3.id = t2.id \
+                 JOIN t4 ON t4.id = t3.id JOIN t5 ON t5.id = t4.id JOIN t6 ON t6.id = t5.id";
+    let dir = tempfile::tempdir().expect("temp dir");
+    let appdata = dir.path().join("appdata");
+    std::fs::create_dir(&appdata).expect("appdata folder");
+    let _forget = ForgetPasswords(&appdata);
+    server.save_as_lab(&appdata);
+    let steps = json!([
+        { "name": "open a tab", "input": [{ "key": "f8" }, { "key": "ctrl-n" }, "idle"] },
+        { "name": "plan", "input": [{ "text": chain }, { "key": "ctrl-l" }, "idle"] },
+        // The last operator is chosen while the tree shows, before the graph was ever drawn.
+        { "name": "last operator", "input": [{ "key": "f6" }, { "key": "f6" }, { "key": "end" }] },
+        { "name": "graph", "input": [{ "key": "f9" }, "idle", { "shot": "last" }] },
+        { "name": "first operator", "input": [{ "key": "home" }, "idle", { "shot": "first" }] },
+    ]);
+    let script = dir.path().join("script.json");
+    std::fs::write(&script, steps.to_string()).unwrap();
+    let lines = run_script(&script, Some(&appdata));
+
+    let last = state(&lines, "graph");
+    let shown = plan(last);
+    assert_eq!(shown["graph"], true, "{last:#}");
+    assert_eq!(
+        shown["selected"].as_u64().unwrap() as usize,
+        operators(shown).len() - 1,
+        "{last:#}"
+    );
+    assert_eq!(shown["selected_in_view"], true, "{last:#}");
+    let first = state(&lines, "first operator");
+    assert_eq!(plan(first)["selected"], 0);
+    assert_eq!(plan(first)["selected_in_view"], true, "{first:#}");
+}
+
+#[test]
 fn ui_pg_plans_show_estimated_and_actual_and_roll_back() {
     let db = Postgres::start().expect("PostgreSQL test server");
     for table in TABLES {
