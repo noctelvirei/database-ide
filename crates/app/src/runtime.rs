@@ -13,6 +13,7 @@
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 use dbide_engine::connections::Connection;
 use dbide_engine::danger::Engine;
@@ -66,7 +67,12 @@ pub enum Job {
     Plan(PlanMode),
     /// Runs the batch with its rows going straight into files in `format`, none to the grid
     /// (CONTEXT.md, "Run to file"): `dir/name.ext` gives `dir/name-1.ext`, one per result set.
-    ToFile { path: PathBuf, format: Format },
+    /// `rows_written` counts the rows written so far, across the files, for the UI to show.
+    ToFile {
+        path: PathBuf,
+        format: Format,
+        rows_written: Arc<AtomicU64>,
+    },
 }
 
 /// One catalog call the object explorer makes on a session (docs/spec.md, "Object explorer
@@ -212,8 +218,13 @@ impl Runtime {
                 {
                     return;
                 }
-                if let Job::ToFile { path, format } = &job {
-                    let written = match export::run_to_file(run, path, format).await {
+                if let Job::ToFile {
+                    path,
+                    format,
+                    rows_written,
+                } = &job
+                {
+                    let written = match export::run_to_file(run, path, format, rows_written).await {
                         Ok(report) => {
                             for event in report.events {
                                 if updates.send(RunUpdate::Event(event)).await.is_err() {

@@ -462,10 +462,16 @@ impl Workbench {
         self.pane(Pane::QueryTabs, focused, cx).children(rows)
     }
 
-    /// Run and Stop for the active tab. Stop is the way to cancel from a real keyboard on
-    /// Windows, where gpui doesn't pass Alt+Break through (keymap.rs).
+    /// Run and Stop for the active tab, and a run to file's progress. Stop is the way to
+    /// cancel from a real keyboard on Windows, where gpui doesn't pass Alt+Break through
+    /// (keymap.rs).
     fn run_bar(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let running = self.active_tab().read(cx).is_running();
+        let tab = self.active_tab().read(cx);
+        let running = tab.is_running();
+        let progress = tab.file_progress().map(|(path, rows)| {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            format!("Writing {name}: {rows} rows so far")
+        });
         div()
             .flex()
             .flex_row()
@@ -492,6 +498,7 @@ impl Workbench {
                         tab.update(cx, |tab, cx| tab.cancel(cx));
                     })),
             )
+            .children(progress.map(|text| div().text_sm().child(text)))
     }
 
     /// The active tab's messages strip: newest at the bottom, errors in red, the chosen error

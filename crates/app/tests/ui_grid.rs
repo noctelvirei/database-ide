@@ -4,6 +4,7 @@
 //! headers, and the app's memory sampled while rows arrive and after the copy.
 
 mod lab;
+mod million;
 mod passwords;
 mod support;
 
@@ -34,9 +35,9 @@ fn mark_mb(lines: &[Value], name: &str) -> f64 {
         .unwrap_or_else(|| panic!("no sample for mark {name:?}: {lines:#?}"))
 }
 
-/// Runs `query` on `server`, which returns the million rows `n, label, odd` (n from 1, label
-/// "row n", odd NULL for even n) and then one row `name, n`, and checks what the user sees.
-fn drive_a_million_rows(server: &Server, query: &str) {
+/// Runs `million::query` on `server` and checks what the user sees.
+fn drive_a_million_rows(server: &Server) {
+    let query = million::query(server.engine);
     let dir = tempfile::tempdir().expect("temp dir");
     let appdata = dir.path().join("appdata");
     std::fs::create_dir(&appdata).expect("appdata folder");
@@ -144,63 +145,40 @@ fn drive_a_million_rows(server: &Server, query: &str) {
 #[test]
 fn ui_mssql_a_million_rows_scroll_copy_and_stay_under_the_memory_target() {
     let mssql = Mssql::start().expect("SQL Server test database");
-    drive_a_million_rows(
-        &Server {
-            engine: Engine::SqlServer,
-            host: mssql.host(),
-            port: mssql.port(),
-            user: mssql.user(),
-            password: mssql.password(),
-            database: mssql.database(),
-        },
-        "SELECT value AS n, CONCAT('row ', value) AS label, \
-         CASE WHEN value % 2 = 0 THEN NULL ELSE value END AS odd \
-         FROM GENERATE_SERIES(1, 1000000) ORDER BY value; \
-         SELECT 'second' AS name, 2 AS n",
-    );
+    drive_a_million_rows(&Server {
+        engine: Engine::SqlServer,
+        host: mssql.host(),
+        port: mssql.port(),
+        user: mssql.user(),
+        password: mssql.password(),
+        database: mssql.database(),
+    });
 }
 
 #[test]
 fn ui_pg_a_million_rows_scroll_copy_and_stay_under_the_memory_target() {
     let postgres = Postgres::start().expect("PostgreSQL test server");
-    drive_a_million_rows(
-        &Server {
-            engine: Engine::PostgreSql,
-            host: postgres.host(),
-            port: postgres.port(),
-            user: postgres.user(),
-            password: postgres.password(),
-            database: postgres.database(),
-        },
-        "SELECT n, 'row ' || n AS label, CASE WHEN n % 2 = 0 THEN NULL ELSE n END AS odd \
-         FROM generate_series(1, 1000000) AS n; \
-         SELECT 'second' AS name, 2 AS n",
-    );
+    drive_a_million_rows(&Server {
+        engine: Engine::PostgreSql,
+        host: postgres.host(),
+        port: postgres.port(),
+        user: postgres.user(),
+        password: postgres.password(),
+        database: postgres.database(),
+    });
 }
 
 #[test]
 fn ui_mysql_a_million_rows_scroll_copy_and_stay_under_the_memory_target() {
     let mysql = MySql::start().expect("MySQL test server");
-    drive_a_million_rows(
-        &Server {
-            engine: Engine::MySql,
-            host: mysql.host(),
-            port: mysql.port(),
-            user: mysql.user(),
-            password: mysql.password(),
-            database: mysql.database(),
-        },
-        // MySQL has no series function and caps recursion at 1000, so a million rows come
-        // from six copies of the digits 0 to 9.
-        "WITH d (v) AS (SELECT 0 UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 \
-         UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 \
-         UNION ALL SELECT 8 UNION ALL SELECT 9), \
-         s (n) AS (SELECT a.v + 10 * b.v + 100 * c.v + 1000 * e.v + 10000 * f.v \
-         + 100000 * g.v + 1 FROM d a, d b, d c, d e, d f, d g) \
-         SELECT n, CONCAT('row ', n) AS label, CASE WHEN n % 2 = 0 THEN NULL ELSE n END AS odd \
-         FROM s ORDER BY n; \
-         SELECT 'second' AS name, 2 AS n",
-    );
+    drive_a_million_rows(&Server {
+        engine: Engine::MySql,
+        host: mysql.host(),
+        port: mysql.port(),
+        user: mysql.user(),
+        password: mysql.password(),
+        database: mysql.database(),
+    });
 }
 
 /// Six result sets don't fit the results pane, so it scrolls the one the keyboard moves to

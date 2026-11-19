@@ -89,6 +89,8 @@ pub struct TabState {
     pub actual_plan: bool,
     /// True when F5 sends the rows to a file instead of the grid (Ctrl+Shift+F).
     pub results_to_file: bool,
+    /// The rows a run to file has written so far, while it runs.
+    pub rows_written: Option<u64>,
     /// The editor caret's line, counted from one.
     pub cursor_line: u32,
     /// The editor's find panel, while it is open.
@@ -291,6 +293,7 @@ impl QueryTab {
             status: self.status,
             actual_plan: self.include_actual_plan,
             results_to_file: self.results_to_file,
+            rows_written: self.file_progress().map(|(_, rows)| rows),
             cursor_line: self.editor.read(cx).cursor_position().line + 1,
             search: Some(self.editor.read(cx).search_session())
                 .filter(|search| search.open)
@@ -520,7 +523,11 @@ impl QueryTab {
                 if let Some(path) = path {
                     match crate::export_file::run_format(&path) {
                         Ok(format) => {
-                            let job = Job::ToFile { path, format };
+                            let job = Job::ToFile {
+                                path,
+                                format,
+                                rows_written: Default::default(),
+                            };
                             this.start_run(batch, first_line, job, window, cx);
                         }
                         Err(reason) => this.say(reason, Tone::Error, cx),
@@ -622,13 +629,18 @@ impl QueryTab {
         let run = self.runs;
         self.results.update(cx, |results, cx| results.clear(cx));
         let mut updates = self.runtime.run(session, batch, job);
-        // Row counts grow on the runtime without an update; redraw them while the run lasts.
+        // Row counts grow on the runtime without an update, in the grids or, for a run to file,
+        // the rows written; redraw them while the run lasts.
         let results = self.results.downgrade();
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(ROW_COUNT_REFRESH).await;
-                let running = this.read_with(cx, |this, _| {
-                    this.runs == run && this.status == Status::Running
+                let running = this.update(cx, |this, cx| {
+                    let running = this.runs == run && this.status == Status::Running;
+                    if running && matches!(this.job, Job::ToFile { .. }) {
+                        cx.notify();
+                    }
+                    running
                 });
                 if !matches!(running, Ok(true))
                     || results.update(cx, Results::show_arrived_rows).is_err()
@@ -788,6 +800,20 @@ impl QueryTab {
     /// True once the runtime has started the current run, so a cancel reaches the server.
     pub fn has_started_run(&self) -> bool {
         self.cancel.is_some()
+    }
+
+    /// While a run to file is under way: the file it was asked to write and the rows written
+    /// so far, across its files.
+    pub fn file_progress(&self) -> Option<(&std::path::Path, u64)> {
+        match &self.job {
+            Job::ToFile {
+                path, rows_written, ..
+            } if self.status == Status::Running => Some((
+                path,
+                rows_written.load(std::sync::atomic::Ordering::Relaxed),
+            )),
+            _ => None,
+        }
     }
 
     /// True while a run is under way, so Stop can cancel it.
