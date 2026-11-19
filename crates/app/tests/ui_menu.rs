@@ -117,8 +117,19 @@ fn ui_pg_menus_open_by_alt_letter_run_queries_and_list_the_shortcuts() {
             ],
         },
         {
+            "name": "edit over about over the grid",
+            "input": [
+                { "key": "alt-h" },
+                { "key": "down" },
+                { "key": "down" },
+                { "key": "enter" },
+                { "key": "alt-e" },
+            ],
+        },
+        {
             "name": "about, then another pane",
             "input": [
+                { "key": "escape" },
                 { "key": "alt-h" },
                 { "key": "down" },
                 { "key": "down" },
@@ -238,6 +249,11 @@ fn ui_pg_menus_open_by_alt_letter_run_queries_and_list_the_shortcuts() {
     let closed = state(&lines, "shortcuts closed");
     assert_eq!(closed["menu_bar"]["panel"], Value::Null);
     assert_eq!(closed["focused_pane"], "Editor", "{closed:#}");
+    // Edit opened over a Help panel acts on the grid the panel was opened from.
+    let (title, items) = open("edit over about over the grid");
+    assert_eq!(title, json!("Edit"));
+    assert_eq!(items[0], "Undo (greyed)");
+    assert_eq!(items[3], "Copy");
     // A panel closes when focus leaves it, so Escape is never out of reach.
     let away = state(&lines, "about, then another pane");
     assert_eq!(away["menu_bar"]["panel"], Value::Null, "{away:#}");

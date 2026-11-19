@@ -403,30 +403,35 @@ impl Workbench {
     fn situation(&self, window: &Window, cx: &App) -> Situation {
         let bar = self.menu_bar.read(cx);
         let tab = self.active_tab().read(cx).state(cx);
-        let editor = self.focus_handle_of(Pane::Editor, cx);
-        let in_results = self.focused_pane(window, cx) == Some(Pane::Results);
         let mut situation = Situation {
             ready: tab.status == crate::query_tab::Status::Ready,
             running: tab.status == crate::query_tab::Status::Running,
             actual_plan: tab.actual_plan,
             results_to_file: tab.results_to_file,
             results_visible: self.results_visible,
-            in_results,
-            // In the results, the focused grid itself, so its own keys still work once the
-            // menu hands focus back; its actions reach the results by bubbling.
-            edit_target: match window.focused(cx) {
-                Some(focused) if in_results => focused,
-                _ => editor.clone(),
-            },
-            previous: window.focused(cx).unwrap_or(editor),
+            in_results: false,
+            edit_target: self.focus_handle_of(Pane::Editor, cx),
+            previous: self.focus_handle_of(Pane::Editor, cx),
         };
         if let Some(open) = bar.situation(window, cx) {
             situation.in_results = open.in_results;
             situation.edit_target = open.edit_target.clone();
             situation.previous = open.previous.clone();
-        } else if let Some(back) = bar.panel_return(window, cx) {
-            situation.previous = back.clone();
+            return situation;
         }
+        let Some(before) = bar.panel_return(window, cx).cloned().or(window.focused(cx)) else {
+            return situation;
+        };
+        // In the results, the focused grid itself, so its own keys still work once the menu
+        // hands focus back; its actions reach the results by bubbling.
+        if self
+            .focus_handle_of(Pane::Results, cx)
+            .contains(&before, window)
+        {
+            situation.in_results = true;
+            situation.edit_target = before.clone();
+        }
+        situation.previous = before;
         situation
     }
 
