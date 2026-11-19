@@ -5,6 +5,9 @@ use super::{SavedConnection, SignInMethod};
 /// Credential errors never include the password.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// The shared credential-store lock could not be opened or acquired.
+    #[error("credential store lock: {0}")]
+    Lock(#[from] std::io::Error),
     /// Native Credential Manager rejected an operation.
     #[error("credential store: {0}")]
     Keyring(String),
@@ -24,6 +27,8 @@ impl From<keyring::Error> for Error {
 }
 
 /// An isolated credential namespace; production uses database-ide, tests database-ide-test.
+/// Credential Manager loses concurrent updates across threads and processes, so each native
+/// call holds one exclusive file lock shared by all services, for that call only.
 #[derive(Debug)]
 pub struct Credentials {
     service: String,
@@ -52,7 +57,9 @@ impl Credentials {
         if saved.connection.sign_in != SignInMethod::Password {
             return self.delete(&saved.id);
         }
-        self.entry(&saved.id)?.set_password(password)?;
+        let entry = self.entry(&saved.id)?;
+        let _lock = lock_credential_store()?;
+        entry.set_password(password)?;
         Ok(())
     }
 
@@ -62,7 +69,9 @@ impl Credentials {
         if saved.connection.sign_in != SignInMethod::Password {
             return Ok(None);
         }
-        match self.entry(&saved.id)?.get_password() {
+        let entry = self.entry(&saved.id)?;
+        let _lock = lock_credential_store()?;
+        match entry.get_password() {
             Ok(password) => Ok(Some(Secret(password))),
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(error) => Err(error.into()),
@@ -71,7 +80,9 @@ impl Credentials {
 
     /// Delete by stable connection ID; absent entries succeed.
     pub fn delete(&self, id: &str) -> Result<(), Error> {
-        match self.entry(id)?.delete_credential() {
+        let entry = self.entry(id)?;
+        let _lock = lock_credential_store()?;
+        match entry.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(error) => Err(error.into()),
         }
@@ -86,6 +97,18 @@ impl Credentials {
         }
         Ok(keyring::Entry::new(&self.service, id)?)
     }
+}
+
+/// Serialize one native call across threads, processes and services until the returned file drops.
+fn lock_credential_store() -> Result<std::fs::File, Error> {
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(std::env::temp_dir().join("database-ide-credentials.lock"))?;
+    file.lock()?;
+    Ok(file)
 }
 
 /// A password in memory, excluded from serialization and redacted in Debug.
