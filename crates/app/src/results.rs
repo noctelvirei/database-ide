@@ -9,12 +9,13 @@
 //! selection; Ctrl+Home and Ctrl+End go to the first and last cell; Shift with an arrow
 //! grows a block; Shift+Space selects the row, Ctrl+Space
 //! the column, Ctrl+A everything; Ctrl+C copies the block and Ctrl+Shift+C copies it with
-//! headers; Ctrl+Up and Ctrl+Down move between grids and plans; Alt+Enter maximises. A
-//! plan's own keys are in `plan.rs`.
+//! headers; Ctrl+S saves the grid's result set to a file; Ctrl+Up and Ctrl+Down move
+//! between grids and plans; Alt+Enter maximises. A plan's own keys are in `plan.rs`.
 
 mod grid;
 pub mod plan;
 
+use dbide_engine::danger::Engine;
 use dbide_engine::plan::{Plan, Property};
 use dbide_engine::spill::{Reader, Store};
 use gpui::{
@@ -29,7 +30,7 @@ use serde::Serialize;
 use crate::keymap::{
     CopyBlock, CopyBlockWithHeaders, ExtendDown, ExtendLeft, ExtendRight, ExtendUp, FirstCell,
     FirstOperator, LastCell, LastOperator, NextOperator, NextResult, PreviousOperator,
-    PreviousResult, SavePlan, SelectAll, SelectColumn, SelectRow, ToggleMaximise,
+    PreviousResult, SavePlan, SaveResults, SelectAll, SelectColumn, SelectRow, ToggleMaximise,
 };
 use grid::{Block, Grid};
 use plan::{PlanState, PlanView, Step};
@@ -91,8 +92,11 @@ pub struct Results {
     maximised: Option<usize>,
     /// Copies still reading their block from the spill file.
     copying: usize,
-    /// Plans still being written to a file.
+    /// Plans and result sets still being written to a file.
     saving: usize,
+    /// The engine of the connection the result sets came from: INSERT statements follow its
+    /// dialect.
+    engine: Option<Engine>,
     /// An earlier run's spill files that a copy still reads; dropped when the copies end.
     retired: Vec<Store>,
     /// The stacked grids' scroll position.
@@ -118,6 +122,7 @@ impl Results {
             maximised: None,
             copying: 0,
             saving: 0,
+            engine: None,
             retired: Vec::new(),
             scroll: ScrollHandle::new(),
             focus_handle: cx.focus_handle(),
@@ -140,7 +145,15 @@ impl Results {
     }
 
     /// Adds a grid for a result set that has just started.
-    pub fn add(&mut self, reader: Reader, window: &mut Window, cx: &mut Context<Self>) {
+    /// Adds a result set's grid. `engine` is the connection's, for saving it as INSERTs.
+    pub fn add(
+        &mut self,
+        reader: Reader,
+        engine: Option<Engine>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.engine = engine;
         let table = cx.new(|cx| {
             TableState::new(Grid::new(reader), window, cx)
                 .cell_selectable(true)
@@ -312,7 +325,7 @@ impl Results {
         self.copying > 0
     }
 
-    /// True while a copy or a plan save is under way.
+    /// True while a copy, or a plan's or result set's save, is under way.
     pub fn is_working(&self) -> bool {
         self.is_copying() || self.saving > 0
     }
@@ -502,6 +515,59 @@ impl Results {
         .detach();
     }
 
+    /// Ctrl+S on a grid: asks where, then writes its whole result set there, in the format
+    /// the file's extension names (`export_file`). A result still receiving rows can't be
+    /// saved yet.
+    fn save_results(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(table) = self.focused_table() else {
+            return;
+        };
+        let grid = table.read(cx).delegate();
+        if !grid.is_complete() {
+            cx.emit(ResultsEvent::Message(
+                "This result is still receiving rows. Save it when the run ends.".into(),
+            ));
+            return;
+        }
+        let reader = grid.reader().clone();
+        let Some(engine) = self.engine else {
+            return;
+        };
+        let asked = crate::file_prompt::save_path(cx, crate::export_file::SUGGESTED_NAME);
+        self.saving += 1;
+        cx.spawn_in(window, async move |this, cx| {
+            let message = match asked.await {
+                None => None,
+                Some(path) => Some(
+                    match crate::export_file::save_format(&path, engine, reader.columns()) {
+                        Err(reason) => reason,
+                        Ok(format) => {
+                            let shown = path.display().to_string();
+                            let written = cx
+                                .background_spawn(async move {
+                                    crate::export_file::write(&reader, &path, &format)
+                                })
+                                .await;
+                            match written {
+                                Ok(file) => crate::export_file::written(&file),
+                                Err(error) => {
+                                    format!("Couldn't save the results to {shown}: {error}")
+                                }
+                            }
+                        }
+                    },
+                ),
+            };
+            let _ = this.update(cx, |this, cx| {
+                this.saving -= 1;
+                if let Some(message) = message {
+                    cx.emit(ResultsEvent::Message(message.into()));
+                }
+            });
+        })
+        .detach();
+    }
+
     /// Moves keyboard focus to the next or previous grid or plan.
     fn step_grid(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
         let count = self.sections();
@@ -634,5 +700,6 @@ impl Render for Results {
                 cx.listener(|this, _: &LastOperator, _, cx| this.select_operator(Step::Last, cx)),
             )
             .on_action(cx.listener(|this, _: &SavePlan, w, cx| this.save_plan(w, cx)))
+            .on_action(cx.listener(|this, _: &SaveResults, w, cx| this.save_results(w, cx)))
     }
 }

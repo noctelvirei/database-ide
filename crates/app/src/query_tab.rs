@@ -87,6 +87,8 @@ pub struct TabState {
     pub status: Status,
     /// True when F5 returns the actual plan with the run (Ctrl+M).
     pub actual_plan: bool,
+    /// True when F5 sends the rows to a file instead of the grid (Ctrl+Shift+F).
+    pub results_to_file: bool,
     /// The editor caret's line, counted from one.
     pub cursor_line: u32,
     /// The editor's find panel, while it is open.
@@ -127,6 +129,10 @@ pub struct QueryTab {
     job: Job,
     /// Ctrl+M: F5 returns the actual plan with the run.
     include_actual_plan: bool,
+    /// Ctrl+Shift+F: F5 asks for a file and sends the run's rows there, not to the grid.
+    results_to_file: bool,
+    /// True while the save prompt for a run to file is open.
+    choosing_file: bool,
     /// False while another tab is on screen: a database list that loads then is dropped,
     /// so its picker never opens over another tab's editor.
     shown: bool,
@@ -177,6 +183,8 @@ impl QueryTab {
             formatting: false,
             job: Job::Run,
             include_actual_plan: false,
+            results_to_file: false,
+            choosing_file: false,
             shown: true,
             dialog: None,
             messages: Messages::default(),
@@ -194,12 +202,14 @@ impl QueryTab {
         self.target.as_ref()
     }
 
-    /// True while the tab waits on the server, the formatter, or a copy or save from its results.
+    /// True while the tab waits on the server, the formatter, a file prompt, or a copy or
+    /// save from its results.
     pub fn is_busy(&self, cx: &gpui::App) -> bool {
         matches!(
             self.status,
             Status::Connecting | Status::Running | Status::Switching | Status::Listing
         ) || self.formatting
+            || self.choosing_file
             || self.results.read(cx).is_working()
     }
 
@@ -280,6 +290,7 @@ impl QueryTab {
             colour: crate::palette::name(self.target.as_ref().and_then(|t| t.colour.as_deref())),
             status: self.status,
             actual_plan: self.include_actual_plan,
+            results_to_file: self.results_to_file,
             cursor_line: self.editor.read(cx).cursor_position().line + 1,
             search: Some(self.editor.read(cx).search_session())
                 .filter(|search| search.open)
@@ -461,15 +472,64 @@ impl QueryTab {
         }
     }
 
-    /// Ctrl+M: turns returning the actual plan with each run on or off.
+    /// Ctrl+M: turns returning the actual plan with each run on or off. A plan shows in the
+    /// results pane, so it turns results to file off.
     pub fn toggle_actual_plan(&mut self, cx: &mut Context<Self>) {
         self.include_actual_plan = !self.include_actual_plan;
         let text = if self.include_actual_plan {
+            self.results_to_file = false;
             "Include actual plan is on: F5 runs the batch and shows each statement's plan."
         } else {
             "Include actual plan is off."
         };
         self.say(text, Tone::Plain, cx);
+    }
+
+    /// Ctrl+Shift+F: turns sending each run's rows to a file on or off. A run to file shows
+    /// nothing in the results pane, so it turns the actual plan off.
+    pub fn toggle_results_to_file(&mut self, cx: &mut Context<Self>) {
+        self.results_to_file = !self.results_to_file;
+        let text = if self.results_to_file {
+            self.include_actual_plan = false;
+            "Results to file is on: F5 asks for a .csv or .xlsx file and writes the rows there."
+        } else {
+            "Results to file is off."
+        };
+        self.say(text, Tone::Plain, cx);
+    }
+
+    /// Starts F5's run of `batch`, once any danger check has passed: to the grid, or with
+    /// results to file on, into the file the user names.
+    pub fn go(
+        &mut self,
+        batch: String,
+        first_line: u32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.results_to_file {
+            self.start_run(batch, first_line, self.run_job(), window, cx);
+            return;
+        }
+        let asked = crate::file_prompt::save_path(cx, crate::export_file::SUGGESTED_NAME);
+        self.choosing_file = true;
+        cx.spawn_in(window, async move |this, cx| {
+            let path = asked.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.choosing_file = false;
+                if let Some(path) = path {
+                    match crate::export_file::run_format(&path) {
+                        Ok(format) => {
+                            let job = Job::ToFile { path, format };
+                            this.start_run(batch, first_line, job, window, cx);
+                        }
+                        Err(reason) => this.say(reason, Tone::Error, cx),
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Ctrl+L: shows the estimated plan of the selection, or the whole tab, without running
@@ -526,7 +586,7 @@ impl QueryTab {
                 );
             }
         }
-        self.start_run(batch, first_line, self.run_job(), window, cx);
+        self.go(batch, first_line, window, cx);
     }
 
     fn ask_before_running(
@@ -558,7 +618,7 @@ impl QueryTab {
         self.cancel_pressed = false;
         self.run_cancelled = false;
         self.runs += 1;
-        self.job = job;
+        self.job = job.clone();
         let run = self.runs;
         self.results.update(cx, |results, cx| results.clear(cx));
         let mut updates = self.runtime.run(session, batch, job);
@@ -621,10 +681,22 @@ impl QueryTab {
                 return;
             }
             RunUpdate::ResultSet(reader) => {
+                let engine = self.engine();
                 self.results
-                    .update(cx, |results, cx| results.add(reader, window, cx));
+                    .update(cx, |results, cx| results.add(reader, engine, window, cx));
                 return;
             }
+            RunUpdate::Written(Ok(files)) => {
+                for file in &files {
+                    self.say(crate::export_file::written(file), Tone::Plain, cx);
+                }
+                return;
+            }
+            RunUpdate::Written(Err(error)) => Message {
+                text: format!("Couldn't write the results to a file: {error}").into(),
+                tone: Tone::Error,
+                line: None,
+            },
             RunUpdate::Plan(Ok(plan)) => {
                 // `.sqlplan` files hold SQL Server's showplan only.
                 let savable = self.engine() == Some(Engine::SqlServer);
@@ -649,7 +721,7 @@ impl QueryTab {
                     Some(Engine::MySql) => Some("MySQL"),
                     Some(Engine::SqlServer) | None => None,
                 };
-                if self.job == Job::Plan(PlanMode::Actual)
+                if matches!(self.job, Job::Plan(PlanMode::Actual))
                     && let Some(server) = rolled_back
                 {
                     self.say(

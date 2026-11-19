@@ -147,8 +147,7 @@ pub(super) fn ask_before_running(
                 entity.update(cx, |tab, cx| {
                     tab.dialog = None;
                     tab.focus(window, cx);
-                    let job = tab.run_job();
-                    tab.start_run(batch.clone(), first_line, job, window, cx);
+                    tab.go(batch.clone(), first_line, window, cx);
                 });
                 true
             }

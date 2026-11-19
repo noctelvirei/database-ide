@@ -22,7 +22,7 @@ use crate::keymap::{
     CancelRun, CommentLines, EstimatedPlan, FocusExplorer, Format, GoToError, NewQueryTab,
     NextError, NextPane, NextQueryTab, OpenFile, PickDatabase, PrevPane, PreviousError,
     RefreshAutocomplete, Run, SaveFile, ToggleActualPlan, TogglePlanView, ToggleResults,
-    UncommentLines,
+    ToggleResultsToFile, UncommentLines,
 };
 use crate::messages::Tone;
 use crate::palette;
@@ -654,6 +654,12 @@ impl Render for Workbench {
                 this.active_tab()
                     .clone()
                     .update(cx, |tab, cx| tab.toggle_actual_plan(cx));
+            }))
+            .on_action(cx.listener(|this, _: &ToggleResultsToFile, _, cx| {
+                this.last_action = Some("ToggleResultsToFile");
+                this.active_tab()
+                    .clone()
+                    .update(cx, |tab, cx| tab.toggle_results_to_file(cx));
             }))
             .on_action(
                 cx.listener(|this, _: &TogglePlanView, _, cx| this.not_built("TogglePlanView", cx)),
