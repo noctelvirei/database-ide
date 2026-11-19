@@ -1,12 +1,17 @@
 //! A plan in the results pane (docs/spec.md, "UI" → "Plans"): one statement's operators as a
 //! tree table, each row indented under its parent, with the estimated and actual rows, the
-//! estimate error, cost %, time and reads. Misestimates of 10× or more either way are
-//! flagged, and the statement's costliest operator is marked and selected when the plan
-//! arrives. The selected operator's every raw property shows in the inspector.
+//! estimate error, cost %, time and reads; or, after F9, as a graph (`graph.rs`). Misestimates
+//! of 10× or more either way are flagged, and the statement's costliest operator is marked
+//! and selected when the plan arrives. The selected operator's every raw property shows in
+//! the inspector, and the selection stays put when F9 switches views.
 //!
-//! Keys while a plan has focus: Up and Down move the selection, Home and End go to the first
-//! and last operator, Ctrl+S saves the plan as a `.sqlplan` file. A click selects an operator
-//! and gives the plan focus.
+//! Keys while a plan has focus: Up and Down move the selection in tree order, Left goes to
+//! the parent and Right to the first input, Home and End go to the first and last operator,
+//! Ctrl+S saves the plan as a `.sqlplan` file. A click selects an operator and gives the plan
+//! focus.
+
+mod graph;
+mod icons;
 
 use std::sync::Arc;
 
@@ -19,6 +24,7 @@ use gpui_component::ActiveTheme as _;
 use serde::Serialize;
 
 use super::Results;
+use graph::Layout;
 
 /// An estimate this many times too high or too low, or worse, is flagged.
 const MISESTIMATE: f64 = 10.0;
@@ -45,6 +51,10 @@ pub struct PlanView {
     actual: bool,
     /// The rows' scroll position, so the selection stays in view.
     scroll: ScrollHandle,
+    /// Where each operator goes in the graph, and each one's parent.
+    layout: Layout,
+    /// The graph's scroll position, so the selection stays in view there too.
+    graph_scroll: ScrollHandle,
     focus_handle: FocusHandle,
 }
 
@@ -62,6 +72,8 @@ pub struct PlanState {
     pub statement: Option<String>,
     pub actual: bool,
     pub focused: bool,
+    /// True when shown as a graph rather than the tree table.
+    pub graph: bool,
     /// Index into `operators` of the selected operator.
     pub selected: usize,
     pub operators: Vec<OperatorState>,
@@ -98,6 +110,10 @@ pub enum Step {
     Next,
     First,
     Last,
+    /// The operator this one feeds.
+    Parent,
+    /// The operator's first input.
+    Child,
 }
 
 impl PlanView {
@@ -118,6 +134,7 @@ impl PlanView {
                     .max_by(|(_, a), (_, b)| op(a).cost_percent.total_cmp(&op(b).cost_percent))
                     .map_or(0, |(ix, _)| ix);
                 let actual = rows.iter().any(|r| op(r).actual_rows.is_some());
+                let layout = Layout::new(&rows);
                 PlanView {
                     plan: plan.clone(),
                     statement: ix,
@@ -128,6 +145,8 @@ impl PlanView {
                     selected: costliest,
                     actual,
                     scroll: ScrollHandle::new(),
+                    layout,
+                    graph_scroll: ScrollHandle::new(),
                     focus_handle: cx.focus_handle(),
                 }
             })
@@ -153,23 +172,33 @@ impl PlanView {
         self.selected = row.min(self.rows.len().saturating_sub(1));
     }
 
-    /// Moves the selection, keeping it in view.
+    /// Moves the selection, keeping it in view in both the table and the graph.
     pub fn select(&mut self, step: Step) {
         let last = self.rows.len().saturating_sub(1);
+        let at = self.selected;
         self.selected = match step {
-            Step::Previous => self.selected.saturating_sub(1),
-            Step::Next => (self.selected + 1).min(last),
+            Step::Previous => at.saturating_sub(1),
+            Step::Next => (at + 1).min(last),
             Step::First => 0,
             Step::Last => last,
+            Step::Parent => self.layout.parent(at).unwrap_or(at),
+            // A first input follows its parent directly in tree order.
+            Step::Child => match self.rows.get(at + 1) {
+                Some(next) if next.depth > self.rows[at].depth => at + 1,
+                _ => at,
+            },
         };
         self.scroll.scroll_to_item(self.selected);
+        self.reveal();
     }
 
-    pub fn state(&self, focused: bool) -> PlanState {
+    /// What a user can see of the plan; `graph` says it is shown as a graph.
+    pub fn state(&self, focused: bool, graph: bool) -> PlanState {
         PlanState {
             statement: self.text.clone(),
             actual: self.actual,
             focused,
+            graph,
             selected: self.selected,
             operators: self
                 .rows
@@ -239,13 +268,15 @@ impl PlanView {
         Some((op.name.clone(), details))
     }
 
-    /// The plan with its heading: its number, whether it is actual, and its statement. `ix`
-    /// is its section in the results pane, where a click on a row selects it.
+    /// The plan with its heading: its number, whether it is actual, and its statement, then
+    /// the tree table or, when `graph`, the graph. `ix` is its section in the results pane,
+    /// where a click on an operator selects it.
     pub fn render(
         &self,
         ix: usize,
         number: usize,
         focused: bool,
+        graph: bool,
         cx: &mut Context<Results>,
     ) -> impl IntoElement {
         let theme = cx.theme().clone();
@@ -316,6 +347,28 @@ impl PlanView {
                 }))
         });
         let rows: Vec<_> = rows.collect();
+        let body = if graph {
+            self.graph(ix, focused, cx)
+        } else {
+            div()
+                .id(("plan-table", ix))
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .child(header)
+                .child(
+                    div()
+                        .id(("plan-rows", ix))
+                        .flex_1()
+                        .min_h_0()
+                        .flex()
+                        .flex_col()
+                        .overflow_y_scroll()
+                        .track_scroll(&self.scroll)
+                        .children(rows),
+                )
+        };
         div()
             .id(("plan", ix))
             .key_context("Plan")
@@ -337,18 +390,7 @@ impl PlanView {
                     })
                     .child(heading),
             )
-            .child(header)
-            .child(
-                div()
-                    .id(("plan-rows", ix))
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .flex_col()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.scroll)
-                    .children(rows),
-            )
+            .child(body)
     }
 }
 

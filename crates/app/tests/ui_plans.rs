@@ -1,7 +1,8 @@
 //! Plans as a user drives them against the real SQL Server, PostgreSQL and MySQL servers from
 //! `dbide-test-servers` (CODE_STANDARDS.md, "UI E2E harness"): the estimated plan of a join
 //! (Ctrl+L), its actual plan with the run (Ctrl+M, F5), the costliest operator's details in
-//! the inspector, and on SQL Server the plan saved as a `.sqlplan` file and opened again.
+//! the inspector, the plan as a graph (F9) walked with the arrow keys, and on SQL Server the
+//! plan saved as a `.sqlplan` file and opened again.
 
 mod lab;
 mod passwords;
@@ -79,6 +80,10 @@ fn show_plans(server: &Server, to_plan: &[Value], save: Option<&std::path::Path>
         json!({ "name": "focus the plan", "input": focus_plan }),
         json!({ "name": "first operator", "input": [{ "key": "home" }] }),
         json!({ "name": "next operator", "input": [{ "key": "down" }] }),
+        json!({ "name": "graph", "input": [{ "key": "f9" }, { "shot": "graph" }] }),
+        json!({ "name": "to the parent", "input": [{ "key": "left" }] }),
+        json!({ "name": "to the first input", "input": [{ "key": "right" }, { "shot": "input" }] }),
+        json!({ "name": "back to the tree", "input": [{ "key": "f9" }] }),
     ];
     if let Some(file) = save {
         steps.push(json!({
@@ -150,6 +155,22 @@ fn show_plans(server: &Server, to_plan: &[Value], save: Option<&std::path::Path>
     let next = state(&lines, "next operator");
     assert_eq!(plan(next)["selected"], 1);
     assert_eq!(next["inspector"]["operator"], ops[1]["name"]);
+
+    // F9 shows the graph with the selection kept; Left goes to the operator the selected one
+    // feeds, the statement's root, and Right back to its first input. F9 again keeps it too.
+    let graph = state(&lines, "graph");
+    assert_eq!(plan(graph)["graph"], true, "{graph:#}");
+    assert_eq!(plan(graph)["selected"], 1);
+    assert_eq!(graph["inspector"]["operator"], ops[1]["name"]);
+    let parent = state(&lines, "to the parent");
+    assert_eq!(plan(parent)["selected"], 0, "{parent:#}");
+    assert_eq!(parent["inspector"]["operator"], ops[0]["name"]);
+    let input = state(&lines, "to the first input");
+    assert_eq!(plan(input)["selected"], 1, "{input:#}");
+    assert_eq!(input["inspector"]["operator"], ops[1]["name"]);
+    let tree = state(&lines, "back to the tree");
+    assert_eq!(plan(tree)["graph"], false, "{tree:#}");
+    assert_eq!(plan(tree)["selected"], 1);
     lines
 }
 

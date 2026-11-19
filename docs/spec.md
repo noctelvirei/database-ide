@@ -116,7 +116,7 @@ gpui-component's code editor with tree-sitter SQL highlighting, find/replace and
 
 ### Plans
 
-The Plan tab opens in a tree table (operator, object, estimated and actual rows, estimate error, cost %, time, reads; misestimates of 10× or more flagged) ([decision](https://github.com/noctelvirei/database-ide/issues/14)). F9 switches to an SSMS-style graph (vscode-mssql icons, right-to-left, arrow width by actual rows). Estimated rows are multiplied by executions or loops before comparing with actual rows. Selecting an operator fills the inspector with every raw property.
+The Plan tab opens in a tree table (operator, object, estimated and actual rows, estimate error, cost %, time, reads; misestimates of 10× or more flagged) ([decision](https://github.com/noctelvirei/database-ide/issues/14)). F9 switches every plan in the tab to an SSMS-style graph and back, keeping the selected operator: each operator a box with its vscode-mssql icon (MIT, the PNGs embedded in the binary with their notice), name, object, cost and rows, the statement on the left and its inputs to the right; an arrow's width grows with the rows it carries (actual rows for an actual plan, estimated otherwise). In a focused plan Up and Down move the selection in tree order, Left to the operator the selected one feeds and Right to its first input. Estimated rows are multiplied by executions or loops before comparing with actual rows. Selecting an operator fills the inspector with every raw property.
 
 ### Keyboard
 
@@ -150,11 +150,11 @@ A Windows menu bar across the top of the window, so every action can be found wi
 
 - **File:** New query, New connection, Open, Save, Exit.
 - **Edit:** Undo, Redo, Cut, Copy, Paste, Select all, Find, Replace, Format. In a grid, Copy and Select all act on the grid.
-- **View:** Object explorer, Results (a tick shows when shown), Next pane, Previous pane, Query history.
+- **View:** Object explorer, Results (a tick shows when shown), Plan as graph (a tick shows when on), Next pane, Previous pane, Query history.
 - **Query:** Run, Cancel, Estimated plan, Include actual plan and Results to file (a tick shows when on), Change database.
 - **Help:** Keyboard shortcuts (a panel listing every menu item's keys, read from the keymap), About (version, licences, the repository link).
 
-Alt+the underlined letter opens a menu, as in SSMS, and F10 opens File; Up, Down, Enter and Escape move through it, and Left and Right move to the next menu. Plain Alt alone does not focus the bar. No Tools menu in v1, since there are no settings to show. Each item lands with the feature behind it: Comment and Uncomment, Plan tree ↔ graph and Refresh autocomplete join their menus when those are built, and later Save as and recent files (File), plan files, grid edit mode, and Check for updates (Help).
+Alt+the underlined letter opens a menu, as in SSMS, and F10 opens File; Up, Down, Enter and Escape move through it, and Left and Right move to the next menu. Plain Alt alone does not focus the bar. No Tools menu in v1, since there are no settings to show. Each item lands with the feature behind it: Comment and Uncomment and Refresh autocomplete join their menus when those are built, and later Save as and recent files (File), plan files, grid edit mode, and Check for updates (Help).
 
 ### Formatting
 

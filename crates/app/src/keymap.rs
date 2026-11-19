@@ -185,6 +185,10 @@ actions!(
         FirstOperator,
         /// Selects the plan's last operator (End).
         LastOperator,
+        /// Selects the operator the selected one feeds (Left).
+        ParentOperator,
+        /// Selects the selected operator's first input (Right).
+        ChildOperator,
         /// Saves the focused plan as a `.sqlplan` file (Ctrl+S).
         SavePlan,
         /// Saves the focused grid's result set as CSV, XLSX or INSERT statements (Ctrl+S).
@@ -263,6 +267,8 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("down", NextOperator, Some("Plan")),
         KeyBinding::new("home", FirstOperator, Some("Plan")),
         KeyBinding::new("end", LastOperator, Some("Plan")),
+        KeyBinding::new("left", ParentOperator, Some("Plan")),
+        KeyBinding::new("right", ChildOperator, Some("Plan")),
         KeyBinding::new("ctrl-s", SavePlan, Some("Plan")),
         KeyBinding::new("up", PreviousError, Some("Messages")),
         KeyBinding::new("down", NextError, Some("Messages")),

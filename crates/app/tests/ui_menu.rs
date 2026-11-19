@@ -205,6 +205,7 @@ fn ui_pg_menus_open_by_alt_letter_run_queries_and_list_the_shortcuts() {
     let view = strings(&[
         "Object explorer",
         "Results [x]",
+        "Plan as graph [ ]",
         "Next pane",
         "Previous pane",
         "Query history",
