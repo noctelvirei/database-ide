@@ -56,7 +56,7 @@ pub struct DangerousStatement {
     pub kind: DangerKind,
     /// A plain explanation suitable for display without formatting SQL.
     pub reason: &'static str,
-    /// The statement's starting line in the batch, counted from one.
+    /// The statement's starting line in the input text, counted from one.
     pub line: u64,
 }
 
@@ -69,10 +69,40 @@ pub struct DangerCheck {
     pub fully_checked: bool,
 }
 
-/// Checks one batch without server access. Syntax and tokenization failures produce a normal
-/// result with `fully_checked = false` and any findings available from keyword fallback.
-/// Does not split GO batches, estimate row counts, or apply connection settings.
+/// Checks SQL without server access, splitting SQL Server GO batches and reporting input lines.
+/// Syntax, tokenization and GO separator failures produce a normal result with
+/// `fully_checked = false` and any findings available from keyword fallback.
+/// Does not estimate row counts or apply connection settings; GO repeats do not duplicate findings.
 pub fn check(batch: &str, engine: Engine) -> DangerCheck {
+    if engine != Engine::SqlServer {
+        return check_batch(batch, engine);
+    }
+    let batches = match crate::mssql::batches::split(batch) {
+        Ok(batches) => batches,
+        Err(_) => {
+            let mut result = check_batch(batch, engine);
+            result.fully_checked = false;
+            return result;
+        }
+    };
+    let mut result = DangerCheck {
+        statements: Vec::new(),
+        fully_checked: true,
+    };
+    for batch in batches {
+        let checked = check_batch(batch.sql, engine);
+        result.fully_checked &= checked.fully_checked;
+        result
+            .statements
+            .extend(checked.statements.into_iter().map(|mut statement| {
+                statement.line += batch.line_offset;
+                statement
+            }));
+    }
+    result
+}
+
+fn check_batch(batch: &str, engine: Engine) -> DangerCheck {
     let dialect: &dyn Dialect = match engine {
         Engine::SqlServer => &MsSqlDialect {},
         Engine::PostgreSql => &PostgreSqlDialect {},

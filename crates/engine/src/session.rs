@@ -297,6 +297,8 @@ pub enum PlanFormat {
     ShowplanXml,
     /// PostgreSQL EXPLAIN with FORMAT JSON.
     ExplainJson,
+    /// MySQL iterator EXPLAIN JSON (explain_json_format_version=2), with optional ANALYZE.
+    MySqlJson,
 }
 
 /// Events in server order. Errors do not terminate the stream; exactly one Done does.
