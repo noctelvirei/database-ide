@@ -142,15 +142,15 @@ SSMS's shortcuts, not remappable in v1:
 
 ### Menu bar
 
-A Windows menu bar across the top of the window, so every action can be found without knowing its key. It is gpui-component's `AppMenuBar` built from the same actions the keymap binds; each item shows its shortcut, and an item that can't act now (Cancel with no run going) is greyed out.
+A Windows menu bar across the top of the window, so every action can be found without knowing its key. It is a row of menu titles of our own, each opening gpui-component's `PopupMenu` built from the same actions the keymap binds; each item shows its shortcut, and an item that can't act now (Cancel with no run going) is greyed out. gpui-component's `AppMenuBar` was the first choice, but it cannot open a given menu from Alt+its letter, so the bar is ours; a fork exposing that would let us switch back.
 
-- **File:** New query, New connection, Open, Save, Exit.
-- **Edit:** Undo, Redo, Cut, Copy, Paste, Select all, Find, Replace, Comment, Uncomment, Format.
-- **View:** Object explorer, Results, Plan tree ↔ graph, Next pane, Previous pane.
-- **Query:** Run, Cancel, Estimated plan, Include actual plan (a tick shows when on), Change database, Refresh autocomplete.
-- **Help:** Keyboard shortcuts (a window listing the Keyboard table), About (version, licences, the repository link).
+- **File:** New query, New connection, Open, Exit.
+- **Edit:** Undo, Redo, Cut, Copy, Paste, Select all, Find, Replace, Format. In a grid, Copy and Select all act on the grid.
+- **View:** Object explorer, Results (a tick shows when shown), Next pane, Previous pane.
+- **Query:** Run, Cancel, Estimated plan, Include actual plan and Results to file (a tick shows when on), Change database.
+- **Help:** Keyboard shortcuts (a panel listing every menu item's keys, read from the keymap), About (version, licences, the repository link).
 
-Alt or F10 moves focus to the menu bar and Alt+the underlined letter opens a menu, as in SSMS; arrows, Enter and Escape move through it. No Tools menu in v1, since there are no settings to show. Each later feature adds its own items as it lands: Save as, recent files and query history (File and View), plan files, exports and run to file, grid edit mode, and Check for updates (Help).
+Alt+the underlined letter opens a menu, as in SSMS, and F10 opens File; Up, Down, Enter and Escape move through it, and Left and Right move to the next menu. Plain Alt alone does not focus the bar. No Tools menu in v1, since there are no settings to show. Each item lands with the feature behind it: Save, Comment and Uncomment, Plan tree ↔ graph and Refresh autocomplete join their menus when those are built, and later Save as, recent files and query history (File and View), plan files, grid edit mode, and Check for updates (Help).
 
 ### Formatting
 
