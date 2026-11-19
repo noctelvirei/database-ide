@@ -5,6 +5,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use dbide_engine::danger::{DangerCheck, DangerKind};
+use futures::channel::oneshot;
 use gpui::{
     App, AppContext as _, Context, Entity, Focusable as _, InteractiveElement as _,
     ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
@@ -16,11 +17,15 @@ use gpui_component::{ActiveTheme as _, WindowExt as _};
 use serde::Serialize;
 
 use super::{QueryTab, Status};
-use crate::messages::Tone;
 
 /// The open dialog, kept for the UI script's state lines.
 pub(super) enum OpenDialog {
-    Danger(DangerState),
+    Danger {
+        state: DangerState,
+        /// Held while the tab estimates the statements' rows; closing the dialog drops it,
+        /// which cancels the estimating and frees the session.
+        _stop_estimating: Option<oneshot::Sender<()>>,
+    },
     Picker {
         input: Entity<InputState>,
         databases: Vec<String>,
@@ -78,7 +83,7 @@ pub enum DialogState {
 impl OpenDialog {
     pub(super) fn state(&self, cx: &App) -> DialogState {
         match self {
-            OpenDialog::Danger(state) => DialogState::Danger(state.clone()),
+            OpenDialog::Danger { state, .. } => DialogState::Danger(state.clone()),
             OpenDialog::Picker { input, databases } => {
                 let typed = input.read(cx).value().to_string();
                 DialogState::Picker {
@@ -187,36 +192,37 @@ pub(super) fn ask_before_running(
         fully_checked: check.fully_checked,
     };
     let estimating = estimating && state.statements.iter().any(|s| s.rows.is_some());
-    tab.dialog = Some(OpenDialog::Danger(state));
-    // Set by "Run anyway" while the estimates are out, so the batch runs when they're in.
-    let run_when_estimated = Rc::new(Cell::new(false));
-    if estimating {
+    // Set by "Run anyway" while estimating, so the batch runs once the session is back.
+    let run_when_free = Rc::new(Cell::new(false));
+    let stop_estimating = if estimating {
         estimate(
             tab,
             &batch,
             first_line,
             check,
-            run_when_estimated.clone(),
+            run_when_free.clone(),
             window,
             cx,
-        );
-    }
+        )
+    } else {
+        None
+    };
+    tab.dialog = Some(OpenDialog::Danger {
+        state,
+        _stop_estimating: stop_estimating,
+    });
     let entity = cx.entity();
     window.open_alert_dialog(cx, move |alert, _, cx| {
         let run = {
             let (entity, batch) = (entity.clone(), batch.clone());
-            let run_when_estimated = run_when_estimated.clone();
+            let run_when_free = run_when_free.clone();
             move |_: &gpui::ClickEvent, window: &mut Window, cx: &mut App| {
                 entity.update(cx, |tab, cx| {
+                    // Closing the dialog cancels any estimating still under way.
                     tab.dialog = None;
                     tab.focus(window, cx);
                     if tab.status == Status::Estimating {
-                        run_when_estimated.set(true);
-                        tab.say(
-                            "The batch runs once the row estimates are in.",
-                            Tone::Plain,
-                            cx,
-                        );
+                        run_when_free.set(true);
                     } else {
                         tab.go(batch.clone(), first_line, window, cx);
                     }
@@ -226,7 +232,7 @@ pub(super) fn ask_before_running(
         };
         // Rebuilt on every draw, so estimates show as they arrive.
         let description = match &entity.read(cx).dialog {
-            Some(OpenDialog::Danger(state)) => state.description(),
+            Some(OpenDialog::Danger { state, .. }) => state.description(),
             _ => SharedString::default(),
         };
         alert
@@ -242,31 +248,31 @@ pub(super) fn ask_before_running(
 }
 
 /// Takes the tab's session to estimate the flagged statements' rows, then gives it back,
-/// fills the estimates into the dialog if it is still open, and runs the batch if "Run
-/// anyway" was pressed meanwhile.
+/// fills the estimates into the dialog if it is still open, and runs the batch if
+/// `run_when_free` was set meanwhile. Returns the sender whose drop stops the estimating;
+/// `None`, with nothing started, when the tab has no free session.
 fn estimate(
     tab: &mut QueryTab,
     batch: &str,
     first_line: u32,
     check: DangerCheck,
-    run_when_estimated: Rc<Cell<bool>>,
+    run_when_free: Rc<Cell<bool>>,
     window: &mut Window,
     cx: &mut Context<QueryTab>,
-) {
-    let (Some(session), Some(target)) = (tab.session.take(), &tab.target) else {
-        return;
-    };
-    let engine = target.saved.connection.engine;
+) -> Option<oneshot::Sender<()>> {
+    let engine = tab.target.as_ref()?.saved.connection.engine;
+    let session = tab.session.take()?;
     tab.status = Status::Estimating;
+    let (stop, stopped) = oneshot::channel();
     let estimating = tab
         .runtime
-        .estimate_rows(session, batch.to_owned(), check, engine);
+        .estimate_rows(session, batch.to_owned(), check, engine, stopped);
     let batch = batch.to_owned();
     cx.spawn_in(window, async move |this, cx| {
         let (session, estimates) = estimating.await;
         let _ = this.update_in(cx, |this, window, cx| {
             this.give_back(session);
-            if let Some(OpenDialog::Danger(state)) = &mut this.dialog {
+            if let Some(OpenDialog::Danger { state, .. }) = &mut this.dialog {
                 for (flagged, estimate) in state.statements.iter_mut().zip(estimates) {
                     if flagged.rows.is_some() {
                         flagged.rows = Some(match estimate {
@@ -278,13 +284,14 @@ fn estimate(
                     }
                 }
             }
-            if run_when_estimated.get() {
+            if run_when_free.get() {
                 this.go(batch, first_line, window, cx);
             }
             cx.notify();
         });
     })
     .detach();
+    Some(stop)
 }
 
 /// Opens the picker over `databases`: type to filter, Enter switches, a click on a name
