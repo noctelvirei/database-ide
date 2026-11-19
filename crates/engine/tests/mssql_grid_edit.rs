@@ -35,7 +35,9 @@ async fn query(session: &mut Mssql, sql: &str) -> ResultSet {
         match event {
             Event::ResultSetStarted { columns } => result.columns = columns,
             Event::Rows(rows) => result.rows.extend(rows),
-            Event::Error { text, .. } => panic!("{text}"),
+            Event::Error { text, code, line } => {
+                panic!("SQL query failed (code {code:?}, line {line:?}): {text}\nSQL: {sql}")
+            }
             _ => {}
         }
     }
