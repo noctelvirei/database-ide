@@ -3,7 +3,7 @@
 //! independently, as SSMS's query windows do.
 //!
 //! The tab's session is in one of three places: here and free (`Ready`), on the runtime
-//! doing work (`Connecting`, `Running`, `Switching`, `Listing`), or gone (`Unconnected`,
+//! doing work (`Connecting`, `Running`, `Switching`, `Listing`, `Estimating`), or gone (`Unconnected`,
 //! `Failed`). Each action checks that state first and says in the messages strip why it
 //! can't go ahead. The current database is read from the session every time it comes back,
 //! so a `USE` typed in the editor updates the tab too.
@@ -74,6 +74,8 @@ pub enum Status {
     Switching,
     /// Loading the database list for the picker.
     Listing,
+    /// Estimating the rows the danger dialog's statements would change.
+    Estimating,
     /// The connection failed or the engine stopped; the messages say why.
     Failed,
 }
@@ -238,7 +240,11 @@ impl QueryTab {
     pub fn is_busy(&self, cx: &gpui::App) -> bool {
         matches!(
             self.status,
-            Status::Connecting | Status::Running | Status::Switching | Status::Listing
+            Status::Connecting
+                | Status::Running
+                | Status::Switching
+                | Status::Listing
+                | Status::Estimating
         ) || self.formatting
             || self.choosing_file
             || self.results.read(cx).is_working()
@@ -419,6 +425,9 @@ impl QueryTab {
             }
             Status::Switching => "This tab is switching databases.",
             Status::Listing => "This tab is loading its database list.",
+            Status::Estimating => {
+                "This tab is estimating the rows its dangerous statements would change."
+            }
             Status::Failed => {
                 "This tab isn't connected. Open a new tab on the connection with Ctrl+N."
             }

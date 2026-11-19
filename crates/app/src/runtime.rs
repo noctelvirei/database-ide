@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
 use dbide_engine::connections::Connection;
-use dbide_engine::danger::Engine;
+use dbide_engine::danger::{DangerCheck, Engine, estimates};
 use dbide_engine::export::{self, FileReport, Format};
 use dbide_engine::objects::{self, Index, Kind, Object, Script, Search, SearchReport};
 use dbide_engine::plan::{self, Plan};
@@ -361,6 +361,32 @@ impl Runtime {
                     .switch_database(&database, password.as_deref())
                     .await
                     .map_err(|error| error.to_string())
+            })
+        })
+    }
+
+    /// The rows each of `check`'s flagged statements would change, in finding order, with
+    /// the session back. The statements are planned, never run; `None` where the optimizer
+    /// gives no estimate or the statement isn't an UPDATE or DELETE (`danger::estimates`).
+    /// Sending on `stop`'s sender, or dropping it, cancels the planning on the server and
+    /// gives the session back promptly with every estimate `None`.
+    pub fn estimate_rows(
+        &self,
+        session: Box<dyn Session>,
+        batch: String,
+        check: DangerCheck,
+        engine: Engine,
+        stop: oneshot::Receiver<()>,
+    ) -> impl Future<Output = (Box<dyn Session>, Vec<Option<f64>>)> + use<> {
+        self.with_session(session, move |session| {
+            Box::pin(async move {
+                let planning = estimates::estimate_rows(session, &batch, &check, engine);
+                // Dropping the planning drops its run, which cancels it before the session's
+                // next batch (the engine's `Run` contract).
+                match futures::future::select(Box::pin(planning), stop).await {
+                    futures::future::Either::Left((rows, _)) => rows,
+                    futures::future::Either::Right(_) => vec![None; check.statements.len()],
+                }
             })
         })
     }
