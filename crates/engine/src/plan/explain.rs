@@ -2,7 +2,7 @@
 
 use serde_json::Value;
 
-use super::{Object, Operator, Plan, Property, Statement, cost_percent};
+use super::{Object, Operator, Plan, Statement, cost_percent, raw_json};
 use crate::session::PlanFormat;
 
 /// JSON syntax and required plan-shape failures.
@@ -27,7 +27,7 @@ pub fn parse(payload: &str) -> Result<Plan, Error> {
     let mut statements = Vec::new();
     let mut properties = Vec::new();
     for (index, entry) in entries.iter().enumerate() {
-        raw(entry, &format!("[{index}]"), Some("Plan"), &mut properties);
+        raw_json(entry, &format!("[{index}]"), Some("Plan"), &mut properties);
         let node = entry
             .get("Plan")
             .ok_or_else(|| Error::Invalid("statement has no Plan".into()))?;
@@ -116,7 +116,7 @@ fn operator(
     let own_cost =
         (subtree_cost - children.iter().map(|child| child.subtree_cost).sum::<f64>()).max(0.0);
     let mut properties = Vec::new();
-    raw(node, "", Some("Plans"), &mut properties);
+    raw_json(node, "", Some("Plans"), &mut properties);
     let mut warnings = Vec::new();
     if node.get("Sort Space Type").and_then(Value::as_str) == Some("Disk")
         || number(node, "Hash Batches")?.is_some_and(|batches| batches > 1.0)
@@ -164,36 +164,4 @@ fn operator(
         children,
         properties,
     })
-}
-
-fn raw(node: &Value, path: &str, excluded: Option<&str>, properties: &mut Vec<Property>) {
-    match node {
-        Value::Object(fields) => {
-            for (name, value) in fields {
-                if Some(name.as_str()) != excluded {
-                    let path = if path.is_empty() {
-                        name.clone()
-                    } else {
-                        format!("{path}/{name}")
-                    };
-                    properties.push(Property {
-                        name: path.clone(),
-                        value: value.to_string(),
-                    });
-                    raw(value, &path, None, properties);
-                }
-            }
-        }
-        Value::Array(items) => {
-            for (index, value) in items.iter().enumerate() {
-                let path = format!("{path}[{index}]");
-                properties.push(Property {
-                    name: path.clone(),
-                    value: value.to_string(),
-                });
-                raw(value, &path, None, properties);
-            }
-        }
-        _ => {}
-    }
 }

@@ -503,16 +503,14 @@ async fn mysql_use_updates_the_current_database() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn mysql_plan_reports_unsupported_without_running_the_batch() {
+async fn mysql_actual_plan_refuses_ddl_without_creating_the_table() {
     let database = database().await;
     let mut session = open(&database).await;
     let events: Vec<_> = session
         .plan("CREATE TABLE should_not_exist (id int)", PlanMode::Actual)
         .collect()
         .await;
-    assert!(
-        matches!(&events[0], Event::Error { text, .. } if text.contains("not supported for MySQL"))
-    );
+    assert!(matches!(&events[0], Event::Error { text, .. } if text.contains("DDL")));
     assert!(matches!(events[1], Event::Done { .. }));
     assert_eq!(events.len(), 2);
     let rows: Vec<_> = session

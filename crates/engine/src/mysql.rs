@@ -17,6 +17,7 @@ use crate::session::{ConnectError, ConnectErrorKind, Event, PlanMode, Run, Sessi
 mod diagnostics;
 mod execution;
 mod grid_edit;
+mod plans;
 mod values;
 
 /// Invalid saved details, unsupported sign-in or connection failures.
@@ -54,6 +55,7 @@ impl fmt::Debug for MySql {
 
 struct Request {
     batch: String,
+    mode: Option<PlanMode>,
     events: mpsc::Sender<Event>,
     cancel: CancellationToken,
     stopped: CancellationToken,
@@ -208,6 +210,16 @@ impl Session for MySql {
     }
 
     fn run<'a>(&'a mut self, batch: &'a str) -> Run<'a> {
+        self.request(batch, None)
+    }
+
+    fn plan<'a>(&'a mut self, batch: &'a str, mode: PlanMode) -> Run<'a> {
+        self.request(batch, Some(mode))
+    }
+}
+
+impl MySql {
+    fn request<'a>(&'a mut self, batch: &str, mode: Option<PlanMode>) -> Run<'a> {
         // Retire completed or unsent batches; a worker still recovering keeps its Arc.
         let completed = self
             .database_changes
@@ -233,6 +245,7 @@ impl Session for MySql {
         let timed_out = Arc::new(AtomicBool::new(false));
         let request = Request {
             batch: batch.into(),
+            mode,
             events,
             cancel: cancel.clone(),
             stopped: CancellationToken::new(),
@@ -264,19 +277,6 @@ impl Session for MySql {
         .flatten();
         Run::new(source, cancel)
     }
-
-    fn plan<'a>(&'a mut self, _batch: &'a str, _mode: PlanMode) -> Run<'a> {
-        Run::new(
-            stream::once(async {
-                Event::Error {
-                    text: "Execution plans are not supported for MySQL".into(),
-                    line: None,
-                    code: None,
-                }
-            }),
-            CancellationToken::new(),
-        )
-    }
 }
 
 async fn worker(mut conn: Conn, options: Opts, mut requests: mpsc::Receiver<Work>, timeout: u32) {
@@ -305,7 +305,12 @@ async fn worker(mut conn: Conn, options: Opts, mut requests: mpsc::Receiver<Work
             continue;
         }
         let id = conn.id();
-        let operation = execution::run(&mut conn, &request);
+        let operation = async {
+            match request.mode {
+                Some(mode) => plans::run(&mut conn, &request, mode).await,
+                None => execution::run(&mut conn, &request).await,
+            }
+        };
         tokio::pin!(operation);
         let deadline = async {
             if timeout == 0 {
