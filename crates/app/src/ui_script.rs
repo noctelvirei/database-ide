@@ -26,6 +26,10 @@
 //! script can sample the app (its memory, say) at that point; the test deletes the file to
 //! let the script go on.
 //!
+//! A `path` input queues a path as the answer to the next file dialog (`file_prompt.rs`):
+//! `{ "path": "C:\\plans\\join.sqlplan" }` before the key that opens or saves. A dialog with
+//! no path queued reads as cancelled; no real dialog opens under a script.
+//!
 //! An `"idle"` input waits, up to 30 s, until nothing is connecting, testing, running,
 //! switching or listing, so a script can check an outcome without guessing how long it takes.
 //! A `"running"` input waits, up to 30 s, until the active tab's run has started, so a script
@@ -40,6 +44,7 @@ use gpui::{
 };
 use serde::Deserialize;
 
+use crate::file_prompt::ScriptedPaths;
 use crate::workbench::Workbench;
 
 /// One step: inputs played in order, then the state is recorded under `name`.
@@ -62,6 +67,8 @@ enum Input {
     Shot(String),
     /// A pause for the test running the script to sample the app, under this name.
     Mark(String),
+    /// The answer to the next file dialog.
+    Path(PathBuf),
     /// Waits until no connect, test, run, switch or list is under way. Written as the string
     /// `"idle"`.
     Idle,
@@ -102,6 +109,8 @@ impl UiScript {
     pub async fn play(self, workbench: WeakEntity<Workbench>, mut cx: AsyncWindowContext) {
         let executor = cx.background_executor().clone();
         let pause = |ms| executor.timer(Duration::from_millis(ms));
+        // File dialogs answer from the script from now on.
+        let _ = cx.update(|_, cx| cx.set_global(ScriptedPaths::default()));
         // Let the first layout and focus settle.
         pause(500).await;
         'steps: for step in &self.steps {
@@ -149,6 +158,10 @@ impl UiScript {
                             }
                             pause(50).await;
                         }
+                    }
+                    Input::Path(path) => {
+                        let path = path.clone();
+                        let _ = cx.update(|_, cx| cx.global_mut::<ScriptedPaths>().push(path));
                     }
                     Input::Idle => wait_until(&mut cx, &workbench, |wb, cx| !wb.is_busy(cx)).await,
                     Input::Running => {

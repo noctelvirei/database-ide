@@ -1,6 +1,6 @@
 //! A query tab's results pane (docs/spec.md, "Runs and results"): the last run's result
-//! sets stacked, each grid with its own header and row count, any one maximised to fill the
-//! pane.
+//! sets stacked, each grid with its own header and row count, then its plans (`plan.rs`),
+//! any one of them maximised to fill the pane.
 //!
 //! The pane owns the run's spill files once the run ends, so a result's file lives exactly
 //! as long as the tab shows it, and the next run's `clear` deletes it.
@@ -9,10 +9,13 @@
 //! selection; Ctrl+Home and Ctrl+End go to the first and last cell; Shift with an arrow
 //! grows a block; Shift+Space selects the row, Ctrl+Space
 //! the column, Ctrl+A everything; Ctrl+C copies the block and Ctrl+Shift+C copies it with
-//! headers; Ctrl+Up and Ctrl+Down move between grids; Alt+Enter maximises.
+//! headers; Ctrl+Up and Ctrl+Down move between grids and plans; Alt+Enter maximises. A
+//! plan's own keys are in `plan.rs`.
 
 mod grid;
+pub mod plan;
 
+use dbide_engine::plan::{Plan, Property};
 use dbide_engine::spill::{Reader, Store};
 use gpui::{
     App, AppContext as _, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable,
@@ -25,9 +28,11 @@ use serde::Serialize;
 
 use crate::keymap::{
     CopyBlock, CopyBlockWithHeaders, ExtendDown, ExtendLeft, ExtendRight, ExtendUp, FirstCell,
-    LastCell, NextResult, PreviousResult, SelectAll, SelectColumn, SelectRow, ToggleMaximise,
+    FirstOperator, LastCell, LastOperator, NextOperator, NextResult, PreviousOperator,
+    PreviousResult, SavePlan, SelectAll, SelectColumn, SelectRow, ToggleMaximise,
 };
 use grid::{Block, Grid};
+use plan::{PlanState, PlanView, Step};
 
 /// The most rows and bytes one copy puts on the clipboard; a bigger block is refused with
 /// a message, and an export (U9) is the way to take it.
@@ -57,25 +62,37 @@ pub struct GridState {
     pub on_screen: bool,
 }
 
-/// What the inspector shows: the selected cell in full.
+/// What the inspector shows: the selected cell in full, or the selected plan operator.
 #[derive(Debug, Serialize)]
-pub struct Inspected {
-    pub column: String,
-    pub type_name: String,
-    /// The whole value as text; `None` for NULL.
-    pub text: Option<String>,
+#[serde(untagged)]
+pub enum Inspected {
+    Cell {
+        column: String,
+        type_name: String,
+        /// The whole value as text; `None` for NULL.
+        text: Option<String>,
+    },
+    Operator {
+        operator: String,
+        /// Its figures, warnings and every raw property, in that order.
+        details: Vec<Property>,
+    },
 }
 
 pub struct Results {
     grids: Vec<Entity<TableState<Grid>>>,
+    /// The run's plans, one per statement, shown after the grids.
+    plans: Vec<PlanView>,
     /// The last run's spill files, kept while their grids show them.
     stores: Vec<Store>,
-    /// The grid the keyboard works on.
+    /// The grid or plan the keyboard works on: grids count first, then plans.
     focused: usize,
-    /// The grid filling the pane, if one is maximised.
+    /// The grid or plan filling the pane, if one is maximised.
     maximised: Option<usize>,
     /// Copies still reading their block from the spill file.
     copying: usize,
+    /// Plans still being written to a file.
+    saving: usize,
     /// An earlier run's spill files that a copy still reads; dropped when the copies end.
     retired: Vec<Store>,
     /// The stacked grids' scroll position.
@@ -95,10 +112,12 @@ impl Results {
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             grids: Vec::new(),
+            plans: Vec::new(),
             stores: Vec::new(),
             focused: 0,
             maximised: None,
             copying: 0,
+            saving: 0,
             retired: Vec::new(),
             scroll: ScrollHandle::new(),
             focus_handle: cx.focus_handle(),
@@ -109,6 +128,7 @@ impl Results {
     /// still reading are deleted when the copy ends.
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.grids.clear();
+        self.plans.clear();
         if self.is_copying() {
             self.retired.append(&mut self.stores);
         } else {
@@ -155,6 +175,24 @@ impl Results {
         cx.notify();
     }
 
+    /// Adds a plan, one section per statement. `savable` says whether it is SQL Server's
+    /// showplan, the one format a `.sqlplan` file holds.
+    pub fn add_plan(&mut self, plan: Plan, savable: bool, cx: &mut Context<Self>) {
+        self.plans
+            .extend(PlanView::for_statements(plan, savable, cx));
+        cx.notify();
+    }
+
+    /// The grids and plans, together.
+    fn sections(&self) -> usize {
+        self.grids.len() + self.plans.len()
+    }
+
+    /// The focused section's plan, when it is one.
+    fn focused_plan(&self) -> Option<&PlanView> {
+        self.plans.get(self.focused.checked_sub(self.grids.len())?)
+    }
+
     /// Redraws the grids, whose row counts grow on the runtime without telling the UI.
     pub fn show_arrived_rows(&mut self, cx: &mut Context<Self>) {
         for table in &self.grids {
@@ -169,15 +207,22 @@ impl Results {
         self.show_arrived_rows(cx);
     }
 
-    /// Gives the focused grid keyboard focus, selecting its first cell if nothing is
-    /// selected, and scrolls it into view; with no grids, the pane itself takes focus.
+    /// Gives the focused grid or plan keyboard focus, selecting a grid's first cell if
+    /// nothing is selected, and scrolls it into view; with neither, the pane itself takes
+    /// focus.
     pub fn focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.focused < self.sections() {
+            self.scroll
+                .scroll_to_item(self.shown_position(self.focused));
+        }
+        if let Some(plan) = self.focused_plan() {
+            window.focus(&plan.focus_handle().clone(), cx);
+            return;
+        }
         let Some(table) = self.grids.get(self.focused).cloned() else {
             window.focus(&self.focus_handle, cx);
             return;
         };
-        self.scroll
-            .scroll_to_item(self.shown_position(self.focused));
         table.update(cx, |table, cx| {
             if table.selection() == TableSelection::None && table.delegate().row_count() > 0 {
                 table.set_selected_cell(0, 0, cx);
@@ -197,7 +242,7 @@ impl Results {
             return false;
         }
         let shown = self.scroll.top_item()..=self.scroll.bottom_item();
-        !self.grids.is_empty() && shown.contains(&self.shown_position(ix))
+        self.sections() > 0 && shown.contains(&self.shown_position(ix))
     }
 
     pub fn state(&self, cx: &App) -> Vec<GridState> {
@@ -229,8 +274,22 @@ impl Results {
             .collect()
     }
 
-    /// The focused grid's selected cell, when one cell is selected and its row is loaded.
+    /// The plans, in order.
+    pub fn plan_state(&self) -> Vec<PlanState> {
+        self.plans
+            .iter()
+            .enumerate()
+            .map(|(ix, plan)| plan.state(self.grids.len() + ix == self.focused))
+            .collect()
+    }
+
+    /// The focused plan's selected operator, or the focused grid's selected cell when one
+    /// cell is selected and its row is loaded.
     pub fn inspected(&self, cx: &App) -> Option<Inspected> {
+        if let Some(plan) = self.focused_plan() {
+            let (operator, details) = plan.inspected()?;
+            return Some(Inspected::Operator { operator, details });
+        }
         let table = self.grids.get(self.focused)?.read(cx);
         let TableSelection::Cell(row, column) = table.selection() else {
             return None;
@@ -238,7 +297,7 @@ impl Results {
         let grid = table.delegate();
         let value = grid.selected_value(row, column)?;
         let header = grid.reader().columns().get(column)?;
-        Some(Inspected {
+        Some(Inspected::Cell {
             column: header.name.clone(),
             type_name: header.type_name.clone(),
             text: match value {
@@ -249,8 +308,13 @@ impl Results {
     }
 
     /// True while a copy is still reading its block.
-    pub fn is_copying(&self) -> bool {
+    fn is_copying(&self) -> bool {
         self.copying > 0
+    }
+
+    /// True while a copy or a plan save is under way.
+    pub fn is_working(&self) -> bool {
+        self.is_copying() || self.saving > 0
     }
 
     fn focused_table(&self) -> Option<Entity<TableState<Grid>>> {
@@ -373,9 +437,74 @@ impl Results {
         .detach();
     }
 
-    /// Moves keyboard focus to the next or previous grid.
+    /// A click on operator `row` of the plan in section `ix`: selects it and focuses the plan.
+    fn click_operator(
+        &mut self,
+        ix: usize,
+        row: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(plan) = ix
+            .checked_sub(self.grids.len())
+            .and_then(|plan| self.plans.get_mut(plan))
+        else {
+            return;
+        };
+        plan.select_row(row);
+        self.focused = ix;
+        self.focus(window, cx);
+        cx.notify();
+    }
+
+    /// Moves the focused plan's selected operator.
+    fn select_operator(&mut self, step: Step, cx: &mut Context<Self>) {
+        if let Some(ix) = self.focused.checked_sub(self.grids.len())
+            && let Some(plan) = self.plans.get_mut(ix)
+        {
+            plan.select(step);
+            cx.notify();
+        }
+    }
+
+    /// Ctrl+S on a plan: asks where, then saves the whole plan as a `.sqlplan` file.
+    fn save_plan(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((plan, savable)) = self.focused_plan().map(|p| p.plan()) else {
+            return;
+        };
+        if !savable {
+            cx.emit(ResultsEvent::Message(
+                "Only SQL Server plans can be saved as .sqlplan files.".into(),
+            ));
+            return;
+        }
+        let plan = plan.clone();
+        let asked = crate::file_prompt::save_path(cx, "plan.sqlplan");
+        self.saving += 1;
+        cx.spawn_in(window, async move |this, cx| {
+            let Some(path) = asked.await else {
+                let _ = this.update(cx, |this, _| this.saving -= 1);
+                return;
+            };
+            let shown = path.display().to_string();
+            let saved = cx
+                .background_spawn(async move { dbide_engine::plan::showplan::save(&path, &plan) })
+                .await;
+            let message = match saved {
+                Ok(()) => format!("Saved the plan to {shown}."),
+                Err(error) => format!("Couldn't save the plan to {shown}: {error}"),
+            };
+            let _ = this.update(cx, |this, cx| {
+                this.saving -= 1;
+                cx.emit(ResultsEvent::Message(message.into()));
+            });
+        })
+        .detach();
+    }
+
+    /// Moves keyboard focus to the next or previous grid or plan.
     fn step_grid(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let count = self.grids.len();
+        let count = self.sections();
         if count == 0 {
             return;
         }
@@ -392,7 +521,7 @@ impl Results {
     }
 
     fn toggle_maximise(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.grids.is_empty() {
+        if self.sections() == 0 {
             return;
         }
         self.maximised = match self.maximised {
@@ -456,9 +585,18 @@ impl Render for Results {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let shown: Vec<usize> = match self.maximised {
             Some(ix) => vec![ix],
-            None => (0..self.grids.len()).collect(),
+            None => (0..self.sections()).collect(),
         };
-        let grids: Vec<_> = shown.into_iter().map(|ix| self.grid(ix, cx)).collect();
+        let grid_count = self.grids.len();
+        let sections: Vec<gpui::AnyElement> = shown
+            .into_iter()
+            .map(|ix| match ix.checked_sub(grid_count) {
+                None => self.grid(ix, cx).into_any_element(),
+                Some(plan) => self.plans[plan]
+                    .render(ix, plan + 1, ix == self.focused, cx)
+                    .into_any_element(),
+            })
+            .collect();
         div()
             .id("results")
             .key_context("Results")
@@ -468,7 +606,7 @@ impl Render for Results {
             .flex_col()
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
-            .children(grids)
+            .children(sections)
             .on_action(cx.listener(|this, _: &ExtendUp, _, cx| this.extend(-1, 0, cx)))
             .on_action(cx.listener(|this, _: &ExtendDown, _, cx| this.extend(1, 0, cx)))
             .on_action(cx.listener(|this, _: &ExtendLeft, _, cx| this.extend(0, -1, cx)))
@@ -483,5 +621,18 @@ impl Render for Results {
             .on_action(cx.listener(|this, _: &NextResult, w, cx| this.step_grid(true, w, cx)))
             .on_action(cx.listener(|this, _: &PreviousResult, w, cx| this.step_grid(false, w, cx)))
             .on_action(cx.listener(|this, _: &ToggleMaximise, w, cx| this.toggle_maximise(w, cx)))
+            .on_action(cx.listener(|this, _: &PreviousOperator, _, cx| {
+                this.select_operator(Step::Previous, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &NextOperator, _, cx| this.select_operator(Step::Next, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &FirstOperator, _, cx| this.select_operator(Step::First, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &LastOperator, _, cx| this.select_operator(Step::Last, cx)),
+            )
+            .on_action(cx.listener(|this, _: &SavePlan, w, cx| this.save_plan(w, cx)))
     }
 }
