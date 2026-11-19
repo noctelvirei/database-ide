@@ -3,6 +3,7 @@
 //! complete.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use dbide_engine::danger::Engine;
 use dbide_engine::export::{self, FileReport, Format};
@@ -68,19 +69,20 @@ fn file_stem(path: &Path) -> String {
 }
 
 /// Writes the complete result `reader` to `path` in `format`. The engine never writes over
-/// an existing file, so the rows go to a hidden file beside it, which then replaces `path`:
-/// a failed export leaves an existing file as it was. Blocking; call it off the UI thread.
+/// an existing file, so the rows go to a hidden file beside it, owned by this call, which
+/// then replaces `path`: a failed export leaves an existing file as it was, and two saves to
+/// one file don't touch each other's rows. Blocking; call it off the UI thread.
 pub fn write(reader: &Reader, path: &Path, format: &Format) -> Result<FileReport, export::Error> {
     let staging = staging_path(path);
-    // A staging file left by an export that crashed would make the engine refuse.
-    let _ = std::fs::remove_file(&staging);
     let mut report = export::write(reader, &staging, format).inspect_err(|_| {
         // The engine keeps a failed write as `<name>.partial`; nobody knows this hidden name.
         let mut partial = staging.clone().into_os_string();
         partial.push(".partial");
         let _ = std::fs::remove_file(partial);
     })?;
-    std::fs::rename(&staging, path)?;
+    std::fs::rename(&staging, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&staging);
+    })?;
     report.path = path.to_path_buf();
     Ok(report)
 }
@@ -102,10 +104,13 @@ pub fn written(file: &FileReport) -> String {
     }
 }
 
-/// `dir/~name.ext.saving` for `dir/name.ext`.
+/// A staging name beside `path` that no other save uses: `dir/~name.ext.<process>-<n>.saving`
+/// for `dir/name.ext`, `n` counting this process's saves.
 fn staging_path(path: &Path) -> PathBuf {
+    static SAVES: AtomicU64 = AtomicU64::new(0);
+    let save = SAVES.fetch_add(1, Ordering::Relaxed);
     let mut name = std::ffi::OsString::from("~");
     name.push(path.file_name().unwrap_or_default());
-    name.push(".saving");
+    name.push(format!(".{}-{save}.saving", std::process::id()));
     path.with_file_name(name)
 }
