@@ -571,13 +571,21 @@ impl QueryTab {
                 self.cancel = None;
                 self.give_back(session);
                 self.results.update(cx, |pane, cx| pane.keep(results, cx));
-                // PostgreSQL's actual plans run each statement in a transaction the engine
-                // rolls back (docs/spec.md, "Plans"); SQL Server's keep their changes, as in SSMS.
+                // PostgreSQL's and MySQL's actual plans run each statement in a transaction
+                // the engine rolls back (docs/spec.md, "Plans"); SQL Server's keep their
+                // changes, as in SSMS.
+                let rolled_back = match self.engine() {
+                    Some(Engine::PostgreSql) => Some("PostgreSQL"),
+                    Some(Engine::MySql) => Some("MySQL"),
+                    Some(Engine::SqlServer) | None => None,
+                };
                 if self.job == Job::Plan(PlanMode::Actual)
-                    && self.engine() == Some(Engine::PostgreSql)
+                    && let Some(server) = rolled_back
                 {
                     self.say(
-                        "PostgreSQL ran the statements for their actual plans, then rolled back their changes.",
+                        format!(
+                            "{server} ran the statements for their actual plans, then rolled back their changes."
+                        ),
                         Tone::Plain,
                         cx,
                     );

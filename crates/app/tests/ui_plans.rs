@@ -1,4 +1,4 @@
-//! Plans as a user drives them against the real SQL Server and PostgreSQL servers from
+//! Plans as a user drives them against the real SQL Server, PostgreSQL and MySQL servers from
 //! `dbide-test-servers` (CODE_STANDARDS.md, "UI E2E harness"): the estimated plan of a join
 //! (Ctrl+L), its actual plan with the run (Ctrl+M, F5), the costliest operator's details in
 //! the inspector, and on SQL Server the plan saved as a `.sqlplan` file and opened again.
@@ -9,6 +9,7 @@ mod support;
 
 use dbide_engine::danger::Engine;
 use dbide_test_servers::mssql::Mssql;
+use dbide_test_servers::mysql::MySql;
 use dbide_test_servers::postgres::Postgres;
 use lab::Server;
 use passwords::ForgetPasswords;
@@ -41,8 +42,9 @@ fn assert_join(plan: &Value) {
     let ops = operators(plan);
     assert!(
         ops.iter().any(|op| {
-            let name = op["name"].as_str().unwrap();
-            name.contains("Nested Loop") || name.contains("Hash") || name.contains("Merge Join")
+            // MySQL writes "Nested loop inner join"; the others capitalise "Loop".
+            let name = op["name"].as_str().unwrap().to_lowercase();
+            name.contains("nested loop") || name.contains("hash") || name.contains("merge join")
         }),
         "no join operator: {plan:#}"
     );
@@ -217,6 +219,20 @@ fn ui_mssql_plans_show_estimated_and_actual_and_round_trip_a_sqlplan() {
     assert_eq!(opened["results"].as_array().unwrap().len(), 0, "{opened:#}");
 }
 
+/// Asserts the run with the actual plan showed no grid and said its changes were rolled back.
+fn assert_rolled_back(lines: &[Value]) {
+    let ran = state(lines, "run with the actual plan");
+    assert_eq!(ran["results"].as_array().unwrap().len(), 0, "{ran:#}");
+    assert!(
+        ran["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m.as_str().unwrap().contains("rolled back")),
+        "{ran:#}"
+    );
+}
+
 #[test]
 fn ui_pg_plans_show_estimated_and_actual_and_roll_back() {
     let db = Postgres::start().expect("PostgreSQL test server");
@@ -240,14 +256,37 @@ fn ui_pg_plans_show_estimated_and_actual_and_roll_back() {
         &[],
         None,
     );
-    let ran = state(&lines, "run with the actual plan");
-    assert_eq!(ran["results"].as_array().unwrap().len(), 0, "{ran:#}");
-    assert!(
-        ran["messages"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|m| m.as_str().unwrap().contains("rolled back")),
-        "{ran:#}"
+    assert_rolled_back(&lines);
+}
+
+#[test]
+fn ui_mysql_plans_show_estimated_and_actual_and_roll_back() {
+    let db = MySql::start().expect("MySQL test server");
+    for table in TABLES {
+        db.query(table).unwrap();
+    }
+    db.query(
+        "INSERT INTO fruit WITH RECURSIVE g (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM g \
+         WHERE n < 200) SELECT n, 'apple' FROM g",
+    )
+    .unwrap();
+    db.query(
+        "INSERT INTO crates WITH RECURSIVE g (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM g \
+         WHERE n < 800) SELECT n, (n - 1) % 200 + 1 FROM g",
+    )
+    .unwrap();
+    db.query("ANALYZE TABLE fruit, crates").unwrap();
+    let lines = show_plans(
+        &Server {
+            engine: Engine::MySql,
+            host: db.host(),
+            port: db.port(),
+            user: db.user(),
+            password: db.password(),
+            database: db.database(),
+        },
+        &[],
+        None,
     );
+    assert_rolled_back(&lines);
 }
