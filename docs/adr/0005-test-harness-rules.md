@@ -15,7 +15,7 @@ A change to the code a rule names either keeps the rule or edits it here in the 
 ## `crates/app/tests/ui_connections.rs`
 
 - Lab connections use encryption Off and still tick Trust server certificate, because SQL Server encrypts the sign-in packet even with encryption off and the lab servers' certificates are self-signed (crates/app/tests/ui_connections.rs add_and_connect, crates/app/tests/lab/mod.rs save_as_lab).
-- Wrong-password tests sign in as the per-test SQL login that dbide-test-servers creates (Mssql::user in crates/test-servers/src/mssql.rs), never sa, so failed sign-ins cannot lock out or disturb a shared administrator account.
+- Wrong-password tests sign in as the per-test SQL login that dbide-test-servers creates (Mssql::user in crates/test-servers/src/mssql.rs), never sa.
 - The first step of add_and_connect in crates/app/tests/ui_connections.rs ends on the Trust server certificate checkbox and then Enter; ui_pg_a_test_result_clears_when_a_detail_changes drops that final Enter to test the connection instead of saving.
 - ui_a_folder_that_cant_be_saved_keeps_its_dialog_open_and_adds_no_row makes both connections.toml and its folder read-only, because Windows ignores the read-only flag on folders while other systems block writes through the folder's permissions.
 
@@ -31,10 +31,6 @@ A change to the code a rule names either keeps the rule or edits it here in the 
 
 - The query editor closes a quote as it is typed, so formats_and_undoes in crates/app/tests/ui_format.rs presses Delete after typing UNCLOSED to keep the string unclosed.
 
-## `crates/app/tests/ui_grid.rs`
-
-- Mid-run samples in UI tests (a_million_rows_to_file in crates/app/tests/ui_exports.rs, drive_a_million_rows in crates/app/tests/ui_grid.rs) accept a run that has already finished and only log progress, because a fast machine can finish before the sample is taken.
-
 ## `crates/app/tests/ui_plans.rs`
 
 - Plan operator names differ in case between engines (MySQL writes "Nested loop inner join", SQL Server and PostgreSQL "Nested Loop"), so assert_join in crates/app/tests/ui_plans.rs matches them case-insensitively.
@@ -44,7 +40,6 @@ A change to the code a rule names either keeps the rule or edits it here in the 
 
 - The explorer filter matches the "Search" row as well as the hit for far_away_quinces, so search_and_script in crates/app/tests/ui_search.rs presses Enter then Down to reach the hit.
 - Each Mssql test handle owns its own database and SQL login; ui_mssql_search_finds_a_table_in_an_unopened_database leaves one database without a user for the source login so the search must report it as refused.
-- Each Mssql test handle owns its own database and SQL login, and the app signs in with the source handle's login, so a SQL Server test that reaches a second handle's database must first create a user for that login there (crates/app/tests/ui_explorer.rs, crates/app/tests/ui_search.rs).
 
 ## `crates/engine/tests/autocomplete.rs`
 
@@ -64,9 +59,7 @@ A change to the code a rule names either keeps the rule or edits it here in the 
 
 ## `crates/engine/tests/mysql_grid_edit.rs`
 
-- Tests that hold a lock from a second session release it before asserting on the blocked operation, so a failing assertion cannot leave a blocked worker that hangs teardown (crates/engine/tests/*_grid_edit.rs).
 - The MySQL text-key save test in crates/engine/tests/mysql_grid_edit.rs locks the first index entry, because an InnoDB scan (rather than a key lookup) for a later row would block on it; this proves Save locates rows by key.
-- Tests that hold a lock from a second session release it before asserting on the blocked operation, so a failing assertion cannot leave a blocked worker that hangs teardown (crates/engine/tests/*_grid_edit.rs).
 
 ## `crates/engine/tests/objects.rs`
 

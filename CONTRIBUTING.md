@@ -35,7 +35,7 @@ cargo test --workspace --locked
 node scripts/check-rust-layout.mjs
 ```
 
-The layout script needs Node.js. It enforces the layout rules in CODE_STANDARDS.md that Clippy can't: no file over 1000 lines, no `#[path]`, no `include!`, no re-exports.
+The layout script needs Node.js. It enforces the layout rules in CODE_STANDARDS.md that Clippy can't: no file over 1000 lines, no `#[path]`, no `include!`, no re-exports, and no plain comments beyond doc comments and `// SAFETY:` (see CODE_STANDARDS.md, Comments, for where rules and workarounds go instead).
 
 ## Test servers
 
