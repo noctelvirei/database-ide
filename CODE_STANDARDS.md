@@ -34,6 +34,15 @@ The product decisions are in [docs/spec.md](docs/spec.md) and the vocabulary in 
 - Every public item gets an interface comment saying what callers can't see from the signature: units, bounds, ordering, side effects, errors.
 - Root `Cargo.toml` lints: `[workspace.lints.rust] unsafe_code = "deny"`; `[workspace.lints.clippy] all = { level = "warn", priority = -1 }`, `pub_use = "deny"`, `mod_module_files = "deny"`, `undocumented_unsafe_blocks = "deny"`. Each member sets `edition.workspace = true` and `[lints] workspace = true`.
 
+## Comments
+
+This repository's rule replaces any shared guideline that asks for comments inside function bodies or for `shortcut:` comments.
+
+- Doc comments (`///`, `//!`) are the only comments in Rust code, plus a `// SAFETY:` comment on each `unsafe` block.
+- A non-obvious choice, invariant or trade-off goes in an ADR in `docs/adr/`, naming the code it governs.
+- A workaround, shortcut or missing piece goes in the tracker as a ticket with acceptance criteria.
+- `node scripts/check-rust-layout.mjs` enforces this with `scripts/comment-allowance.json`, the count of plain comments each file still has from before the rule. A file not listed allows none. The check fails when a file has more plain comments than allowed, and also when it has fewer, so each removal lowers the allowance and nothing grows back.
+
 ## Public repository
 
 The repo is public. No local paths, drive letters, user names, machine names, host names or private project names in code, tests, fixtures, commits, issues or pull requests. Test configuration comes from environment variables.
