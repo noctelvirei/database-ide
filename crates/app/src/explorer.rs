@@ -717,7 +717,6 @@ impl Explorer {
         }
         let question: SharedString = match kind {
             Kind::Folder => format!("Delete folder {name} and every folder and connection in it?"),
-            // `describe` covers saved rows only, so anything else is a connection.
             _ => format!("Delete connection {name} and its saved password?"),
         }
         .into();
@@ -766,7 +765,6 @@ impl Explorer {
                 );
             }
         }
-        // Close the sessions of every deleted connection.
         let kept: HashSet<String> = self
             .saved
             .connections()

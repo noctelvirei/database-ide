@@ -128,7 +128,6 @@ pub(super) async fn run(conn: &mut Conn, request: &Request, mode: PlanMode) -> R
         }
     };
     let result = explain(conn, request, mode, &statements).await;
-    // Restore session settings even on cancellation or an EXPLAIN error.
     let restore = match previous {
         Some(version) => {
             conn.query_drop(format!("SET SESSION explain_json_format_version={version}"))

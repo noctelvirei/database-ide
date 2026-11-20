@@ -248,7 +248,6 @@ impl Explorer {
                         let server = Server::new(attempt, saved, password, session);
                         this.servers.insert(id, server);
                         this.message(format!("Connected to {name}."), cx);
-                        // A connection left open before it disconnected lists again.
                         this.load_open_rows(cx);
                         this.rebuild(None, cx);
                     }

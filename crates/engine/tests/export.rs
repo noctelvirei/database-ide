@@ -677,7 +677,6 @@ async fn run_to_file_publishes_progress_before_the_run_ends() {
             .send(Event::Rows(vec![vec![Value::Integer(1)]; 2048]))
             .await
             .unwrap();
-        // Withhold the remaining rows until the polling task has observed progress.
         while rows_written.load(Ordering::Relaxed) == 0 {
             assert!(!writer.is_finished());
             tokio::task::yield_now().await;

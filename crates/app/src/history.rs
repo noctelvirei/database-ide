@@ -99,7 +99,6 @@ pub fn load(path: &Path, now_ms: u64) -> Vec<Entry> {
     if kept.len() < lines.count() {
         let mut rewritten = Vec::new();
         for entry in &kept {
-            // An entry that parsed serialises again.
             rewritten.extend(serde_json::to_vec(entry).expect("entry serialises"));
             rewritten.push(b'\n');
         }

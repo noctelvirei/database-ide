@@ -460,7 +460,6 @@ struct Parenthesis {
 
 fn expanded(tokens: &[Lexeme<'_>]) -> String {
     let mut output = String::new();
-    // Each parenthesis remembers whether it opens a subquery and the enclosing clause indent.
     let mut parentheses: Vec<Parenthesis> = Vec::new();
     let mut base = 0;
     let mut indent = 0;

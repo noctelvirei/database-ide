@@ -177,7 +177,6 @@ async fn search_all(
     details: Connection,
     password: Option<String>,
 ) -> Result<SearchReport, String> {
-    // A session on `database`, as the explorer's own database sessions open.
     let on = |database: String| {
         let mut details = details.clone();
         details.database = Some(database);

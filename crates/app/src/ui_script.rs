@@ -114,7 +114,6 @@ impl UiScript {
     pub async fn play(self, workbench: WeakEntity<Workbench>, mut cx: AsyncWindowContext) {
         let executor = cx.background_executor().clone();
         let pause = |ms| executor.timer(Duration::from_millis(ms));
-        // File dialogs answer from the script from now on.
         let _ = cx.update(|_, cx| cx.set_global(ScriptedPaths::default()));
         pause(500).await;
         'steps: for step in &self.steps {

@@ -118,7 +118,6 @@ fn show_plans(server: &Server, to_plan: &[Value], save: Option<&std::path::Path>
     let actual_plan = plan(actual);
     assert_eq!(actual_plan["actual"], true, "{actual:#}");
     assert_join(actual_plan);
-    // The join returns the 49 fruits below 50 with their four crates each.
     assert!(
         operators(actual_plan)
             .iter()
@@ -126,7 +125,6 @@ fn show_plans(server: &Server, to_plan: &[Value], save: Option<&std::path::Path>
         "{actual:#}"
     );
 
-    // The plan opens on its costliest operator, its details in the inspector.
     let focused = state(&lines, "focus the plan");
     let shown = plan(focused);
     assert_eq!(shown["focused"], true, "{focused:#}");
@@ -148,7 +146,6 @@ fn show_plans(server: &Server, to_plan: &[Value], save: Option<&std::path::Path>
         "{focused:#}"
     );
 
-    // Home and Down move the selection, and the inspector follows it.
     let first = state(&lines, "first operator");
     assert_eq!(plan(first)["selected"], 0);
     assert_eq!(first["inspector"]["operator"], ops[0]["name"]);
@@ -156,8 +153,6 @@ fn show_plans(server: &Server, to_plan: &[Value], save: Option<&std::path::Path>
     assert_eq!(plan(next)["selected"], 1);
     assert_eq!(next["inspector"]["operator"], ops[1]["name"]);
 
-    // F9 shows the graph with the selection kept; Left goes to the operator the selected one
-    // feeds, the statement's root, and Right back to its first input. F9 again keeps it too.
     let graph = state(&lines, "graph");
     assert_eq!(plan(graph)["graph"], true, "{graph:#}");
     assert_eq!(plan(graph)["selected"], 1);
@@ -225,7 +220,6 @@ fn ui_mssql_plans_show_estimated_and_actual_and_round_trip_a_sqlplan() {
         "{saved:#}"
     );
 
-    // The file opens as the same plan, with its actual rows.
     let opened = state(&lines, "open the plan");
     let before = plan(state(&lines, "run with the actual plan"));
     let reopened = plan(opened);

@@ -171,7 +171,6 @@ impl ConnectionForm {
             window,
             cx,
         );
-        // Fields appear and disappear with the engine and sign-in choices.
         for select in [&engine, &sign_in] {
             cx.subscribe(select, |_, _, _: &SelectEvent<Vec<&'static str>>, cx| {
                 cx.notify()
@@ -335,7 +334,6 @@ impl ConnectionForm {
         let connection = match self.read(cx) {
             Ok(connection) => connection,
             Err(error) => {
-                // A field that is wrong shows under the fields, as it does on Save.
                 self.error = Some(error);
                 self.test = TestStatus::NotRun;
                 cx.notify();

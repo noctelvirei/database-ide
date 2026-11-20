@@ -25,7 +25,6 @@ impl Workbench {
         let kept = match self.tabs_file.as_deref().map(open_tabs::load) {
             Some(Ok(kept)) => Ok(kept),
             None => Ok(Vec::new()),
-            // Saving would replace the tabs it couldn't read, so this session keeps none.
             Some(Err(error)) => Err(format!(
                 "Couldn't read the tabs kept from last time ({error}); this session won't keep \
                  its tabs, so the file stays as it is."

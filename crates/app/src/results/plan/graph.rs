@@ -195,7 +195,6 @@ impl PlanView {
             arrows.push(segment(elbow, cy, to - elbow, width, true).bg(colour));
             arrows.push(segment(elbow, cy.min(py), (cy - py).abs(), width, false).bg(colour));
             arrows.push(segment(from + 6., py, elbow - from - 6., width, true).bg(colour));
-            // The head, pointing into the parent.
             arrows.push(
                 div()
                     .absolute()

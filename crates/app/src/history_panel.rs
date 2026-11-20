@@ -56,7 +56,6 @@ impl HistoryPanel {
         let reopen = Rc::new(reopen);
         let closed = Rc::new(closed);
         let first_open = Cell::new(true);
-        // Typing changes the matches, so it chooses the first one again.
         let last_typed = RefCell::new(String::new());
         let (shown_input, shown, shown_chosen) = (input.clone(), entries.clone(), chosen.clone());
         window.open_dialog(cx, move |dialog, window, cx| {

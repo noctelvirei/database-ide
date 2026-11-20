@@ -193,7 +193,6 @@ pub(super) fn ask_before_running(
         fully_checked: check.fully_checked,
     };
     let estimating = estimating && state.statements.iter().any(|s| s.rows.is_some());
-    // Set by "Run anyway" while estimating, so the batch runs once the session is back.
     let run_when_free = Rc::new(Cell::new(false));
     let stop_estimating = if estimating {
         estimate(

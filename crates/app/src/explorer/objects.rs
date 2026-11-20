@@ -566,7 +566,6 @@ impl Explorer {
                     self.request(&connection, Some(&database), Explore::Indexes(table), cx);
                 }
             }
-            // A search hit lists nothing under it.
             Some(Node::Group { .. } | Node::Object { hit: true, .. } | Node::Note) => {}
         }
     }
@@ -777,7 +776,6 @@ impl Explorer {
                 unreachable!("Script as and searches are handled above")
             }
         }
-        // Rows left open below the new list load their own lists now.
         self.load_open_rows(cx);
         self.rebuild(None, cx);
     }

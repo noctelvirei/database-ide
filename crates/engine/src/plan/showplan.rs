@@ -132,7 +132,6 @@ impl Node {
         self.local_name().starts_with("Stmt")
     }
 
-    // Descendants belonging to this operator/statement, never a nested operator/statement.
     fn owned(&self) -> Vec<&Node> {
         let mut nodes = vec![self];
         for child in &self.children {

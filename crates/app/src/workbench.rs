@@ -201,7 +201,6 @@ impl Workbench {
             }),
         };
         this.restore_tabs(window, cx);
-        // Repaint the pane outlines whenever focus moves.
         for pane in Pane::ALL {
             if pane == Pane::Editor {
                 continue;
@@ -238,7 +237,6 @@ impl Workbench {
 
     /// Adds `tab` to the list, makes it active and focuses its editor.
     fn add_tab(&mut self, tab: Entity<QueryTab>, window: &mut Window, cx: &mut Context<Self>) {
-        // The tab list, the strip and the Stop button show the tab's state.
         cx.observe(&tab, |_, _, cx| cx.notify()).detach();
         cx.subscribe_in(
             &tab,
@@ -248,7 +246,6 @@ impl Workbench {
             },
         )
         .detach();
-        // Typing changes the tab's dot and is kept a second after it stops.
         let editor = tab.read(cx).editor().clone();
         cx.subscribe(&editor, |this, _, event: &InputEvent, cx| {
             if let InputEvent::Change = event {
@@ -257,7 +254,6 @@ impl Workbench {
             }
         })
         .detach();
-        // The inspector shows the results' selected cell.
         let results = tab.read(cx).results().clone();
         cx.observe(&results, |_, _, cx| cx.notify()).detach();
         cx.on_focus_in(

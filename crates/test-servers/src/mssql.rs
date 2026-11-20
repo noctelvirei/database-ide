@@ -26,11 +26,9 @@ static SWEPT: Mutex<bool> = Mutex::new(false);
 const DDL_LOCK: &str = "dbide_test_harness_ddl";
 // Match the DDL budget so contention with a slow creator is not mistaken for a hang.
 const DDL_LOCK_TIMEOUT_MS: u32 = 120_000;
-// Allow five seconds to receive sp_getapplock's result after its server-side budget expires.
 const LOCK_RESPONSE_GRACE: Duration = Duration::from_secs(5);
 // Model locks and killed-session rollback can outlast one attempt on a busy server.
 const RETRY_TIMEOUT: Duration = Duration::from_secs(120);
-// Poll transient model/rollback failures twice per second within the retry budget.
 const RETRY_INTERVAL: Duration = Duration::from_millis(500);
 /// Allow TCP, TLS and SSPI/login to finish under load, without an unlimited connection attempt.
 pub const CONNECT_TIMEOUT_SECS: u32 = 30;

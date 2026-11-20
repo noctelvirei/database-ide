@@ -99,7 +99,6 @@ fn drive_a_million_rows(server: &Server) {
     assert_eq!(entered["inspector"]["column"], "n");
     assert_eq!(entered["inspector"]["text"], "1");
 
-    // The last row is n = 1,000,000, even, so its odd column is NULL.
     let last = state(&lines, "to the last cell");
     let grid = &last["results"][0];
     assert_eq!(

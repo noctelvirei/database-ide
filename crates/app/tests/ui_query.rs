@@ -175,7 +175,6 @@ fn drive_a_query_tab(lab: &Lab) -> Vec<Value> {
     let cancelled = state(&lines, "cancel it");
     assert_eq!(active_tab(cancelled)["status"], "ready", "{cancelled:#}");
     newest_starting(cancelled, "Cancelled after ");
-    // The session came back from the cancel and runs the next batch.
     let after = state(&lines, "run after the cancel");
     assert!(last_message(after).starts_with("Finished in "), "{after:#}");
 

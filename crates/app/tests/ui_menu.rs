@@ -214,13 +214,11 @@ fn ui_pg_menus_open_by_alt_letter_run_queries_and_list_the_shortcuts() {
     assert_eq!(open("query"), (json!("Query"), query("[ ]")));
     let help = strings(&["Keyboard shortcuts", "About Database IDE"]);
     assert_eq!(open("help"), (json!("Help"), help));
-    // Right from the last menu wraps to the first, and Left back again.
     assert_eq!(open("right of help").0, json!("File"));
     assert_eq!(open("left of file").0, json!("Help"));
     assert_eq!(open("closed"), (Value::Null, vec![]));
     assert_eq!(open("f10").0, json!("File"));
 
-    // Query, Run runs the tab; afterwards Cancel is greyed again.
     let ran = state(&lines, "query, run");
     assert_eq!(ran["last_action"], "Run");
     assert_eq!(ran["results"].as_array().unwrap().len(), 1);
@@ -236,7 +234,6 @@ fn ui_pg_menus_open_by_alt_letter_run_queries_and_list_the_shortcuts() {
     let unticked = state(&lines, "untick include actual plan");
     assert_eq!(active_tab(unticked)["actual_plan"], false);
 
-    // Help, Keyboard shortcuts lists each menu item that has keys, with those keys.
     let shortcuts = state(&lines, "keyboard shortcuts");
     assert_eq!(shortcuts["menu_bar"]["panel"], "shortcuts");
     let rows = shortcuts["menu_bar"]["shortcuts"].as_array().unwrap();
@@ -260,7 +257,6 @@ fn ui_pg_menus_open_by_alt_letter_run_queries_and_list_the_shortcuts() {
     let away = state(&lines, "about, then another pane");
     assert_eq!(away["menu_bar"]["panel"], Value::Null, "{away:#}");
 
-    // Opening Edit over a grid and closing it leaves the grid's own keys working.
     let grid = state(&lines, "grid keys after edit");
     assert_eq!(
         grid["results"][0]["block"],
@@ -268,7 +264,6 @@ fn ui_pg_menus_open_by_alt_letter_run_queries_and_list_the_shortcuts() {
         "{grid:#}"
     );
 
-    // A menu opened after the run ended shows it as over, though File was open meanwhile.
     assert_eq!(
         open("query after a run ends under file"),
         (json!("Query"), query("[ ]"))

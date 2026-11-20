@@ -42,11 +42,9 @@ pub enum Error {
 }
 
 struct Server {
-    // All programs come from the same configured installation.
     bin: PathBuf,
     // Taken only when shutdown fails, preserving a possibly live server's files.
     folder: Option<TempDir>,
-    // Fixed for this server's lifetime.
     port: u16,
     // Shared by its databases; never included in Debug output.
     password: String,
@@ -94,7 +92,6 @@ impl Postgres {
         Self::create_database(Arc::new(Server::start(true)?))
     }
 
-    // Each handle owns a database regardless of the server's sign-in policy.
     fn create_database(server: Arc<Server>) -> Result<Self, Error> {
         let name = Builder::new()
             .prefix("dbide_test_")
@@ -175,7 +172,6 @@ impl Drop for Postgres {
 }
 
 impl Server {
-    // The folder remains owned until shutdown finishes or explicitly retains it.
     fn folder(&self) -> &Path {
         self.folder
             .as_ref()
@@ -307,7 +303,6 @@ impl Server {
         command
     }
 
-    // All SQL commands fail on the first error and carry the same credentials.
     fn psql(&self, database: &str, args: &[&str]) -> Result<Output, Error> {
         run("psql", self.psql_command(database).args(args))
     }
@@ -337,7 +332,6 @@ impl Drop for Server {
     }
 }
 
-// The installation directory is read-only; platform suffixes are resolved here.
 fn binary(bin: &Path, name: &str) -> PathBuf {
     bin.join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
 }

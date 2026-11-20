@@ -453,7 +453,6 @@ fn row_cells(depth: usize, cells: [SharedString; 8]) -> gpui::Div {
                         .overflow_hidden()
                         .whitespace_nowrap()
                         .child(cell);
-                    // The object column reads left to right; the figures line up on the right.
                     if ix == 0 {
                         cell
                     } else {

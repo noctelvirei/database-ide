@@ -646,7 +646,6 @@ impl Results {
         };
         let heading = format!("Result {}: {count}{note}", ix + 1);
         let theme = cx.theme();
-        // Each grid's own id keeps the two tables' element ids apart.
         div()
             .id(("result", ix))
             .flex_1()

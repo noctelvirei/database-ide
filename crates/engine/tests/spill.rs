@@ -416,7 +416,6 @@ fn concurrent_overlapping_reads_each_return_their_own_rows() {
             scope.spawn(move || {
                 start.wait();
                 for round in 0..300_usize {
-                    // Single rows and 256-row pages, at starts that differ per thread and round.
                     let first = (thread * 613 + round * 97) % ROWS;
                     let len = if round % 2 == 0 { 1 } else { 256 };
                     let rows = reader.rows(first..first + len).unwrap();

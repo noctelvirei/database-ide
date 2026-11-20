@@ -3,7 +3,6 @@
 //! Environment variables used by the measurement script (`.claude/skills/verify/measure-app.ps1`):
 //! - `DBIDE_FIRST_FRAME`: a file the app writes the Unix time in milliseconds of its first
 //!   frame to.
-// Release builds open no console window; debug builds keep one for panics and logs.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod choice;
@@ -93,7 +92,6 @@ fn main() -> ExitCode {
         }
     };
 
-    // The component icons gpui-component draws (the find panel's buttons among them).
     gpui_platform::application()
         .with_assets(gpui_kit_assets::Assets)
         .run(move |cx: &mut App| {
