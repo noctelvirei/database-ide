@@ -18,8 +18,6 @@ use serde::Serialize;
 use crate::history::{self, Entry};
 
 /// The rows shown at most; the search narrows a longer history.
-// shortcut: the chosen row is not scrolled into view, so Down past the rows that fit chooses
-// rows out of sight. Scroll it into view if people page through long lists by keyboard.
 const SHOWN: usize = 200;
 
 /// The open panel.

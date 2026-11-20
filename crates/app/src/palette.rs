@@ -17,8 +17,6 @@ pub const CHOICES: [(&str, Option<&str>); 9] = [
 ];
 
 /// The choice for a saved colour.
-// shortcut: a colour outside the choices (from an import) shows as "Inherit from folder" and
-// is dropped if the dialog is saved; offer a custom colour when import lands.
 pub fn known(colour: Option<&str>) -> Option<&'static str> {
     CHOICES
         .iter()

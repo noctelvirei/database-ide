@@ -127,7 +127,6 @@ pub async fn connect(
         )
     };
     let windows_sign_in = details.sign_in == SignInMethod::Windows;
-    // shortcut: USERNAME assumes an unchanged Windows environment; use the account API if needed.
     let windows_user = windows_sign_in
         .then(|| std::env::var("USERNAME").ok())
         .flatten();

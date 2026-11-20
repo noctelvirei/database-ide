@@ -42,8 +42,6 @@ use crate::results::{GridState, Inspected};
 use crate::runtime::Runtime;
 
 /// How many of the newest messages the strip renders; it shows as many as fit.
-// shortcut: the strip draws the newest lines only, with no scrollback; a long run's early
-// messages scroll out of reach. Upgrade to a virtual list when runs print more than this.
 const MESSAGES_SHOWN: usize = 50;
 
 /// A focusable region of the workbench, in F6 order.

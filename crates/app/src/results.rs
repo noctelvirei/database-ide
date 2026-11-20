@@ -165,7 +165,6 @@ impl Results {
                 .row_selectable(true)
                 .col_selectable(true)
                 .col_resizable(true)
-                // Moving columns needs the grid to remap cells, the inspector and copies.
                 .col_movable(false)
         });
         let ix = self.grids.len();

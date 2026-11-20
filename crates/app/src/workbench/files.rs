@@ -149,8 +149,6 @@ impl Workbench {
     }
 
     /// Keeps the open tabs now, saying so in the strip when the file can't be written.
-    // shortcut: written on the UI thread, which is quick for tabs of ordinary size; move it
-    // to the background if large scripts in many tabs make typing stutter.
     pub(super) fn save_tabs(&mut self, cx: &mut Context<Self>) {
         let Some(path) = self.tabs_file.clone() else {
             return;

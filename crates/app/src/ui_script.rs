@@ -116,7 +116,6 @@ impl UiScript {
         let pause = |ms| executor.timer(Duration::from_millis(ms));
         // File dialogs answer from the script from now on.
         let _ = cx.update(|_, cx| cx.set_global(ScriptedPaths::default()));
-        // Let the first layout and focus settle.
         pause(500).await;
         'steps: for step in &self.steps {
             for input in &step.input {

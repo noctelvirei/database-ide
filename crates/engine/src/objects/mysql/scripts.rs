@@ -121,7 +121,6 @@ fn routine_charsets(
         backslash_escapes: !mode.split(',').any(|mode| mode == "NO_BACKSLASH_ESCAPES"),
         ansi_quotes: mode.split(',').any(|mode| mode == "ANSI_QUOTES"),
     };
-    // shortcut: executable comments stay opaque; expand them if declarations inside need scripting.
     let tokens = Tokenizer::new(&dialect, definition)
         .tokenize_with_location()
         .map_err(|error| Error::Catalog(error.to_string()))?
@@ -361,7 +360,6 @@ impl Dialect for RoutineDialect {
 }
 
 /// Restores introduced literal bytes after SHOW's result conversion, retaining literal coercibility.
-// shortcut: SHOW conversion must be lossless; use a binary SHOW path to support already-lost bytes.
 async fn view_literals(
     session: &mut dyn Session,
     definition: &str,

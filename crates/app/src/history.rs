@@ -15,8 +15,6 @@ const KEPT: Duration = Duration::from_secs(90 * 24 * 60 * 60);
 
 /// Held for every append and every read-and-prune, so a prune never drops a run this app
 /// appends meanwhile.
-// shortcut: guards one app only; two apps sharing the file can still lose a run to a prune.
-// Upgrade to a lock file if people run several at once.
 static FILE: Mutex<()> = Mutex::new(());
 
 /// One run, as the history panel lists it.
@@ -161,8 +159,6 @@ impl Entry {
 }
 
 /// How long ago something happened, as the panel says it.
-// shortcut: ages, not clock times, because local time needs a time-zone crate (chrono or
-// jiff), a dependency the owner hasn't approved; show the time of day once one is.
 fn age(ms: u64) -> String {
     let minutes = ms / 60_000;
     match minutes {

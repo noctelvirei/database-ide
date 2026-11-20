@@ -1,4 +1,3 @@
-// Checks the Rust layout rules Clippy cannot: a per-file line limit, no #[path], no include!, no re-exports.
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -19,9 +18,6 @@ const lineCount = (text) => text.split('\n').length - (text.endsWith('\n') ? 1 :
 const MOD = /^\s*(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+(r#)?(\w+)\s*;/;
 const PATH_ATTR = /#\[\s*path\s*=\s*"([^"]+)"\s*\]/;
 
-// Every file a crate root pulls in through `mod x;`, the way rustc resolves them.
-// shortcut: `mod x;` nested inside an inline `mod y { }` is not resolved; it
-// fails as missing, so a crate that needs it must update this function.
 function crateFiles(rootFile) {
   const seen = new Set();
   const visit = (file, isRoot) => {
@@ -47,8 +43,6 @@ function crateFiles(rootFile) {
   return [...seen];
 }
 
-// The limit is per file, not per crate: a crate may hold many modules, and size
-// alone is never a reason to split one (see CODE_STANDARDS.md).
 let crates = 0;
 const checked = new Set();
 for (const pkg of metadata.packages) {

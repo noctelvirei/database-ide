@@ -74,9 +74,6 @@ impl Metadata {
                         .connection
                         .as_ref()
                         .expect("metadata connection is open");
-                    // Catalogs include other sessions' committed temporary-table definitions.
-                    // shortcut: uncommitted DDL is invisible here; use same-session metadata
-                    // if the protocol later supports it without delaying result-set events.
                     let row = client
                         .query_opt(
                             "SELECT pg_catalog.quote_ident(n.nspname) || '.' ||

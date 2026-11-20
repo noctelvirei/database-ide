@@ -468,7 +468,6 @@ pub fn default_path() -> Result<PathBuf, Error> {
     }
     #[cfg(windows)]
     let root = variable("APPDATA");
-    // shortcut: non-Windows uses XDG_CONFIG_HOME or ~/.config; revisit for native macOS support.
     #[cfg(not(windows))]
     let root = variable("XDG_CONFIG_HOME").or_else(|| variable("HOME").map(|p| p.join(".config")));
     Ok(root

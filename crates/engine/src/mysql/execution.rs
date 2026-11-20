@@ -126,8 +126,6 @@ async fn results(
             warnings
         };
         if warnings != 0 && (next_columns.is_some() || *index + 1 < statements.len()) {
-            // shortcut: the server overwrites intermediate diagnostics in an unsplit batch;
-            // retrieve their text if MySQL adds per-statement diagnostic history to its protocol.
             send(request, Event::Message {
                 text: format!("{warnings} MySQL warning(s); diagnostic text is unavailable for an intermediate statement in a multi-statement batch"),
                 severity: Severity::Warning, line: None,
