@@ -9,7 +9,6 @@ use dbide_test_servers::mysql::MySql as MyDatabase;
 use dbide_test_servers::postgres::Postgres as PgDatabase;
 use futures::StreamExt;
 
-// Counts real server batches so the fixed-query requirement cannot regress into N+1 calls.
 #[derive(Debug)]
 struct CountedSession<'a> {
     inner: &'a mut dyn Session,
@@ -157,8 +156,6 @@ fn assert_large_catalog(catalog: &AutocompleteCatalog, schema: &str, elapsed: Du
             .and_then(|n| n.parse::<usize>().ok())
             .is_some_and(|n| n < 500)
     }));
-    // Two local catalog scans over 1000 new columns should fit in five seconds even in debug
-    // builds under concurrent harness load; setup and server startup are outside this budget.
     assert!(elapsed < Duration::from_secs(5), "catalog took {elapsed:?}");
 }
 
@@ -388,7 +385,6 @@ async fn mssql_autocomplete_contains_fixture_objects_and_columns_in_declaration_
 #[tokio::test(flavor = "multi_thread")]
 async fn mssql_autocomplete_returns_all_500_tables_and_columns_within_five_seconds() {
     let (database, mut session) = mssql_open(false).await;
-    // `bulk` is reserved in T-SQL (BULK INSERT), so this schema has another name.
     run(&mut session, "CREATE SCHEMA many").await;
     let sql = (0..500)
         .map(|n| format!("CREATE TABLE many.bulk_{n} (zebra integer, apple integer);"))

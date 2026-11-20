@@ -39,7 +39,6 @@ fn formats_and_undoes(server: &Server) {
         },
         { "name": "undo", "input": [{ "key": "ctrl-z" }] },
         {
-            // The editor closes the quote as it is typed; Delete takes the closing one away.
             "name": "format an unclosed string",
             "input": [
                 { "key": "ctrl-a" },

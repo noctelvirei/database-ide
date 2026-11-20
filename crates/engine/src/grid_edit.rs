@@ -222,7 +222,6 @@ pub async fn inspect(
     if tables.is_empty() {
         return Ok(Editability::ReadOnly("expression columns only".into()));
     }
-    // Wire provenance identifies base tables, not distinct instances in a self-join.
     if !single_table_query(statement, engine) {
         return Ok(Editability::ReadOnly("joins aren't editable".into()));
     }
@@ -385,7 +384,6 @@ impl EditableResult {
                         continue;
                     }
                     let column = name(index)?;
-                    // Keep key equality indexable; the byte comparison below still checks exact text.
                     if self.key.contains(&index)
                         && matches!(self.engine, Engine::SqlServer | Engine::MySql)
                         && matches!(original[index], Value::Text(_))
@@ -401,7 +399,6 @@ impl EditableResult {
                         && self.comparison_types.get(index).and_then(Option::as_deref)
                             == Some("FLOAT")
                     {
-                        // CHAR uses the wire's FLOAT formatter; DOUBLE matches our decoded original.
                         format!(
                             "CAST(CAST({column} AS CHAR) AS DOUBLE) = {}",
                             literal(&original[index], self.engine)?
@@ -409,7 +406,6 @@ impl EditableResult {
                     } else if self.engine == Engine::SqlServer
                         && matches!(original[index], Value::Text(_))
                     {
-                        // Text equality must detect collation equivalence and trailing-space changes.
                         format!(
                             "CAST({column} AS varbinary(max)) = CAST({} AS varbinary(max))",
                             self.original(index, &original[index])?

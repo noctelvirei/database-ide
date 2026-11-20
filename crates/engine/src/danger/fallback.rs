@@ -129,7 +129,6 @@ fn statement_kind(
                 let mut parser =
                     Parser::new(dialect).with_tokens_with_locations(tokens[index + 1..].to_vec());
                 let expression = parser.parse_expr().ok()?;
-                // A true prefix is not a true WHERE: require the whole predicate to be understood.
                 if !matches!(parser.peek_token().token, Token::EOF | Token::SemiColon)
                     && !matches!(
                         word(&parser.peek_token()),

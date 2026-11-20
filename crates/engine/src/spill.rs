@@ -189,7 +189,6 @@ impl Store {
         if self.shared.write_failed.load(Ordering::Acquire) {
             return Err(Error::WriteFailed);
         }
-        // Acquiring completion also makes every previously published row count visible.
         self.shared.complete.store(true, Ordering::Release);
         Ok(())
     }
@@ -209,7 +208,6 @@ impl Store {
 
 impl Drop for Store {
     fn drop(&mut self) {
-        // Even a poisoned lock must not keep the file alive through outstanding readers.
         let mut state = self
             .shared
             .state
@@ -275,7 +273,6 @@ impl Reader {
         let limit = state.offsets.get(end).copied().unwrap_or(state.end);
         let retained_file = Arc::clone(state.file.as_ref().ok_or(Error::Closed)?);
         drop(state);
-        // Reopening gives this read its own cursor; cloning a File would share the cursor.
         let mut file = retained_file.reopen()?;
         file.seek(SeekFrom::Start(offset))?;
         let mut reader = BufReader::new(file.take(limit - offset));

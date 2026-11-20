@@ -235,8 +235,6 @@ impl Explorer {
             let outcome = connecting.await;
             let _ = this.update(cx, |this, cx| {
                 if this.connecting.get(&id) != Some(&attempt) {
-                    // The connection was edited or deleted while connecting: its details
-                    // are out of date, so a session from them is closed, not kept.
                     if let Ok(session) = outcome {
                         this.runtime.close(session);
                     }
@@ -248,7 +246,6 @@ impl Explorer {
                         let server = Server::new(attempt, saved, password, session);
                         this.servers.insert(id, server);
                         this.message(format!("Connected to {name}."), cx);
-                        // A connection left open before it disconnected lists again.
                         this.load_open_rows(cx);
                         this.rebuild(None, cx);
                     }

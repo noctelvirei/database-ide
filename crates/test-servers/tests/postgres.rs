@@ -142,7 +142,6 @@ fn pg_large_table_has_one_million_rows() {
     record("pg_large_table_has_one_million_rows.txt", &counts);
 }
 
-// Successful script checks leave reproducible query results outside source control.
 fn record(name: &str, output: &str) {
     let target = std::env::var_os("CARGO_TARGET_DIR")
         .map(std::path::PathBuf::from)

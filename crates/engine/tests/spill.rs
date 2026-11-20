@@ -255,9 +255,6 @@ fn metadata_and_drop_progress_alongside_a_range_read() {
     store.complete().unwrap();
     let reader = store.reader();
     let start = std::sync::Barrier::new(2);
-    // The public API has no notification during decoding. A barrier starts both operations
-    // together with a large payload, without sleeps or an assertion on scheduler timing.
-    // The private lock test separately proves metadata never acquires the index lock.
     std::thread::scope(|scope| {
         let reading = scope.spawn(|| {
             start.wait();
@@ -298,7 +295,6 @@ fn failed_append_reports_write_failure_and_preserves_published_rows() {
         .write(true)
         .open(path)
         .unwrap();
-    // Windows byte-range locks reject I/O through other handles, including spill writes.
     file.lock().unwrap();
     assert!(matches!(
         store.append(vec![vec![Value::Integer(99)]]),
@@ -416,7 +412,6 @@ fn concurrent_overlapping_reads_each_return_their_own_rows() {
             scope.spawn(move || {
                 start.wait();
                 for round in 0..300_usize {
-                    // Single rows and 256-row pages, at starts that differ per thread and round.
                     let first = (thread * 613 + round * 97) % ROWS;
                     let len = if round % 2 == 0 { 1 } else { 256 };
                     let rows = reader.rows(first..first + len).unwrap();

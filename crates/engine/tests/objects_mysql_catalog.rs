@@ -240,7 +240,6 @@ async fn mysql_search_all_returns_hits_from_two_databases_without_switching_the_
             .any(|object| object.id.database == second.database()
                 && object.name == "cross_database_pear")
     );
-    // Other tests share this user/server and may drop a database after enumeration.
     assert!(
         report.skipped.iter().all(|skipped| {
             skipped.database != first.database()

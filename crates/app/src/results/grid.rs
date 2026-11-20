@@ -247,7 +247,6 @@ impl Grid {
                             rows,
                         })
                     }
-                    // The grid stops reading and its heading says why; the rows draw empty.
                     Err(error) => grid.fail(&error),
                 }
                 cx.notify();

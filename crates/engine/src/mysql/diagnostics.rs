@@ -25,7 +25,6 @@ pub(super) fn statements(batch: &str) -> Vec<Statement> {
     let mut result = Vec::new();
     let mut line = 1;
     loop {
-        // Empty statements do not produce a separate server result.
         while parser.peek_token().token == Token::SemiColon {
             let end = parser.next_token().span.end;
             line = next_line(batch, end);
@@ -77,7 +76,6 @@ fn next_line(batch: &str, location: Location) -> u64 {
     let mut column = 1;
     for (offset, ch) in batch.char_indices() {
         if line == location.line && column == location.column {
-            // MySQL strips whitespace after a batch delimiter, but preserves comments.
             return line
                 + batch[offset..]
                     .chars()

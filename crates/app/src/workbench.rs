@@ -42,8 +42,6 @@ use crate::results::{GridState, Inspected};
 use crate::runtime::Runtime;
 
 /// How many of the newest messages the strip renders; it shows as many as fit.
-// shortcut: the strip draws the newest lines only, with no scrollback; a long run's early
-// messages scroll out of reach. Upgrade to a virtual list when runs print more than this.
 const MESSAGES_SHOWN: usize = 50;
 
 /// A focusable region of the workbench, in F6 order.
@@ -203,7 +201,6 @@ impl Workbench {
             }),
         };
         this.restore_tabs(window, cx);
-        // Repaint the pane outlines whenever focus moves.
         for pane in Pane::ALL {
             if pane == Pane::Editor {
                 continue;
@@ -240,7 +237,6 @@ impl Workbench {
 
     /// Adds `tab` to the list, makes it active and focuses its editor.
     fn add_tab(&mut self, tab: Entity<QueryTab>, window: &mut Window, cx: &mut Context<Self>) {
-        // The tab list, the strip and the Stop button show the tab's state.
         cx.observe(&tab, |_, _, cx| cx.notify()).detach();
         cx.subscribe_in(
             &tab,
@@ -250,7 +246,6 @@ impl Workbench {
             },
         )
         .detach();
-        // Typing changes the tab's dot and is kept a second after it stops.
         let editor = tab.read(cx).editor().clone();
         cx.subscribe(&editor, |this, _, event: &InputEvent, cx| {
             if let InputEvent::Change = event {
@@ -259,7 +254,6 @@ impl Workbench {
             }
         })
         .detach();
-        // The inspector shows the results' selected cell.
         let results = tab.read(cx).results().clone();
         cx.observe(&results, |_, _, cx| cx.notify()).detach();
         cx.on_focus_in(
@@ -291,7 +285,6 @@ impl Workbench {
                 .explorer
                 .update(cx, |explorer, cx| explorer.open_query(window, cx))
         {
-            // The explorer signs in, then asks for the tab with `ExplorerEvent::OpenQuery`.
             return;
         }
         self.open_beside_active(window, cx);
@@ -380,7 +373,6 @@ impl Workbench {
         self.opening = true;
         cx.spawn_in(window, async move |this, cx| {
             let path = asked.await;
-            // The tab says what came of it before the workbench reads as idle again.
             let finish = |this: &mut Self| this.opening = false;
             let Some(path) = path else {
                 let _ = this.update(cx, |this, _| finish(this));
@@ -494,8 +486,6 @@ impl Workbench {
         let Some(before) = bar.panel_return(window, cx).cloned().or(window.focused(cx)) else {
             return situation;
         };
-        // In the results, the focused grid itself, so its own keys still work once the menu
-        // hands focus back; its actions reach the results by bubbling.
         if self
             .focus_handle_of(Pane::Results, cx)
             .contains(&before, window)
@@ -825,7 +815,6 @@ impl Render for Workbench {
                     .clone()
                     .update(cx, |tab, cx| tab.pick_database(w, cx));
             }))
-            // Insert is bound in the explorer only; File, New connection reaches it from anywhere.
             .on_action(cx.listener(|this, _: &NewConnection, w, cx| {
                 this.explorer
                     .update(cx, |explorer, cx| explorer.new_connection(w, cx));

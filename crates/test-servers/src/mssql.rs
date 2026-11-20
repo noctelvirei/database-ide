@@ -22,15 +22,12 @@ pub mod wait;
 const PREFIX: &str = "dbide_test_";
 const ADMIN_DATABASE: &str = "master";
 static SWEPT: Mutex<bool> = Mutex::new(false);
-// Separate from the old lifetime lock, which an older test process may still hold.
 const DDL_LOCK: &str = "dbide_test_harness_ddl";
-// Match the DDL budget so contention with a slow creator is not mistaken for a hang.
+/// Match the DDL budget so contention with a slow creator is not mistaken for a hang.
 const DDL_LOCK_TIMEOUT_MS: u32 = 120_000;
-// Allow five seconds to receive sp_getapplock's result after its server-side budget expires.
 const LOCK_RESPONSE_GRACE: Duration = Duration::from_secs(5);
-// Model locks and killed-session rollback can outlast one attempt on a busy server.
+/// Model locks and killed-session rollback can outlast one attempt on a busy server.
 const RETRY_TIMEOUT: Duration = Duration::from_secs(120);
-// Poll transient model/rollback failures twice per second within the retry budget.
 const RETRY_INTERVAL: Duration = Duration::from_millis(500);
 /// Allow TCP, TLS and SSPI/login to finish under load, without an unlimited connection attempt.
 pub const CONNECT_TIMEOUT_SECS: u32 = 30;
@@ -101,7 +98,6 @@ impl Mssql {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if !*swept {
-                // Sweep locks belong to a short-lived connection, never to a test handle.
                 let mut sweeper = runtime.block_on(connect(&host, port, ADMIN_DATABASE, None))?;
                 let result = (|| {
                     runtime.block_on(acquire_lock(&mut sweeper, DDL_LOCK, DDL_LOCK_TIMEOUT_MS))?;
@@ -119,7 +115,6 @@ impl Mssql {
         let database = format!("{PREFIX}{suffix}");
         let user = database.clone();
         let password = random_lowercase(40);
-        // Protect both names before either object becomes visible to other processes' sweeps.
         runtime.block_on(acquire_lock(&mut admin, DDL_LOCK, DDL_LOCK_TIMEOUT_MS))?;
         if runtime.block_on(acquire_lock(&mut admin, &database, 0))? == -1 {
             return Err(Error::Lock(format!("{database}: name is already owned")));
@@ -436,7 +431,6 @@ async fn query_rows(client: &mut TdsClient, sql: &str) -> Result<String, TdsErro
         Ok(output)
     }
     .await;
-    // Drain failed batches before retrying or releasing a session-owned lock.
     let closed = client.close_query().await;
     let output = result?;
     closed?;
@@ -504,14 +498,11 @@ fn sweep(runtime: &Runtime, admin: &mut TdsClient) -> Result<(), Error> {
         if runtime.block_on(acquire_lock(admin, name, 0))? == -1 {
             continue;
         }
-        // Include three-part-name locks held from master, even from an older harness.
-        // A dead owner's SQL login sessions can linger after its admin lock is released.
         let active = runtime.block_on(wait::query(admin, &format!(
             "IF EXISTS (SELECT 1 FROM sys.dm_exec_sessions s WHERE s.original_login_name <> N'{name}' AND s.session_id <> @@SPID AND (s.database_id = DB_ID(N'{name}') OR EXISTS (SELECT 1 FROM sys.dm_tran_locks l WHERE l.request_session_id = s.session_id AND l.resource_database_id = DB_ID(N'{name}')))) SELECT N'active';"
         ), &format!("checking sessions using {name}")))?;
         if active.is_empty() {
             match remove_objects(runtime, admin, name, name, false) {
-                // An external session can enter after the check.
                 Err(Error::Tds(TdsError::SqlServerError { diagnostics }))
                     if !diagnostics.errors.is_empty()
                         && diagnostics.errors.iter().all(|error| error.number == 3702) => {}
@@ -570,11 +561,8 @@ fn remove_objects(
         "USE [master]; IF DB_ID(N'{database}') IS NOT NULL BEGIN {disconnect} DROP DATABASE [{database}]; END;"
     );
     if force_disconnect {
-        // KILL may acknowledge before rollback ends; retain the last error on timeout.
         run_retry(runtime, admin, &sql, &[3702])?;
     } else {
-        // A three-part-name user can hold database locks while its current database is master.
-        // Return 3702 immediately so sweep skips it without monopolizing the DDL lock.
         run_admin(runtime, admin, &sql)?;
     }
     run_retry(

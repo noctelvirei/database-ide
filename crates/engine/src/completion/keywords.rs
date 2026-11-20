@@ -14,8 +14,8 @@ pub(super) fn reserved(name: &str, engine: Engine) -> bool {
         .any(|word| name.eq_ignore_ascii_case(word))
 }
 
-// ColId excludes RESERVED_KEYWORD and TYPE_FUNC_NAME_KEYWORD.
-// https://github.com/postgres/postgres/blob/REL_18_STABLE/src/include/parser/kwlist.h
+/// ColId excludes RESERVED_KEYWORD and TYPE_FUNC_NAME_KEYWORD.
+/// https://github.com/postgres/postgres/blob/REL_18_STABLE/src/include/parser/kwlist.h
 const POSTGRESQL: &str = "
 ALL ANALYSE ANALYZE AND ANY ARRAY AS ASC ASYMMETRIC BOTH CASE CAST CHECK COLLATE COLUMN
 CONSTRAINT CREATE CURRENT_CATALOG CURRENT_DATE CURRENT_ROLE CURRENT_TIME CURRENT_TIMESTAMP
@@ -28,7 +28,7 @@ AUTHORIZATION BINARY COLLATION CONCURRENTLY CROSS CURRENT_SCHEMA FREEZE FULL ILI
 IS ISNULL JOIN LEFT LIKE NATURAL NOTNULL OUTER OVERLAPS RIGHT SIMILAR TABLESAMPLE VERBOSE
 ";
 
-// https://learn.microsoft.com/en-us/sql/t-sql/language-elements/reserved-keywords-transact-sql?view=sql-server-ver17
+/// https://learn.microsoft.com/en-us/sql/t-sql/language-elements/reserved-keywords-transact-sql?view=sql-server-ver17
 const SQL_SERVER: &str = "
 ADD ALL ALTER AND ANY AS ASC AUTHORIZATION BACKUP BEGIN BETWEEN BREAK BROWSE BULK BY CASCADE
 CASE CHECK CHECKPOINT CLOSE CLUSTERED COALESCE COLLATE COLUMN COMMIT COMPUTE CONSTRAINT
@@ -48,7 +48,7 @@ TRY_CONVERT TSEQUAL UNION UNIQUE UNPIVOT UPDATE UPDATETEXT USE USER VALUES VARYI
 WHEN WHERE WHILE WITH WRITETEXT
 ";
 
-// https://dev.mysql.com/doc/refman/8.4/en/keywords.html
+/// https://dev.mysql.com/doc/refman/8.4/en/keywords.html
 const MYSQL: &str = "
 ACCESSIBLE ADD ALL ALTER ANALYZE AND AS ASC ASENSITIVE BEFORE BETWEEN BIGINT BINARY BLOB BOTH
 BY CALL CASCADE CASE CHANGE CHAR CHARACTER CHECK COLLATE COLUMN CONDITION CONSTRAINT CONTINUE

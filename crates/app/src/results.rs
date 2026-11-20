@@ -165,7 +165,6 @@ impl Results {
                 .row_selectable(true)
                 .col_selectable(true)
                 .col_resizable(true)
-                // Moving columns needs the grid to remap cells, the inspector and copies.
                 .col_movable(false)
         });
         let ix = self.grids.len();
@@ -647,7 +646,6 @@ impl Results {
         };
         let heading = format!("Result {}: {count}{note}", ix + 1);
         let theme = cx.theme();
-        // Each grid's own id keeps the two tables' element ids apart.
         div()
             .id(("result", ix))
             .flex_1()

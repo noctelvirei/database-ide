@@ -891,7 +891,6 @@ async fn pg_temporary_table_columns_report_their_base_table() {
         .unwrap()
         .split_once('.')
         .unwrap();
-    // PostgreSQL assigns the temporary namespace's numeric suffix at connection time.
     assert!(schema.starts_with("pg_temp_"));
     assert_eq!(table, "local_rows");
     assert_eq!(columns[0].base_column.as_deref(), Some("id"));

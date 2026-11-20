@@ -60,7 +60,6 @@ pub(super) async fn inspect(
         text(database)?,
         text(name)?
     );
-    // Check the selected relation too: a view may report its underlying table's names.
     let selected_filter = match selected.as_slice() {
         [db, name] => format!(
             "TABLE_SCHEMA = {} AND TABLE_NAME = {}",
@@ -125,7 +124,6 @@ pub(super) async fn inspect(
                 {
                     return Err(Error::Catalog("invalid character set".into()));
                 }
-                // Convert the original into the stored charset before byte comparison.
                 Some(format!("CHAR CHARACTER SET {charset}"))
             }
             _ => None,
@@ -155,7 +153,6 @@ pub(super) async fn inspect(
             .or_insert_with(|| Some(Vec::new()));
         let column = match name {
             Value::Text(name) => policy.iter().enumerate().position(|(index, column)| {
-                // Rounded FLOAT originals cannot identify a unique stored value.
                 column.name.as_ref() == Some(name)
                     && column.comparable
                     && comparison_types[index].as_deref() != Some("FLOAT")

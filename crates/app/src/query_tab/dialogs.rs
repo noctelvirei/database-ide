@@ -193,7 +193,6 @@ pub(super) fn ask_before_running(
         fully_checked: check.fully_checked,
     };
     let estimating = estimating && state.statements.iter().any(|s| s.rows.is_some());
-    // Set by "Run anyway" while estimating, so the batch runs once the session is back.
     let run_when_free = Rc::new(Cell::new(false));
     let stop_estimating = if estimating {
         estimate(
@@ -219,7 +218,6 @@ pub(super) fn ask_before_running(
             let run_when_free = run_when_free.clone();
             move |_: &gpui::ClickEvent, window: &mut Window, cx: &mut App| {
                 entity.update(cx, |tab, cx| {
-                    // Closing the dialog cancels any estimating still under way.
                     tab.dialog = None;
                     tab.focus(window, cx);
                     if tab.status == Status::Estimating {
@@ -231,7 +229,6 @@ pub(super) fn ask_before_running(
                 true
             }
         };
-        // Rebuilt on every draw, so estimates show as they arrive.
         let description = match &entity.read(cx).dialog {
             Some(OpenDialog::Danger { state, .. }) => state.description(),
             _ => SharedString::default(),
@@ -271,7 +268,6 @@ fn estimate(
             .estimate_rows(session, batch.to_owned(), check, engine, found, stopped);
     let batch = batch.to_owned();
     cx.spawn_in(window, async move |this, cx| {
-        // Ends when the estimating finishes or is stopped, which closes `found`.
         while let Some((index, estimate)) = arriving.next().await {
             let _ = this.update(cx, |this, cx| {
                 if let Some(OpenDialog::Danger { state, .. }) = &mut this.dialog

@@ -90,7 +90,6 @@ async fn run_inner(
 ) -> Result<(), Error> {
     let statements = statements(&request.batch)?;
     if mode == PlanMode::Actual {
-        // SAVEPOINT fails harmlessly outside a transaction; never BEGIN inside a user's one.
         let guard = format!("dbide_plan_{:016x}", rand::random::<u64>());
         match idle_query(client, notices, &format!("SAVEPOINT {guard}")).await {
             Ok(()) => {
@@ -124,7 +123,6 @@ async fn run_inner(
         } else {
             "FORMAT JSON"
         };
-        // Preserve literal spelling and batch line numbers rather than reformatting the AST.
         let sql = format!(
             "EXPLAIN ({options}) {}{}",
             "\n".repeat(statement.line.saturating_sub(1) as usize),
@@ -133,7 +131,6 @@ async fn run_inner(
         let success = execution::run(client, notices, cancellation, request, &sql, None)
             .await
             .map_err(|()| Error::CancelFailed)?;
-        // Roll back on errors and cancellation too, independently of the event consumer.
         if actual {
             idle_query(client, notices, "ROLLBACK").await?;
         } else if savepoint {

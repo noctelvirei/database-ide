@@ -74,7 +74,6 @@ fn file_stem(path: &Path) -> String {
 pub fn write(reader: &Reader, path: &Path, format: &Format) -> Result<FileReport, export::Error> {
     let staging = crate::replace_file::staging_path(path);
     let mut report = export::write(reader, &staging, format).inspect_err(|_| {
-        // The engine keeps a failed write as `<name>.partial`; nobody knows this hidden name.
         let mut partial = staging.clone().into_os_string();
         partial.push(".partial");
         let _ = std::fs::remove_file(partial);
@@ -92,7 +91,6 @@ pub fn written(file: &FileReport) -> String {
         1 => "1 row".to_owned(),
         rows => format!("{rows} rows"),
     };
-    // The engine names a file `.partial` when the run or the write stopped before the end.
     if file.path.extension().is_some_and(|e| e == "partial") {
         format!(
             "Wrote {rows} to {} before it stopped; the file is incomplete.",

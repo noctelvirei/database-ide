@@ -1,4 +1,3 @@
-// Checks the Rust layout rules Clippy cannot: a per-file line limit, no #[path], no include!, no re-exports.
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -19,9 +18,6 @@ const lineCount = (text) => text.split('\n').length - (text.endsWith('\n') ? 1 :
 const MOD = /^\s*(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+(r#)?(\w+)\s*;/;
 const PATH_ATTR = /#\[\s*path\s*=\s*"([^"]+)"\s*\]/;
 
-// Every file a crate root pulls in through `mod x;`, the way rustc resolves them.
-// shortcut: `mod x;` nested inside an inline `mod y { }` is not resolved; it
-// fails as missing, so a crate that needs it must update this function.
 function crateFiles(rootFile) {
   const seen = new Set();
   const visit = (file, isRoot) => {
@@ -47,8 +43,6 @@ function crateFiles(rootFile) {
   return [...seen];
 }
 
-// The limit is per file, not per crate: a crate may hold many modules, and size
-// alone is never a reason to split one (see CODE_STANDARDS.md).
 let crates = 0;
 const checked = new Set();
 for (const pkg of metadata.packages) {
@@ -73,22 +67,93 @@ const RULES = [
 const sources = execFileSync('git', ['ls-files', '-z', '--', '*.rs'], { cwd: root, encoding: 'utf8' })
   .split('\0')
   .filter(Boolean);
-// Blanks string literals and comments (keeping newlines, so line numbers hold)
-// so that text about a rule never trips it.
-// shortcut: raw strings with `"` inside (r#"…"#) and nested block comments are
-// not handled; upgrade if the check ever misreads one.
-const STRINGS_AND_COMMENTS = /"(?:\\.|[^"\\])*"|\/\/[^\n]*|\/\*[\s\S]*?\*\//g;
-const codeOnly = (text) =>
-  text.replace(STRINGS_AND_COMMENTS, (match) => match.replace(/[^\n]/g, ' '));
+function lexRust(text) {
+  const comments = [];
+  const code = text.split('');
+  let i = 0;
+  let line = 1;
+  const blank = (from, to) => {
+    for (let k = from; k < to; k++) {
+      if (code[k] === '\n') line += 1;
+      else code[k] = ' ';
+    }
+  };
+  while (i < text.length) {
+    const rest = text.slice(i, i + 40);
+    let end;
+    if (rest.startsWith('//')) {
+      end = text.indexOf('\n', i);
+      if (end === -1) end = text.length;
+      comments.push({ line, text: text.slice(i, end).replace(/\r$/, '') });
+    } else if (rest.startsWith('/*')) {
+      let depth = 0;
+      end = i;
+      do {
+        if (text.startsWith('/*', end)) {
+          depth += 1;
+          end += 2;
+        } else if (text.startsWith('*/', end)) {
+          depth -= 1;
+          end += 2;
+        } else end += 1;
+      } while (depth > 0 && end < text.length);
+      comments.push({ line, text: text.slice(i, end) });
+    } else if (/^(?:b|c)?r#*"/.test(rest) && !/\w/.test(text[i - 1] ?? '')) {
+      const hashes = /^(?:b|c)?r(#*)"/.exec(rest);
+      const close = text.indexOf(`"${hashes[1]}`, i + hashes[0].length);
+      end = close === -1 ? text.length : close + 1 + hashes[1].length;
+    } else if (text[i] === '"') {
+      end = i + 1;
+      while (end < text.length && text[end] !== '"') end += text[end] === '\\' ? 2 : 1;
+      end += 1;
+    } else if (text[i] === "'") {
+      const char = /^'(?:\\(?:x[0-9a-fA-F]{2}|u\{[0-9a-fA-F]+\}|.)|[^\\'\n])'/u.exec(rest);
+      i += char ? char[0].length : 1;
+      continue;
+    } else {
+      if (text[i] === '\n') line += 1;
+      i += 1;
+      continue;
+    }
+    blank(i, end);
+    i = end;
+  }
+  return { code: code.join(''), comments };
+}
+
+const isExemptComment = (comment) =>
+  /^\/\/[/!](?!\/)/.test(comment.text) ||
+  /^\/\*[*!](?![*/])/.test(comment.text) ||
+  /^\/\/\s*SAFETY:/.test(comment.text);
+
+const allowance = JSON.parse(
+  readFileSync(path.join(root, 'scripts/comment-allowance.json'), 'utf8'),
+);
+for (const file of Object.keys(allowance)) {
+  if (!sources.includes(file)) failures.push(`scripts/comment-allowance.json: ${file} is not a tracked Rust file; remove it`);
+}
 
 for (const file of sources) {
-  codeOnly(readFileSync(path.join(root, file), 'utf8'))
-    .split('\n')
-    .forEach((line, index) => {
-      for (const rule of RULES) {
-        if (rule.pattern.test(line)) failures.push(`${file}:${index + 1}: ${rule.message}`);
-      }
-    });
+  const { code, comments } = lexRust(readFileSync(path.join(root, file), 'utf8'));
+  code.split('\n').forEach((line, index) => {
+    for (const rule of RULES) {
+      if (rule.pattern.test(line)) failures.push(`${file}:${index + 1}: ${rule.message}`);
+    }
+  });
+  const plain = comments.filter((comment) => !isExemptComment(comment));
+  const allowed = allowance[file] ?? 0;
+  if (plain.length > allowed) {
+    const lines = plain.map((comment) => comment.line).join(', ');
+    failures.push(
+      `${file}: ${plain.length} plain comments (lines ${lines}), ${allowed} allowed; ` +
+        'put decisions in docs/adr/ and workarounds in the tracker (CODE_STANDARDS.md, Comments)',
+    );
+  } else if (plain.length < allowed) {
+    failures.push(
+      `${file}: ${plain.length} plain comments but ${allowed} allowed; ` +
+        `set its entry in scripts/comment-allowance.json to ${plain.length || 'nothing (remove it)'}`,
+    );
+  }
 }
 
 if (failures.length > 0) {

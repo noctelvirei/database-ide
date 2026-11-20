@@ -285,8 +285,6 @@ async fn catalog(
     query(
         session,
         &format!(
-            // information_schema text is utf8mb3; convert it once so filters can compare it
-            // with utf8mb4 literals without a collation clash.
             "SELECT CAST({} AS CHAR CHARACTER SET utf8mb4) FROM (SELECT
             CONVERT(object_key USING utf8mb4) COLLATE utf8mb4_bin AS object_key,
             CONVERT(schema_name USING utf8mb4) COLLATE utf8mb4_bin AS schema_name,

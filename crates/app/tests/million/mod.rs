@@ -17,8 +17,6 @@ pub fn query(engine: Engine) -> &'static str {
              FROM generate_series(1, 1000000) AS n; \
              SELECT 'second' AS name, 2 AS n"
         }
-        // MySQL has no series function and caps recursion at 1000, so a million rows come
-        // from six copies of the digits 0 to 9.
         Engine::MySql => {
             "WITH d (v) AS (SELECT 0 UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 \
              UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 \

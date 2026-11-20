@@ -566,7 +566,6 @@ impl Explorer {
                     self.request(&connection, Some(&database), Explore::Indexes(table), cx);
                 }
             }
-            // A search hit lists nothing under it.
             Some(Node::Group { .. } | Node::Object { hit: true, .. } | Node::Note) => {}
         }
     }
@@ -623,7 +622,6 @@ impl Explorer {
                 cx.spawn(async move |this, cx| {
                     let (session, outcome) = reply.await;
                     let _ = this.update(cx, |this, cx| {
-                        // A reply from before a disconnect belongs to a connection that is gone.
                         if this.replied(&connection, database.as_deref(), attempt, session, cx) {
                             this.apply(&connection, database.as_deref(), call, outcome, cx);
                         }
@@ -777,7 +775,6 @@ impl Explorer {
                 unreachable!("Script as and searches are handled above")
             }
         }
-        // Rows left open below the new list load their own lists now.
         self.load_open_rows(cx);
         self.rebuild(None, cx);
     }
@@ -942,7 +939,6 @@ impl Explorer {
             return;
         }
         let labels = items.iter().map(|(label, _)| (*label).into()).collect();
-        // The chosen action goes to the explorer, which handles it for the selected row.
         let context = self.focus.clone();
         let menu = PopupMenu::build(window, cx, move |mut menu, _, _| {
             for (label, action) in items {

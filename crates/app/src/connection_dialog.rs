@@ -171,7 +171,6 @@ impl ConnectionForm {
             window,
             cx,
         );
-        // Fields appear and disappear with the engine and sign-in choices.
         for select in [&engine, &sign_in] {
             cx.subscribe(select, |_, _, _: &SelectEvent<Vec<&'static str>>, cx| {
                 cx.notify()
@@ -219,8 +218,6 @@ impl ConnectionForm {
         cx.notify();
         let connection = result.ok()?;
         let password = self.password.read(cx).value().to_string();
-        // While editing, a blank field keeps the saved password; a new connection saves
-        // what was typed, even a blank password.
         let keep_saved = self.editing.is_some() && password.is_empty();
         let password =
             (connection.sign_in == SignInMethod::Password && !keep_saved).then_some(password);
@@ -335,7 +332,6 @@ impl ConnectionForm {
         let connection = match self.read(cx) {
             Ok(connection) => connection,
             Err(error) => {
-                // A field that is wrong shows under the fields, as it does on Save.
                 self.error = Some(error);
                 self.test = TestStatus::NotRun;
                 cx.notify();

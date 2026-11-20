@@ -229,7 +229,6 @@ async fn pg_danger_estimates_report_progress_before_cancellation_and_preserve_ro
         receiver.try_recv(),
         Err(tokio::sync::mpsc::error::TryRecvError::Empty)
     );
-    // Keep the lock held so session reuse proves cancellation finished the waiting plan.
     commit_preserves_insert(&mut session, &database).await;
     setup(&mut locker, "ROLLBACK").await;
     let events: Vec<_> = session.run("SELECT id FROM locked_rows").collect().await;

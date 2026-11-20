@@ -26,7 +26,6 @@ pub(crate) fn split(script: &str) -> Result<Vec<Batch<'_>>, Error> {
     let mut quote = None;
     let mut depth = 0u32;
     for (line, text) in script.split_inclusive('\n').enumerate() {
-        // SSMS accepts a trailing `--` comment after GO and its count.
         let mut words = text.split("--").next().unwrap_or(text).split_whitespace();
         let go = quote.is_none()
             && depth == 0

@@ -25,7 +25,6 @@ impl Workbench {
         let kept = match self.tabs_file.as_deref().map(open_tabs::load) {
             Some(Ok(kept)) => Ok(kept),
             None => Ok(Vec::new()),
-            // Saving would replace the tabs it couldn't read, so this session keeps none.
             Some(Err(error)) => Err(format!(
                 "Couldn't read the tabs kept from last time ({error}); this session won't keep \
                  its tabs, so the file stays as it is."
@@ -71,8 +70,6 @@ impl Workbench {
     ) {
         match event {
             QueryTabEvent::SignIn(id) => {
-                // The explorer's sign-in is modal, so a tab still waiting from before had its
-                // sign-in cancelled; it must not run when this one signs in.
                 for earlier in std::mem::take(&mut self.waking) {
                     if let Some(earlier) = earlier.upgrade().filter(|e| e != tab) {
                         earlier.update(cx, |earlier, _| earlier.stop_waiting());
@@ -149,8 +146,6 @@ impl Workbench {
     }
 
     /// Keeps the open tabs now, saying so in the strip when the file can't be written.
-    // shortcut: written on the UI thread, which is quick for tabs of ordinary size; move it
-    // to the background if large scripts in many tabs make typing stutter.
     pub(super) fn save_tabs(&mut self, cx: &mut Context<Self>) {
         let Some(path) = self.tabs_file.clone() else {
             return;

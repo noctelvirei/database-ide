@@ -56,7 +56,6 @@ fn ui_pg_menus_open_by_alt_letter_run_queries_and_list_the_shortcuts() {
     .save_as_lab(&appdata);
 
     let steps = json!([
-        // Lab is selected in the explorer, but focus is back on the unconnected first tab.
         {
             "name": "new query from file",
             "input": [
@@ -167,7 +166,6 @@ fn ui_pg_menus_open_by_alt_letter_run_queries_and_list_the_shortcuts() {
     let script = dir.path().join("script.json");
     std::fs::write(&script, steps.to_string()).unwrap();
     let lines = run_script(&script, Some(&appdata));
-    // File, New query opens on the focused tab's connection (none), not the explorer's selection.
     let new_query = state(&lines, "new query from file");
     assert_eq!(new_query["active_tab"], 1);
     assert_eq!(
@@ -214,19 +212,16 @@ fn ui_pg_menus_open_by_alt_letter_run_queries_and_list_the_shortcuts() {
     assert_eq!(open("query"), (json!("Query"), query("[ ]")));
     let help = strings(&["Keyboard shortcuts", "About Database IDE"]);
     assert_eq!(open("help"), (json!("Help"), help));
-    // Right from the last menu wraps to the first, and Left back again.
     assert_eq!(open("right of help").0, json!("File"));
     assert_eq!(open("left of file").0, json!("Help"));
     assert_eq!(open("closed"), (Value::Null, vec![]));
     assert_eq!(open("f10").0, json!("File"));
 
-    // Query, Run runs the tab; afterwards Cancel is greyed again.
     let ran = state(&lines, "query, run");
     assert_eq!(ran["last_action"], "Run");
     assert_eq!(ran["results"].as_array().unwrap().len(), 1);
     assert_eq!(open("query after the run"), (json!("Query"), query("[ ]")));
 
-    // Down skips the greyed Cancel, so three presses reach Include actual plan.
     let ticked = state(&lines, "tick include actual plan");
     assert_eq!(active_tab(ticked)["actual_plan"], true);
     assert_eq!(
@@ -236,7 +231,6 @@ fn ui_pg_menus_open_by_alt_letter_run_queries_and_list_the_shortcuts() {
     let unticked = state(&lines, "untick include actual plan");
     assert_eq!(active_tab(unticked)["actual_plan"], false);
 
-    // Help, Keyboard shortcuts lists each menu item that has keys, with those keys.
     let shortcuts = state(&lines, "keyboard shortcuts");
     assert_eq!(shortcuts["menu_bar"]["panel"], "shortcuts");
     let rows = shortcuts["menu_bar"]["shortcuts"].as_array().unwrap();
@@ -247,20 +241,16 @@ fn ui_pg_menus_open_by_alt_letter_run_queries_and_list_the_shortcuts() {
     assert!(!rows.iter().any(|row| row["action"] == "Exit"));
     let about = state(&lines, "about over the shortcuts");
     assert_eq!(about["menu_bar"]["panel"], "about");
-    // Closing the second panel hands focus back to where it was before the first.
     let closed = state(&lines, "shortcuts closed");
     assert_eq!(closed["menu_bar"]["panel"], Value::Null);
     assert_eq!(closed["focused_pane"], "Editor", "{closed:#}");
-    // Edit opened over a Help panel acts on the grid the panel was opened from.
     let (title, items) = open("edit over about over the grid");
     assert_eq!(title, json!("Edit"));
     assert_eq!(items[0], "Undo (greyed)");
     assert_eq!(items[3], "Copy");
-    // A panel closes when focus leaves it, so Escape is never out of reach.
     let away = state(&lines, "about, then another pane");
     assert_eq!(away["menu_bar"]["panel"], Value::Null, "{away:#}");
 
-    // Opening Edit over a grid and closing it leaves the grid's own keys working.
     let grid = state(&lines, "grid keys after edit");
     assert_eq!(
         grid["results"][0]["block"],
@@ -268,13 +258,11 @@ fn ui_pg_menus_open_by_alt_letter_run_queries_and_list_the_shortcuts() {
         "{grid:#}"
     );
 
-    // A menu opened after the run ended shows it as over, though File was open meanwhile.
     assert_eq!(
         open("query after a run ends under file"),
         (json!("Query"), query("[ ]"))
     );
 
-    // A menu or panel that focus has left, by whatever key, is closed: Escape could not reach it.
     let left_file = state(&lines, "file, then the explorer");
     assert_eq!(left_file["focused_pane"], "Explorer");
     assert_eq!(left_file["menu_bar"]["open"], Value::Null, "{left_file:#}");

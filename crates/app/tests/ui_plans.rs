@@ -43,7 +43,6 @@ fn assert_join(plan: &Value) {
     let ops = operators(plan);
     assert!(
         ops.iter().any(|op| {
-            // MySQL writes "Nested loop inner join"; the others capitalise "Loop".
             let name = op["name"].as_str().unwrap().to_lowercase();
             name.contains("nested loop") || name.contains("hash") || name.contains("merge join")
         }),
@@ -118,7 +117,6 @@ fn show_plans(server: &Server, to_plan: &[Value], save: Option<&std::path::Path>
     let actual_plan = plan(actual);
     assert_eq!(actual_plan["actual"], true, "{actual:#}");
     assert_join(actual_plan);
-    // The join returns the 49 fruits below 50 with their four crates each.
     assert!(
         operators(actual_plan)
             .iter()
@@ -126,7 +124,6 @@ fn show_plans(server: &Server, to_plan: &[Value], save: Option<&std::path::Path>
         "{actual:#}"
     );
 
-    // The plan opens on its costliest operator, its details in the inspector.
     let focused = state(&lines, "focus the plan");
     let shown = plan(focused);
     assert_eq!(shown["focused"], true, "{focused:#}");
@@ -148,7 +145,6 @@ fn show_plans(server: &Server, to_plan: &[Value], save: Option<&std::path::Path>
         "{focused:#}"
     );
 
-    // Home and Down move the selection, and the inspector follows it.
     let first = state(&lines, "first operator");
     assert_eq!(plan(first)["selected"], 0);
     assert_eq!(first["inspector"]["operator"], ops[0]["name"]);
@@ -156,8 +152,6 @@ fn show_plans(server: &Server, to_plan: &[Value], save: Option<&std::path::Path>
     assert_eq!(plan(next)["selected"], 1);
     assert_eq!(next["inspector"]["operator"], ops[1]["name"]);
 
-    // F9 shows the graph with the selection kept; Left goes to the operator the selected one
-    // feeds, the statement's root, and Right back to its first input. F9 again keeps it too.
     let graph = state(&lines, "graph");
     assert_eq!(plan(graph)["graph"], true, "{graph:#}");
     assert_eq!(plan(graph)["selected"], 1);
@@ -202,7 +196,6 @@ fn ui_mssql_plans_show_estimated_and_actual_and_round_trip_a_sqlplan() {
             password: db.password(),
             database: db.database(),
         },
-        // SQL Server's actual plan comes with the query's rows, whose grid is first.
         &[json!({ "key": "ctrl-down" })],
         Some(&file),
     );
@@ -225,7 +218,6 @@ fn ui_mssql_plans_show_estimated_and_actual_and_round_trip_a_sqlplan() {
         "{saved:#}"
     );
 
-    // The file opens as the same plan, with its actual rows.
     let opened = state(&lines, "open the plan");
     let before = plan(state(&lines, "run with the actual plan"));
     let reopened = plan(opened);
@@ -269,7 +261,6 @@ fn ui_pg_graph_scrolls_to_the_selected_operator() {
         db.query(&format!("CREATE TABLE t{n} (id INT PRIMARY KEY)"))
             .unwrap();
     }
-    // Six tables joined in a chain: a plan wider and taller than the results pane.
     let chain = "SELECT * FROM t1 JOIN t2 ON t2.id = t1.id JOIN t3 ON t3.id = t2.id \
                  JOIN t4 ON t4.id = t3.id JOIN t5 ON t5.id = t4.id JOIN t6 ON t6.id = t5.id";
     let dir = tempfile::tempdir().expect("temp dir");
@@ -280,7 +271,6 @@ fn ui_pg_graph_scrolls_to_the_selected_operator() {
     let steps = json!([
         { "name": "open a tab", "input": [{ "key": "f8" }, { "key": "ctrl-n" }, "idle"] },
         { "name": "plan", "input": [{ "text": chain }, { "key": "ctrl-l" }, "idle"] },
-        // The last operator is chosen while the tree shows, before the graph was ever drawn.
         { "name": "last operator", "input": [{ "key": "f6" }, { "key": "f6" }, { "key": "end" }] },
         { "name": "graph", "input": [{ "key": "f9" }, "idle", { "shot": "last" }] },
         { "name": "first operator", "input": [{ "key": "home" }, "idle", { "shot": "first" }] },

@@ -18,8 +18,6 @@ use serde::Serialize;
 use crate::history::{self, Entry};
 
 /// The rows shown at most; the search narrows a longer history.
-// shortcut: the chosen row is not scrolled into view, so Down past the rows that fit chooses
-// rows out of sight. Scroll it into view if people page through long lists by keyboard.
 const SHOWN: usize = 200;
 
 /// The open panel.
@@ -58,7 +56,6 @@ impl HistoryPanel {
         let reopen = Rc::new(reopen);
         let closed = Rc::new(closed);
         let first_open = Cell::new(true);
-        // Typing changes the matches, so it chooses the first one again.
         let last_typed = RefCell::new(String::new());
         let (shown_input, shown, shown_chosen) = (input.clone(), entries.clone(), chosen.clone());
         window.open_dialog(cx, move |dialog, window, cx| {
@@ -130,8 +127,6 @@ impl HistoryPanel {
                     None => "No runs match.",
                 }))
                 .on_ok(move |_, window, cx| {
-                    // Closed now, not by the dialog after its exit animation, so the focus
-                    // it hands back lands before the reopened tab takes it.
                     window.close_dialog(cx);
                     if let Some(entry) = picked.clone() {
                         reopen_picked(entry, window, cx);

@@ -1,4 +1,3 @@
-﻿// A separate test binary makes the final-handle assertion independent of other tests.
 use dbide_test_servers::postgres::Postgres;
 
 #[test]

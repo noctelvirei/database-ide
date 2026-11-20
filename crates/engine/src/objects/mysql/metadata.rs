@@ -51,7 +51,6 @@ impl IndexPart {
                 ));
             }
         };
-        // A SPATIAL key part reports SUB_PART 32, but MySQL rejects a prefix on one.
         if let Some(prefix) = self.prefix.filter(|_| self.method != "SPATIAL") {
             sql.push_str(&format!("({prefix})"));
         }
@@ -167,7 +166,6 @@ async fn fulltext_parser(
         })
         .ok_or_else(|| Error::Catalog("Missing FULLTEXT key in SHOW CREATE TABLE".into()))?;
     let mut depth = 0;
-    // MySqlDialect expands versioned comments into their executable tokens.
     for tokens in tokens[start + 3..].windows(3) {
         match &tokens[0] {
             Token::LParen => depth += 1,

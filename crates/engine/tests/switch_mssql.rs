@@ -20,7 +20,6 @@ async fn open() -> (Database, Box<dyn Session>) {
         .await
         .unwrap();
     rows(&mut session, "USE master").await;
-    // Fixed fixture names need a master-scoped lock across concurrent test processes.
     lock(&mut session, "dbide_switch_tests").await;
     session
         .switch_database(database.database(), None)
@@ -45,7 +44,6 @@ async fn create_database(session: &mut dyn Session, name: &str) {
     rows(session, "USE master").await;
     lock(session, "dbide_test_harness_ddl").await;
     let name = name.replace(']', "]]");
-    // Recover this test's fixed database if a previous process stopped before cleanup.
     rows(session, &format!("DROP DATABASE IF EXISTS [{name}]")).await;
     rows(session, &format!("CREATE DATABASE [{name}]")).await;
     rows(

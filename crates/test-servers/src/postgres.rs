@@ -42,13 +42,11 @@ pub enum Error {
 }
 
 struct Server {
-    // All programs come from the same configured installation.
     bin: PathBuf,
-    // Taken only when shutdown fails, preserving a possibly live server's files.
+    /// Taken only when shutdown fails, preserving a possibly live server's files.
     folder: Option<TempDir>,
-    // Fixed for this server's lifetime.
     port: u16,
-    // Shared by its databases; never included in Debug output.
+    /// Shared by its databases; never included in Debug output.
     password: String,
 }
 
@@ -65,9 +63,7 @@ impl fmt::Debug for Server {
 /// Operations block; async tests should call them from a blocking task.
 #[derive(Debug)]
 pub struct Postgres {
-    // Keeps the server alive until this database has been dropped.
     server: Arc<Server>,
-    // Created for this handle alone, so tests cannot share tables accidentally.
     database: String,
 }
 
@@ -94,7 +90,6 @@ impl Postgres {
         Self::create_database(Arc::new(Server::start(true)?))
     }
 
-    // Each handle owns a database regardless of the server's sign-in policy.
     fn create_database(server: Arc<Server>) -> Result<Self, Error> {
         let name = Builder::new()
             .prefix("dbide_test_")
@@ -175,7 +170,6 @@ impl Drop for Postgres {
 }
 
 impl Server {
-    // The folder remains owned until shutdown finishes or explicitly retains it.
     fn folder(&self) -> &Path {
         self.folder
             .as_ref()
@@ -183,7 +177,7 @@ impl Server {
             .path()
     }
 
-    // Keeps harness administration on SCRAM and optionally enables loopback SSPI for other roles.
+    /// Keeps harness administration on SCRAM and optionally enables loopback SSPI for other roles.
     fn start(sspi: bool) -> Result<Self, Error> {
         let bin = std::env::var_os("DBIDE_PG_BIN")
             .filter(|value| !value.is_empty())
@@ -242,8 +236,6 @@ impl Server {
             password,
         };
         drop(listener);
-        // The server inherits pg_ctl's standard handles and keeps them open, so capturing
-        // pg_ctl's output would wait for the server to exit. The log file carries diagnostics.
         let start = Command::new(binary(&server.bin, "pg_ctl"))
             .arg("start")
             .arg("-D")
@@ -278,7 +270,7 @@ impl Server {
         Ok(server)
     }
 
-    // Ignores psql startup files and inherited connection overrides.
+    /// Ignores psql startup files and inherited connection overrides.
     fn psql_command(&self, database: &str) -> Command {
         let mut command = Command::new(binary(&self.bin, "psql"));
         command
@@ -307,7 +299,6 @@ impl Server {
         command
     }
 
-    // All SQL commands fail on the first error and carry the same credentials.
     fn psql(&self, database: &str, args: &[&str]) -> Result<Output, Error> {
         run("psql", self.psql_command(database).args(args))
     }
@@ -337,12 +328,11 @@ impl Drop for Server {
     }
 }
 
-// The installation directory is read-only; platform suffixes are resolved here.
 fn binary(bin: &Path, name: &str) -> PathBuf {
     bin.join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
 }
 
-// Captures diagnostics without formatting command arguments or credentials.
+/// Captures diagnostics without formatting command arguments or credentials.
 fn run(program: &'static str, command: &mut Command) -> Result<Output, Error> {
     let output = command.output()?;
     if !output.status.success() {

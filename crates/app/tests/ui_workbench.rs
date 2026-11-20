@@ -41,7 +41,6 @@ fn ui_every_ssms_shortcut_reaches_its_action_from_the_editor() {
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scripts/workbench-keys.json");
     let lines = run_script(&script, None);
     assert_eq!(state(&lines, "type in editor")["editor_text"], "select 1");
-    // Ctrl+N opens an empty second tab; Ctrl+Tab goes back to the first.
     let cases = [
         ("F5", "Run", "select 1"),
         ("Ctrl+E", "Run", "select 1"),

@@ -328,7 +328,6 @@ impl Output {
             Writer::Insert(writer) => writer.finish()?,
         }
         if complete {
-            // Hard linking publishes without replacing a destination created during writing.
             std::fs::hard_link(&self.partial, &self.path)?;
             std::fs::remove_file(&self.partial)?;
             self.report.path = self.path;

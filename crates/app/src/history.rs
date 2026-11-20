@@ -15,8 +15,6 @@ const KEPT: Duration = Duration::from_secs(90 * 24 * 60 * 60);
 
 /// Held for every append and every read-and-prune, so a prune never drops a run this app
 /// appends meanwhile.
-// shortcut: guards one app only; two apps sharing the file can still lose a run to a prune.
-// Upgrade to a lock file if people run several at once.
 static FILE: Mutex<()> = Mutex::new(());
 
 /// One run, as the history panel lists it.
@@ -72,7 +70,6 @@ pub fn append(path: &Path, entry: &Entry) -> std::io::Result<()> {
     let mut line = serde_json::to_vec(entry).map_err(std::io::Error::other)?;
     line.push(b'\n');
     let _held = FILE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    // One write per line, so a concurrent reader sees whole lines or none of this one.
     std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -101,13 +98,11 @@ pub fn load(path: &Path, now_ms: u64) -> Vec<Entry> {
     if kept.len() < lines.count() {
         let mut rewritten = Vec::new();
         for entry in &kept {
-            // An entry that parsed serialises again.
             rewritten.extend(serde_json::to_vec(entry).expect("entry serialises"));
             rewritten.push(b'\n');
         }
         let _ = crate::replace_file::write(path, &rewritten);
     }
-    // Runs are appended as they finish, so a long run lands after a later short one.
     let mut newest_first = kept;
     newest_first.sort_by_key(|entry| std::cmp::Reverse(entry.started_ms));
     newest_first
@@ -161,8 +156,6 @@ impl Entry {
 }
 
 /// How long ago something happened, as the panel says it.
-// shortcut: ages, not clock times, because local time needs a time-zone crate (chrono or
-// jiff), a dependency the owner hasn't approved; show the time of day once one is.
 fn age(ms: u64) -> String {
     let minutes = ms / 60_000;
     match minutes {

@@ -45,11 +45,9 @@ fn add_and_connect(server: &Server) -> Vec<Value> {
         json!({ "text": server.port.to_string() }),
     ]);
     if server.engine_keys.is_empty() {
-        // SQL Server shows an Instance field after the port.
         keys.push(json!({ "key": "tab" }));
     }
     keys.extend([
-        // Sign-in: from "Ask for the password" up to "Saved password".
         json!({ "key": "tab" }),
         json!({ "key": "down" }),
         json!({ "key": "up" }),
@@ -61,8 +59,6 @@ fn add_and_connect(server: &Server) -> Vec<Value> {
         json!({ "text": server.password }),
         json!({ "key": "tab" }),
         json!({ "text": server.database }),
-        // The lab servers' certificates are self-signed: Encryption off, and trust the
-        // certificate SQL Server still uses to protect the sign-in.
         json!({ "key": "tab" }),
         json!({ "key": "tab" }),
         json!({ "key": "tab" }),
@@ -97,7 +93,6 @@ fn save_in_a_red_folder_and_connect(servers: &[Server], dir: &Path, appdata: &Pa
         json!({ "name": "explorer", "input": [{ "key": "f8" }] }),
         json!({
             "name": "save folder",
-            // Enter on the closed Colour choice saves the dialog.
             "input": [{ "key": "ctrl-shift-n" }, { "text": "Lab" }, { "key": "tab" },
                       { "key": "down" }, { "key": "down" }, { "key": "enter" }, { "key": "enter" }],
         }),
@@ -184,7 +179,6 @@ fn ui_mssql_connections_in_a_coloured_folder_survive_a_restart_and_report_a_wron
             password: mssql.password(),
             database: mssql.database(),
         },
-        // A SQL login the harness made for this test, never sa, with a wrong password.
         Server {
             name: "Wrong password",
             engine_keys: &[],
@@ -254,7 +248,6 @@ fn ui_pg_a_test_result_clears_when_a_detail_changes() {
         password: postgres.password(),
         database: postgres.database(),
     };
-    // The save step's keys stop on the Trust server certificate checkbox, then Enter saves.
     let mut keys = add_and_connect(&server)[0]["input"]
         .as_array()
         .unwrap()
@@ -325,7 +318,6 @@ fn ui_a_folder_that_cant_be_saved_keeps_its_dialog_open_and_adds_no_row() {
     std::fs::create_dir(&folder).unwrap();
     let file = folder.join("connections.toml");
     std::fs::write(&file, "").unwrap();
-    // A read-only file stops the save on Windows, and a read-only folder on other systems.
     set_readonly(&file, true);
     set_readonly(&folder, true);
     let steps = json!([{

@@ -82,7 +82,6 @@ pub async fn estimate_each(
 fn rows(payload: &str, format: PlanFormat) -> Option<f64> {
     let plan = crate::plan::parse(payload, format).ok()?;
     let mut root = &plan.statements.first()?.root;
-    // PostgreSQL's ModifyTable counts output rows (zero without RETURNING), not changes.
     if format == PlanFormat::ExplainJson && root.name == "ModifyTable" {
         root = root.children.iter().find(|child| {
             child.properties.iter().any(|property| {
@@ -91,7 +90,6 @@ fn rows(payload: &str, format: PlanFormat) -> Option<f64> {
         })?;
     }
     if format == PlanFormat::MySqlJson {
-        // DML wrappers may omit counters; only a single input has an unambiguous count.
         while !root.properties.iter().any(|property| {
             matches!(
                 property.name.as_str(),
@@ -175,7 +173,6 @@ fn candidates(batch: &str, engine: Engine) -> Vec<Candidate<'_>> {
             let sql = &batch.sql
                 [byte_offset(batch.sql, start.span.start)..byte_offset(batch.sql, end.span.start)];
             let checked = super::check(sql, engine);
-            // Keep placeholders so nested findings cannot borrow a later same-line plan.
             let isolated = checked.statements.len() == 1
                 && checked
                     .statements

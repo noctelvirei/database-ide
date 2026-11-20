@@ -33,7 +33,6 @@ pub(super) async fn save(
     script: &Script,
     reply: &oneshot::Sender<Result<SaveReport, Error>>,
 ) -> Result<SaveReport, Error> {
-    // Same transaction probe as plans: 25P01 means idle; any other error is preserved.
     let guard = format!("dbide_save_{:016x}", rand::random::<u64>());
     let user_transaction_open =
         match idle_query(client, notices, &format!("SAVEPOINT {guard}")).await {
@@ -61,7 +60,6 @@ pub(super) async fn save(
     } else {
         idle_query(client, notices, "COMMIT").await
     };
-    // RELEASE is required after ROLLBACK TO too; it leaves the user's earlier work intact.
     let cleanup = match cleanup {
         Ok(()) if user_transaction_open => {
             idle_query(client, notices, &format!("RELEASE SAVEPOINT {guard}")).await
@@ -69,7 +67,6 @@ pub(super) async fn save(
         cleanup => cleanup,
     };
     if let Err(error) = cleanup {
-        // A failed COMMIT can leave a transaction open (e.g. serialization failure).
         if !user_transaction_open && !must_rollback {
             let original = server(error, None);
             return match idle_query(client, notices, "ROLLBACK").await {

@@ -27,7 +27,6 @@ impl Server<'_> {
         details.user = Some(self.user.into());
         details.database = Some(self.database.into());
         details.colour = Some("#d13438".into());
-        // The lab servers' certificates are self-signed.
         details.tls = TlsMode::Off;
         details.trust_server_certificate = true;
         let mut saved = Connections::default();

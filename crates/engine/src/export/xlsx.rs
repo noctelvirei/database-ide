@@ -38,7 +38,6 @@ fn header(worksheet: &mut Worksheet, columns: &[Column]) -> Result<(), Error> {
 }
 
 fn supported_number(number: f64) -> bool {
-    // Excel has no subnormal numbers and limits entered values to this magnitude.
     number == 0.0 || (f64::MIN_POSITIVE..=9.999_999_999_999_99e307).contains(&number.abs())
 }
 

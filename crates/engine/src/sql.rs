@@ -9,7 +9,6 @@ pub(crate) fn qualified_identifier(text: &str) -> Result<Vec<String>, Error> {
     use sqlparser::parser::Parser;
     use sqlparser::tokenizer::Token;
 
-    // Source quoting is independent of the dialect chosen for an INSERT export.
     for dialect in [&GenericDialect {} as &dyn Dialect, &MsSqlDialect {}] {
         let Ok(mut parser) = Parser::new(dialect).try_with_sql(text) else {
             continue;
@@ -74,7 +73,6 @@ fn string(text: &str, engine: Engine) -> Result<String, Error> {
     Ok(match engine {
         Engine::SqlServer => format!("N'{quoted}'"),
         Engine::PostgreSql => format!("E'{}'", quoted.replace('\\', "\\\\")),
-        // Hex conversion avoids dependence on NO_BACKSLASH_ESCAPES and connection encoding.
         Engine::MySql => format!(
             "CONVERT(X'{}' USING utf8mb4)",
             crate::export::text::hex(text.as_bytes())
@@ -100,7 +98,6 @@ fn decimal(text: &str) -> bool {
 
 /// Encodes an optimistic predicate's original value in the base column's comparison type.
 pub(crate) fn original_literal(value: &Value, engine: Engine) -> Result<String, Error> {
-    // PostgreSQL coerces an unknown string literal to the column type, avoiding real-to-double promotion.
     if engine == Engine::PostgreSql && !matches!(value, Value::Null | Value::Bytes(_)) {
         string(&crate::export::cell_text(value), engine)
     } else {

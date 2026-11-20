@@ -3,7 +3,6 @@
 //! Environment variables used by the measurement script (`.claude/skills/verify/measure-app.ps1`):
 //! - `DBIDE_FIRST_FRAME`: a file the app writes the Unix time in milliseconds of its first
 //!   frame to.
-// Release builds open no console window; debug builds keep one for panics and logs.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod choice;
@@ -71,7 +70,6 @@ fn main() -> ExitCode {
         },
         _ => None,
     };
-    // UI scripts keep their passwords apart from the user's, under the tests' service name.
     let service = if script.is_some() {
         "database-ide-test"
     } else {
@@ -93,15 +91,11 @@ fn main() -> ExitCode {
         }
     };
 
-    // The component icons gpui-component draws (the find panel's buttons among them).
     gpui_platform::application()
         .with_assets(gpui_kit_assets::Assets)
         .run(move |cx: &mut App| {
             gpui_component::init(cx);
             keymap::bind(cx);
-            // A scripted run keeps its window hidden and out of the foreground, so the user's
-            // own clicks and keys can't land in it mid-script (DAT-51). A run taking
-            // screenshots shows it, because the capture needs a visible window.
             let scripted = script.is_some();
             let bounds = Bounds::centered(None, size(px(1400.), px(900.)), cx);
             let options = WindowOptions {
@@ -122,7 +116,6 @@ fn main() -> ExitCode {
                         explorer,
                         runtime,
                         move |window, cx| {
-                            // Next-frame callbacks run once this frame has been drawn and presented.
                             window.on_next_frame(|_, _| write_first_frame_time());
                             if let Some(script) = script {
                                 cx.spawn_in(window, async move |this, cx| {

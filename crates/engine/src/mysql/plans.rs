@@ -70,7 +70,6 @@ pub(super) async fn run(conn: &mut Conn, request: &Request, mode: PlanMode) -> R
             return Ok(());
         }
     };
-    // Allowlisting also rejects transaction control, CALL and implicit-commit administrative SQL.
     if mode == PlanMode::Actual
         && statements.iter().any(|statement| {
             !matches!(
@@ -112,7 +111,6 @@ pub(super) async fn run(conn: &mut Conn, request: &Request, mode: PlanMode) -> R
         .await;
         return Ok(());
     }
-    // Version 1 cannot represent iterator runtime counters; version 2 supports both modes.
     let previous: Option<u8> = match conn
         .query_first("SELECT @@session.explain_json_format_version")
         .await
@@ -128,7 +126,6 @@ pub(super) async fn run(conn: &mut Conn, request: &Request, mode: PlanMode) -> R
         }
     };
     let result = explain(conn, request, mode, &statements).await;
-    // Restore session settings even on cancellation or an EXPLAIN error.
     let restore = match previous {
         Some(version) => {
             conn.query_drop(format!("SET SESSION explain_json_format_version={version}"))
@@ -162,7 +159,6 @@ async fn explain(
             break;
         }
         let actual = mode == PlanMode::Actual;
-        // Version 2 omits estimates for single-table data changes without iterator plans.
         let single_table_change = match &statement.statement {
             Statement::Update(update) => update.table.joins.is_empty() && update.from.is_none(),
             Statement::Delete(delete) if delete.tables.is_empty() && delete.using.is_none() => {
@@ -193,14 +189,12 @@ async fn explain(
             return if error.is_fatal() { Err(()) } else { Ok(()) };
         }
         let analyze = if actual { "ANALYZE " } else { "" };
-        // Server-side preparation enforces one statement even when sql_mode changes quoting.
         let payload = conn
             .exec_first::<String, _, _>(
                 format!("EXPLAIN {analyze}FORMAT=JSON {}", statement.sql),
                 (),
             )
             .await;
-        // The worker keeps this future alive after KILL QUERY or a dropped event consumer.
         if actual && let Err(error) = conn.query_drop("ROLLBACK").await {
             send(
                 request,

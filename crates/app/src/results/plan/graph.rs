@@ -46,8 +46,6 @@ impl Layout {
             parents.push(open.last().copied());
             open.push(ix);
         }
-        // Leaves take the graph rows in order; a parent sits level with its first input,
-        // which follows it directly in tree order.
         let mut lines = vec![0; rows.len()];
         let mut next = 0;
         for ix in 0..rows.len() {
@@ -129,7 +127,6 @@ impl PlanView {
             if !pending.replace(false) {
                 return;
             }
-            // The offset is how far the graph is scrolled, as a negative distance.
             let fit = |start: f32, length: f32, view: Pixels, offset: Pixels| -> Pixels {
                 let (shown, view) = (-f32::from(offset), f32::from(view));
                 if start < shown {
@@ -195,7 +192,6 @@ impl PlanView {
             arrows.push(segment(elbow, cy, to - elbow, width, true).bg(colour));
             arrows.push(segment(elbow, cy.min(py), (cy - py).abs(), width, false).bg(colour));
             arrows.push(segment(from + 6., py, elbow - from - 6., width, true).bg(colour));
-            // The head, pointing into the parent.
             arrows.push(
                 div()
                     .absolute()
@@ -275,8 +271,6 @@ impl PlanView {
                 }))
         });
         let (width, height) = layout.size();
-        // The boxes come first, so a box's child index is its row (`selected_in_view`); the
-        // last child spans the whole graph, so the scroll area covers every box.
         div()
             .id(("plan-graph", ix))
             .relative()

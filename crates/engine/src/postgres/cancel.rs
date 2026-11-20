@@ -62,8 +62,6 @@ impl Cancellation {
             .cancel_query_raw(socket, tls)
             .await
             .map_err(|_| ())?;
-        // The fork shuts down its write half without reading EOF. Retain the read half
-        // across that call so cancellation cannot arrive during the next statement.
         let mut bytes = [0; 256];
         loop {
             let mut buffer = ReadBuf::new(&mut bytes);
@@ -75,8 +73,6 @@ impl Cancellation {
             match read {
                 Ok(()) if buffer.filled().is_empty() => return Ok(()),
                 Ok(()) => {}
-                // PostgreSQL on Windows closes the cancel socket with a reset rather than
-                // a FIN; after the request was written, a reset means the server closed it.
                 Err(error)
                     if matches!(
                         error.kind(),

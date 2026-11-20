@@ -50,7 +50,6 @@ async fn results(
         let has_rows = !columns.is_empty();
         let affected = stream.affected_rows();
         let warnings = stream.get_warnings();
-        // USE's OK packet is already known; the next stream poll may wait on another query.
         if !has_rows
             && let Some(database) = statements
                 .get(*index)
@@ -111,8 +110,6 @@ async fn results(
             send(request, Event::RowCount(affected)).await;
         }
         let next_columns = result.columns();
-        // The driver prefetches the next header. Its OK packet replaces a SELECT's
-        // terminal warnings; a following row-set header leaves those warnings intact.
         let warnings = if has_rows {
             if next_columns
                 .as_ref()
@@ -126,8 +123,6 @@ async fn results(
             warnings
         };
         if warnings != 0 && (next_columns.is_some() || *index + 1 < statements.len()) {
-            // shortcut: the server overwrites intermediate diagnostics in an unsplit batch;
-            // retrieve their text if MySQL adds per-statement diagnostic history to its protocol.
             send(request, Event::Message {
                 text: format!("{warnings} MySQL warning(s); diagnostic text is unavailable for an intermediate statement in a multi-statement batch"),
                 severity: Severity::Warning, line: None,

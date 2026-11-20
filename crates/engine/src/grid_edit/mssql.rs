@@ -112,7 +112,6 @@ pub(super) async fn inspect(
         return Ok(Editability::ReadOnly("unknown base table".into()));
     };
     let selected = literal(&Value::Text(name.to_string()), Engine::SqlServer)?;
-    // Browse key flags can include hidden columns and do not identify complete indexes.
     let sql = format!(
         "SELECT i.index_id, c.name, c.is_nullable FROM {db}.sys.tables t
         JOIN {db}.sys.indexes i ON i.object_id = t.object_id
@@ -159,7 +158,6 @@ pub(super) async fn inspect(
 
 fn comparison_type(ty: &str) -> Option<String> {
     let base = ty.split('(').next()?;
-    // Only built-in SQL type syntax may enter a generated CONVERT expression.
     let supported = matches!(
         base,
         "bigint"

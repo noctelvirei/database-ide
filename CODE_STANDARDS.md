@@ -13,7 +13,7 @@ The product decisions are in [docs/spec.md](docs/spec.md) and the vocabulary in 
   - our fork of `tokio-postgres` at https://github.com/noctelvirei/rust-postgres, through `[patch.crates-io]` ([ADR 0001](docs/adr/0001-own-tokio-postgres-fork.md))
   - `mysql_async`
 - TLS for PostgreSQL and MySQL: `native-tls` (SChannel on Windows).
-- Other crates to use before writing anything by hand: `sqlparser` (danger check), `quick-xml` (showplan), `serde` / `serde_json` (EXPLAIN JSON, plan trees), `toml` (connections file), `keyring` (passwords), `csv`, `rust_xlsxwriter` (constant-memory mode), `thiserror` (error types), `tracing` (logging), `tempfile` (spill files and test servers), `clap` (CLI), `futures`, `tokio-util`, `bytes`, `postgres-native-tls`, `rand` (test database names), `memmap2` (reading the spill file). UI, approved 2026-11-17: `gpui-component` 0.10.0 from our public fork https://github.com/noctelvirei/gpui-kit (upstream longbridge/gpui-kit) through `[patch.crates-io]`, pinned to a commit that adds the find panel's Replace keys, with `gpui-pre` and `gpui-pre-platform` `=0.3.12` as it pins them; `ureq` with `native-tls` for the update check; `cargo-wix` and the WiX toolset to build the MSI (build tools, not shipped). Adding any other dependency needs the owner's yes. Overnight, a ticket that needs one is parked with the question on it, and work moves to the next independent ticket.
+- Other crates to use before writing anything by hand: `sqlparser` (danger check), `quick-xml` (showplan), `serde` / `serde_json` (EXPLAIN JSON, plan trees), `toml` (connections file), `keyring` (passwords), `csv`, `rust_xlsxwriter` (constant-memory mode), `thiserror` (error types), `tracing` (logging), `tempfile` (spill files and test servers), `clap` (CLI), `futures`, `tokio-util`, `bytes`, `postgres-native-tls`, `rand` (test database names), `memmap2` (reading the spill file). UI, approved 2026-11-17: `gpui-component` 0.10.0 from our public fork https://github.com/noctelvirei/gpui-kit (upstream longbridge/gpui-kit) through `[patch.crates-io]`, pinned to a commit that adds the find panel's Replace keys, and `gpui-kit-assets` (the component icons for the find panel, tree and tabs) from the same commit, with `gpui-pre` and `gpui-pre-platform` `=0.3.12` as it pins them; `ureq` with `native-tls` for the update check; `cargo-wix` and the WiX toolset to build the MSI (build tools, not shipped). Adding any other dependency needs the owner's yes. Overnight, a ticket that needs one is parked with the question on it, and work moves to the next independent ticket.
 - Pinned versions upgrade only on purpose, in a change of their own.
 
 ## Structure
@@ -33,6 +33,15 @@ The product decisions are in [docs/spec.md](docs/spec.md) and the vocabulary in 
 - `unsafe` is denied workspace-wide. FFI modules (Windows SSPI in the forks) allow it locally with a `// SAFETY:` comment on each block.
 - Every public item gets an interface comment saying what callers can't see from the signature: units, bounds, ordering, side effects, errors.
 - Root `Cargo.toml` lints: `[workspace.lints.rust] unsafe_code = "deny"`; `[workspace.lints.clippy] all = { level = "warn", priority = -1 }`, `pub_use = "deny"`, `mod_module_files = "deny"`, `undocumented_unsafe_blocks = "deny"`. Each member sets `edition.workspace = true` and `[lints] workspace = true`.
+
+## Comments
+
+This repository's rule replaces any shared guideline that asks for comments inside function bodies or for `shortcut:` comments.
+
+- Doc comments (`///`, `//!`) are the only comments in Rust code, plus a `// SAFETY:` comment on each `unsafe` block.
+- A non-obvious choice, invariant or trade-off goes in an ADR in `docs/adr/`, naming the code it governs.
+- A workaround, shortcut or missing piece goes in the tracker as a ticket with acceptance criteria.
+- `node scripts/check-rust-layout.mjs` enforces this with `scripts/comment-allowance.json`, the count of plain comments each file still has from before the rule. A file not listed allows none. The check fails when a file has more plain comments than allowed, and also when it has fewer, so each removal lowers the allowance and nothing grows back.
 
 ## Public repository
 

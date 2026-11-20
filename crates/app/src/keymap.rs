@@ -221,12 +221,8 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("ctrl-shift-r", RefreshAutocomplete, None),
         KeyBinding::new("ctrl-u", PickDatabase, None),
         KeyBinding::new("ctrl-o", OpenFile, None),
-        // gpui ranks a binding with no context as matching at the focused element, above a
-        // context the focus sits inside, so the tab's Ctrl+S is scoped to the workbench to let a
-        // grid's and a plan's Ctrl+S win.
         KeyBinding::new("ctrl-s", SaveFile, Some("Workbench")),
         KeyBinding::new("ctrl-shift-h", ShowHistory, Some("Workbench")),
-        // Scoped to the workbench, like Ctrl+S, so a dialog's own keys stay its own.
         KeyBinding::new("alt-f", OpenFileMenu, Some("Workbench")),
         KeyBinding::new("f10", OpenFileMenu, Some("Workbench")),
         KeyBinding::new("alt-e", OpenEditMenu, Some("Workbench")),
@@ -273,7 +269,6 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("up", PreviousError, Some("Messages")),
         KeyBinding::new("down", NextError, Some("Messages")),
         KeyBinding::new("enter", GoToError, Some("Messages")),
-        // Bound after gpui-component's own Enter on a select, so this one wins.
         KeyBinding::new("enter", ConfirmFromChoice, Some("Dialog > Select")),
     ]);
 }

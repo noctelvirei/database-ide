@@ -208,7 +208,6 @@ impl Explorer {
         )
         .detach();
         let focus = cx.focus_handle();
-        // A click on the pane's empty space focuses the pane itself.
         cx.on_focus(&focus, window, |this, window, cx| this.focus(window, cx))
             .detach();
         let filter = Self::new_filter(window, cx);
@@ -687,7 +686,6 @@ impl Explorer {
                             return false;
                         }
                         if let Err(error) = this.commit(|saved| saved.rename(&id, name)) {
-                            // The dialog stays open with the name, so the user can retry.
                             this.message(format!("Couldn't rename: {error}."), cx);
                             return false;
                         }
@@ -717,7 +715,6 @@ impl Explorer {
         }
         let question: SharedString = match kind {
             Kind::Folder => format!("Delete folder {name} and every folder and connection in it?"),
-            // `describe` covers saved rows only, so anything else is a connection.
             _ => format!("Delete connection {name} and its saved password?"),
         }
         .into();
@@ -766,7 +763,6 @@ impl Explorer {
                 );
             }
         }
-        // Close the sessions of every deleted connection.
         let kept: HashSet<String> = self
             .saved
             .connections()
@@ -836,8 +832,6 @@ fn closer(
     let explorer = explorer.clone();
     move |_, window, cx| {
         explorer.update(cx, |this, cx| {
-            // A dialog that handed work elsewhere (a query tab) cleared itself, and focus
-            // stays where that work put it.
             if this.dialog.take().is_some() {
                 this.focus(window, cx);
             }
@@ -862,7 +856,6 @@ struct RowLook {
 impl Render for Explorer {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
-        // The rows draw from a snapshot, because the tree's row closure outlives this call.
         let rows: Rc<HashMap<String, RowLook>> = Rc::new(
             self.saved
                 .folders()
@@ -913,7 +906,6 @@ impl Render for Explorer {
             .on_action(cx.listener(|this, _: &PasteItem, _, cx| this.paste(false, cx)))
             .on_action(cx.listener(|this, _: &PasteItemAtTop, _, cx| this.paste(true, cx)))
             .on_action(cx.listener(|this, _: &ConnectItem, w, cx| {
-                // Enter in the filter box or the item menu also bubbles here; it belongs to them.
                 let filtering = this.filter.focus_handle(cx).contains_focused(w, cx);
                 if !filtering && this.menu.is_none() {
                     this.activate(w, cx)
@@ -944,7 +936,6 @@ impl Render for Explorer {
             .child(
                 tree(&self.tree, move |ix, entry, selected, _, _| {
                     let id = entry.item().id.to_string();
-                    // A row always has its look: both come from the same saved tree.
                     let RowLook {
                         kind,
                         colour,

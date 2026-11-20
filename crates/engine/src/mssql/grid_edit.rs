@@ -52,7 +52,6 @@ pub(super) async fn save(
     let begin = if user_transaction_open {
         format!("SAVE TRANSACTION {guard}")
     } else {
-        // IMPLICIT_TRANSACTIONS ON starts two levels for an explicit BEGIN from idle.
         "BEGIN TRANSACTION; IF @@TRANCOUNT = 2 COMMIT TRANSACTION;".into()
     };
     command(client, &begin).await?;
@@ -78,7 +77,6 @@ pub(super) async fn save(
         "COMMIT TRANSACTION".into()
     };
     if let Err(recovery) = command(client, &finish).await {
-        // A doomed user transaction cannot roll back to a savepoint; discard the session.
         return Err(Error::Recovery {
             original: Box::new(
                 result
@@ -160,7 +158,6 @@ async fn scalar(
         tokio::select! {
             result = &mut read => result,
             _ = reply.closed() => {
-                // Keep polling the driver so ATTENTION settles before rollback and reuse.
                 cancel.cancel();
                 let _ = read.await;
                 Err(Error::Cancelled)

@@ -67,7 +67,6 @@ JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 JOIN pg_catalog.pg_am am ON am.oid = c.relam
 "#;
 
-// Sequence options are shared by standalone, serial and identity scripts.
 pub(super) const SEQUENCE_OPTIONS: &str = r#"
 ' AS ' || pg_catalog.format_type(s.seqtypid, NULL)
 || ' INCREMENT BY ' || s.seqincrement || ' MINVALUE ' || s.seqmin

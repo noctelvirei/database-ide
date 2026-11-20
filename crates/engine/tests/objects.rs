@@ -283,7 +283,6 @@ async fn pg_cross_database_search_finds_second_database_and_reports_refusal() {
     let mut other = open(&second).await;
     run(&mut other, "CREATE TABLE public.remote_pears (id integer)").await;
     let mut connection = details(&first);
-    // A real connection refusal, even though the harness user normally has superuser access.
     run(
         &mut session,
         &format!(
