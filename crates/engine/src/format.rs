@@ -51,7 +51,6 @@ fn format_script(text: &str) -> Result<String, Error> {
     let mut formatted = Vec::new();
     let mut cursor = 0;
     for batch in crate::mssql::batches::split(script).map_err(separator_error)? {
-        // `split` returns slices of `script`.
         let start = batch.sql.as_ptr() as usize - script.as_ptr() as usize;
         push_separator_lines(&mut output, &script[cursor..start]);
         let sql = format_batch(batch.sql, &dialect)?;
@@ -136,7 +135,7 @@ fn has_unicode_escaped_identifier(tokens: &[Lexeme<'_>]) -> bool {
 struct Lexeme<'a> {
     token: Token,
     raw: &'a str,
-    // Original whitespace between this token and the previous significant token.
+    /// Original whitespace between this token and the previous significant token.
     gap: &'a str,
     keyword: Option<&'static str>,
 }
@@ -196,7 +195,7 @@ impl Lexeme<'_> {
     }
 }
 
-// Deliberately excludes contextual words and type/function names, even if sqlparser calls them keywords.
+/// Deliberately excludes contextual words and type/function names, even if sqlparser calls them keywords.
 const KEYWORDS: &[&str] = &[
     "SELECT",
     "FROM",
@@ -247,7 +246,6 @@ fn lex<'a>(text: &'a str, dialect: &dyn Dialect) -> Result<Vec<Lexeme<'a>>, Erro
     let tokens = Tokenizer::new(dialect, text)
         .with_unescape(false)
         .tokenize_with_location()?;
-    // These constructs have synthetic or reordered spans; retain the entire input verbatim.
     if (dialect.is::<MySqlDialect>() && text.contains("/*!"))
         || tokens
             .iter()
@@ -292,7 +290,6 @@ fn lex<'a>(text: &'a str, dialect: &dyn Dialect) -> Result<Vec<Lexeme<'a>>, Erro
         let end = offset(token.span.end)?;
         let raw = text.get(start..end).ok_or(Error::ChangedTokens)?;
         let keyword = match &token.token {
-            // A reserved word after a dot can be an unquoted MySQL identifier.
             Token::Word(word) if word.quote_style.is_none() && !after_period => KEYWORDS
                 .iter()
                 .copied()
@@ -358,7 +355,6 @@ fn joined(tokens: &[Lexeme<'_>], index: usize) -> bool {
             && matches!(token.token, Token::Word(_) | Token::Number(..)))
         || sigil(previous)
         || sigil(token)
-        // The sign in `$-2.5` belongs to the money literal.
         || (index >= 2
             && sigil(&tokens[index - 2])
             && previous.gap.is_empty()
@@ -416,11 +412,9 @@ fn separator(tokens: &[Lexeme<'_>], index: usize) -> &'static str {
     if joined(tokens, index) {
         return "";
     }
-    // Spaces around a dot can distinguish numeric and operator tokens in a fragment.
     if matches!(previous.token, Token::Period) || matches!(token.token, Token::Period) {
         return if token.gap.is_empty() { "" } else { " " };
     }
-    // `1--2` is arithmetic; a space after the `--` would start a MySQL comment.
     if token.gap.is_empty() && matches!(previous.token, Token::Minus) && joined(tokens, index - 1) {
         return "";
     }
@@ -449,12 +443,12 @@ fn inline(tokens: &[Lexeme<'_>]) -> String {
 
 struct Parenthesis {
     subquery: bool,
-    // Enclosing query's clause indentation, in four-space levels.
+    /// Enclosing query's clause indentation, in four-space levels.
     base: usize,
-    // Enclosing item's indentation, in four-space levels.
+    /// Enclosing item's indentation, in four-space levels.
     indent: usize,
     clause: Option<&'static str>,
-    // Parenthesis nesting at which commas and clauses belong to the enclosing query.
+    /// Parenthesis nesting at which commas and clauses belong to the enclosing query.
     item_depth: usize,
 }
 

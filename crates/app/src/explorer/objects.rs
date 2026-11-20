@@ -622,7 +622,6 @@ impl Explorer {
                 cx.spawn(async move |this, cx| {
                     let (session, outcome) = reply.await;
                     let _ = this.update(cx, |this, cx| {
-                        // A reply from before a disconnect belongs to a connection that is gone.
                         if this.replied(&connection, database.as_deref(), attempt, session, cx) {
                             this.apply(&connection, database.as_deref(), call, outcome, cx);
                         }
@@ -940,7 +939,6 @@ impl Explorer {
             return;
         }
         let labels = items.iter().map(|(label, _)| (*label).into()).collect();
-        // The chosen action goes to the explorer, which handles it for the selected row.
         let context = self.focus.clone();
         let menu = PopupMenu::build(window, cx, move |mut menu, _, _| {
             for (label, action) in items {

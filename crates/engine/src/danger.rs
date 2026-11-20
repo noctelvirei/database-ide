@@ -127,7 +127,6 @@ fn check_batch(batch: &str, engine: Engine) -> DangerCheck {
             line: 1,
             tokens: &tokens,
         };
-        // Several AST statement spans omit their leading keyword. Read starts from the parser.
         let mut positions = Parser::new(dialect).with_tokens_with_locations(tokens.clone());
         for statement in statements {
             while positions.consume_token(&Token::SemiColon) {}
@@ -224,7 +223,6 @@ impl Visitor for Findings<'_> {
 
 impl Findings<'_> {
     fn keyword_line(&self, statement: &Statement, keyword: &str) -> u64 {
-        // These spans are empty upstream; their object names still carry source locations.
         let anchor = match statement {
             Statement::Drop { names, .. } => names.first().map(Spanned::span),
             Statement::DropFunction(drop) => {

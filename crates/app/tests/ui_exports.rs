@@ -45,7 +45,6 @@ fn exports(server: &Server, db: Database) {
     let xlsx = dir.path().join("fruit.xlsx");
     let sql = dir.path().join("fruit.sql");
     let streamed = dir.path().join("streamed.csv");
-    // An existing file is replaced, as the save dialog's overwrite question promises.
     std::fs::write(&csv, "old").unwrap();
 
     let steps = json!([
@@ -151,7 +150,6 @@ fn a_million_rows_to_file(server: &Server) {
     std::fs::write(&script, steps.to_string()).unwrap();
     let lines = run_script(&script, Some(&appdata));
 
-    // Progress shows while the run lasts; a fast run may already be done when sampled.
     let writing = state(&lines, "while writing");
     let tab = &writing["tabs"][writing["active_tab"].as_u64().unwrap() as usize];
     eprintln!("rows written when sampled: {}", tab["rows_written"]);
@@ -375,7 +373,6 @@ fn ui_pg_saves_of_one_grid_to_one_file_survive_each_other_and_a_new_run() {
     server.save_as_lab(&appdata);
     let workbook = dir.path().join("rows.xlsx");
 
-    // Two saves to one file overlap, and F5 clears the grids while they still read the rows.
     let steps = json!([
         { "name": "open a tab", "input": [{ "key": "f8" }, { "key": "ctrl-n" }, "idle"] },
         {

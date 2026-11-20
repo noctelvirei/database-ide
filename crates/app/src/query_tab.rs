@@ -276,8 +276,6 @@ impl QueryTab {
         };
         self.formatting = true;
         cx.spawn_in(window, async move |this, cx| {
-            // The formatter trims a fragment's outer whitespace; a selection keeps its own, so
-            // a line break after a `--` comment, say, still ends the comment.
             let formatted = cx
                 .background_spawn(async move {
                     let core = part.trim();
@@ -303,7 +301,6 @@ impl QueryTab {
                         if selected.is_empty() {
                             editor.replace_all(text, window, cx);
                         } else {
-                            // Only the formatted range changes, not other cursors' selections.
                             editor.set_selected_range(selected, cx);
                             editor.replace(text, window, cx);
                         }
@@ -683,8 +680,6 @@ impl QueryTab {
         let run = self.runs;
         self.results.update(cx, |results, cx| results.clear(cx));
         let mut updates = self.runtime.run(session, batch, job);
-        // Row counts grow on the runtime without an update, in the grids or, for a run to file,
-        // the rows written; redraw them while the run lasts.
         let results = self.results.downgrade();
         cx.spawn(async move |this, cx| {
             loop {
@@ -714,7 +709,6 @@ impl QueryTab {
                     return;
                 }
             }
-            // The channel closed without handing the session back: the engine stopped.
             let _ = this.update(cx, |this, cx| {
                 if this.status == Status::Running {
                     this.status = Status::Failed;
@@ -735,7 +729,6 @@ impl QueryTab {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // The engine counts lines from one within the batch; the editor from zero.
         let editor_line =
             |line: Option<std::num::NonZeroU64>| line.map(|l| first_line + l.get() as u32 - 1);
         match &update {
@@ -770,7 +763,6 @@ impl QueryTab {
                 line: None,
             },
             RunUpdate::Plan(Ok(plan)) => {
-                // `.sqlplan` files hold SQL Server's showplan only.
                 let savable = self.engine() == Some(Engine::SqlServer);
                 self.results
                     .update(cx, |results, cx| results.add_plan(plan, savable, cx));
@@ -786,9 +778,6 @@ impl QueryTab {
                 self.give_back(session);
                 self.finish_entry(cx);
                 self.results.update(cx, |pane, cx| pane.keep(results, cx));
-                // PostgreSQL's and MySQL's actual plans run each statement in a transaction
-                // the engine rolls back (docs/spec.md, "Plans"); SQL Server's keep their
-                // changes, as in SSMS.
                 let rolled_back = match self.engine() {
                     Some(Engine::PostgreSql) => Some("PostgreSQL"),
                     Some(Engine::MySql) => Some("MySQL"),
@@ -846,7 +835,6 @@ impl QueryTab {
                 Event::Done { elapsed } => {
                     Message::plain(format!("Finished in {:.2} s.", elapsed.as_secs_f64()))
                 }
-                // The runtime turns these into result sets and plans.
                 Event::ResultSetStarted { .. } | Event::Rows(_) | Event::Plan { .. } => return,
             },
         };

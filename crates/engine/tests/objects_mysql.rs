@@ -225,8 +225,6 @@ async fn mysql_binary_string_types_run_with_the_source_collation() {
         .unwrap();
     assert!(!sql.contains("BINARY"), "{sql}");
     run(&mut destination, &sql).await;
-    // MySQL 8.4 ignores BINARY on a routine string type without a charset: the source
-    // runs with the database collation, and the scripted copy must match it.
     assert_eq!(
         run(&mut session, "CALL pear_binary('x')").await,
         vec![vec![

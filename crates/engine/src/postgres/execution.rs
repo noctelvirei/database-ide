@@ -43,7 +43,6 @@ fn line(position: Option<&tokio_postgres::error::ErrorPosition>, sql: &str) -> O
     }
 }
 
-// Query responses take priority over the notice barrier, retaining wire order.
 /// Drains through ReadyForQuery even after server errors; Err requires discarding the socket.
 pub(super) async fn run(
     client: &Client,
@@ -118,7 +117,6 @@ pub(super) async fn run(
                         if !rows.is_empty() { send(request, Event::Rows(std::mem::take(&mut rows))).await; }
                         success = false;
                         send(request, error(&failure, sql)).await;
-                        // COPY and transport failures have no recoverable simple-query stream.
                         if failure.as_db_error().is_none() { return Err(()); }
                     }
                     None => break,
@@ -136,7 +134,6 @@ pub(super) async fn run(
                 let _ = notice.acknowledged.send(());
             }
             _ = tokio::time::sleep_until(retry_at), if cancelled => {
-                // A cancel can reach an idle backend before the queued query is dispatched.
                 cancellation.send().await?;
                 retry_at = tokio::time::Instant::now() + Duration::from_millis(100);
             }

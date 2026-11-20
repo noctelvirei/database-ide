@@ -43,7 +43,6 @@ fn assert_join(plan: &Value) {
     let ops = operators(plan);
     assert!(
         ops.iter().any(|op| {
-            // MySQL writes "Nested loop inner join"; the others capitalise "Loop".
             let name = op["name"].as_str().unwrap().to_lowercase();
             name.contains("nested loop") || name.contains("hash") || name.contains("merge join")
         }),
@@ -197,7 +196,6 @@ fn ui_mssql_plans_show_estimated_and_actual_and_round_trip_a_sqlplan() {
             password: db.password(),
             database: db.database(),
         },
-        // SQL Server's actual plan comes with the query's rows, whose grid is first.
         &[json!({ "key": "ctrl-down" })],
         Some(&file),
     );
@@ -263,7 +261,6 @@ fn ui_pg_graph_scrolls_to_the_selected_operator() {
         db.query(&format!("CREATE TABLE t{n} (id INT PRIMARY KEY)"))
             .unwrap();
     }
-    // Six tables joined in a chain: a plan wider and taller than the results pane.
     let chain = "SELECT * FROM t1 JOIN t2 ON t2.id = t1.id JOIN t3 ON t3.id = t2.id \
                  JOIN t4 ON t4.id = t3.id JOIN t5 ON t5.id = t4.id JOIN t6 ON t6.id = t5.id";
     let dir = tempfile::tempdir().expect("temp dir");
@@ -274,7 +271,6 @@ fn ui_pg_graph_scrolls_to_the_selected_operator() {
     let steps = json!([
         { "name": "open a tab", "input": [{ "key": "f8" }, { "key": "ctrl-n" }, "idle"] },
         { "name": "plan", "input": [{ "text": chain }, { "key": "ctrl-l" }, "idle"] },
-        // The last operator is chosen while the tree shows, before the graph was ever drawn.
         { "name": "last operator", "input": [{ "key": "f6" }, { "key": "f6" }, { "key": "end" }] },
         { "name": "graph", "input": [{ "key": "f9" }, "idle", { "shot": "last" }] },
         { "name": "first operator", "input": [{ "key": "home" }, "idle", { "shot": "first" }] },

@@ -103,8 +103,6 @@ fn script_a_table_into(server: &Server, scratch: &str) -> Vec<Value> {
         "{found:#}"
     );
 
-    // The table lists its primary key's index, and lists it again after a refresh of its
-    // database, which reloads every open row.
     let has_index = |state: &Value| {
         state["explorer"]["rows"]
             .as_array()
@@ -165,7 +163,6 @@ fn ui_mssql_a_table_scripted_as_create_runs_in_another_database() {
     let source = Mssql::start().expect("SQL Server test database");
     let scratch = Mssql::start().expect("SQL Server scratch database");
     source.query(TABLE).unwrap();
-    // The source's login, which the app signs in with, needs a user in the scratch database.
     let login = source.user();
     scratch
         .query(&format!(

@@ -268,7 +268,6 @@ pub async fn script(
         });
     }
     let key = key(session, object)?;
-    // Re-resolve the node before scripting; never trust caller-supplied names as SQL.
     let found = catalog(
         session,
         &format!(
@@ -345,7 +344,6 @@ pub async fn script(
     let sql = if form == Script::Select || (form == Script::Alter && object.kind == Kind::Table) {
         sql
     } else {
-        // Resolve $user now; a destination login can have a different same-named schema.
         format!(
             r#"SELECT (payload::jsonb || pg_catalog.jsonb_build_object('search_path',
             (SELECT string_agg(CASE WHEN left(name, 8) = 'pg_temp_' THEN 'pg_temp'
@@ -385,7 +383,7 @@ struct ScriptRow {
     inherited: bool,
 }
 
-// ruleutils.c emits ordinary literals under either setting, never E literals.
+/// ruleutils.c emits ordinary literals under either setting, never E literals.
 fn portable_literals(sql: &str, strings: &str) -> Result<String, Error> {
     let tokens = Tokenizer::new(&PostgreSqlDialect {}, sql)
         .with_unescape(false)
@@ -554,14 +552,13 @@ async fn query<T: DeserializeOwned>(session: &mut dyn Session, sql: &str) -> Res
             _ => {}
         }
     }
-    // Drain even on failure so the same session remains usable by its caller.
     match failure {
         Some(error) => Err(error),
         None => Ok(result),
     }
 }
 
-// Session exposes simple-query SQL only. E literals do not depend on standard_conforming_strings.
+/// Session exposes simple-query SQL only. E literals do not depend on standard_conforming_strings.
 fn literal(value: &str) -> Result<String, Error> {
     if value.contains('\0') {
         return Err(Error::Nul);

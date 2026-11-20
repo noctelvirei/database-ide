@@ -235,8 +235,6 @@ impl Explorer {
             let outcome = connecting.await;
             let _ = this.update(cx, |this, cx| {
                 if this.connecting.get(&id) != Some(&attempt) {
-                    // The connection was edited or deleted while connecting: its details
-                    // are out of date, so a session from them is closed, not kept.
                     if let Ok(session) = outcome {
                         this.runtime.close(session);
                     }

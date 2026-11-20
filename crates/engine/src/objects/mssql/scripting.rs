@@ -162,7 +162,6 @@ async fn table(session: &mut dyn Session, object: &Object, key: i32) -> Result<S
     let mut foreign_keys = String::new();
     for row in constraints {
         let constraint = row.constraint;
-        // Self-references can target a standalone unique index, created below.
         let output = if constraint.kind == crate::objects::ConstraintKind::ForeignKey {
             &mut foreign_keys
         } else {
@@ -264,7 +263,7 @@ impl Module {
     }
 }
 
-// Rebuild only the module header: ALTER sources and sp_rename leave stale names in sql_modules.
+/// Rebuild only the module header: ALTER sources and sp_rename leave stale names in sql_modules.
 fn module_header(
     sql: &str,
     name: &str,
@@ -324,7 +323,6 @@ fn module_header(
         if !word(kind, "TRIGGER") || !word(end + 1, "ON") {
             return Err(Error::Catalog("Missing trigger target".into()));
         }
-        // sp_rename leaves the old parent in sql_modules; replace only its identifier span.
         let target_end = name_end(end + 2)?;
         let target_start = offset(sql, tokens[end + 2].span.start)?;
         let target_end = offset(sql, tokens[target_end].span.end)?;

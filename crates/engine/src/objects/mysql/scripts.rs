@@ -24,7 +24,6 @@ pub(super) async fn script(
         return Ok(format!("SELECT {columns} FROM {qualified} LIMIT 1000;\n"));
     }
     if form == Script::Alter && object.kind == Kind::Table {
-        // Every line must remain a comment even when an identifier contains a newline.
         let qualified = qualified.replace('\n', "\n-- ").replace('\r', "\r-- ");
         return Ok(format!(
             "-- ALTER TABLE {qualified}\n--     ADD COLUMN column_name data_type;\n"
@@ -61,7 +60,6 @@ pub(super) async fn script(
     let row = result.first().ok_or(Error::NotFound)?;
     let routine = matches!(object.kind, Kind::Procedure | Kind::Function);
     let mut definition = text(row, if routine { 2 } else { 1 })?.to_owned();
-    // Canonical table/view text uses backslash escapes even when SHOW ran with them disabled.
     let mode = if routine {
         text(row, 1)?.to_owned()
     } else {
@@ -164,8 +162,6 @@ fn routine_charsets(
         starts.push(end + 1);
     }
     for i in end..tokens.len() {
-        // DECLARE opens a statement only at the start of a BEGIN block or after a
-        // semicolon; elsewhere (`t.declare`) it is an identifier.
         let statement_start =
             tokens[i - 1].token == Token::SemiColon || word_is(&tokens[i - 1], &["BEGIN"]);
         if statement_start && word_is(&tokens[i], &["DECLARE"]) {
@@ -176,7 +172,6 @@ fn routine_charsets(
             {
                 name += 2;
             }
-            // CURSOR, CONDITION and HANDLER declarations do not have a string type here.
             starts.push(name + 1);
         }
     }
@@ -192,10 +187,6 @@ fn routine_charsets(
             copied = offset;
             if string_type.collate {
                 sql.push_str(&collation_clause);
-                // MySQL ignores BINARY on a string type without a charset, but honours it
-                // once a charset is written, so the attribute is dropped to keep the
-                // source's collation.
-                // Text between the type and BINARY (spaces, comments) is kept.
                 if let Some(binary) = string_type.binary {
                     let binary_start = byte_offset(definition, tokens[binary].span.start);
                     sql.push_str(definition[offset..binary_start].trim_end());
@@ -380,7 +371,6 @@ async fn view_literals(
             && word.quote_style.is_none()
             && word.value.starts_with('_')
         {
-            // SHOW tags the entire definition with its creation client charset, even mixed literals.
             let result = rows(
                 session,
                 &format!(
@@ -434,7 +424,6 @@ fn text(row: &[Value], index: usize) -> Result<&str, Error> {
 async fn index_script(session: &mut dyn Session, object: &Object) -> Result<String, Error> {
     let (_, rest) = object.id.key.split_once(':').ok_or(Error::Identity)?;
     let (table_hex, _) = rest.split_once(':').ok_or(Error::Identity)?;
-    // Resolve the parent via the catalog rather than decoding caller-supplied names into SQL.
     let parents = super::catalog(
         session,
         &format!(

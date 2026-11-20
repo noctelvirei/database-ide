@@ -103,7 +103,6 @@ impl Metadata {
             tokio::time::timeout(Duration::from_secs(2), lookup).await,
             Ok(Ok(()))
         ) {
-            // Discard timed-out queries rather than queueing more work behind them.
             self.connection = None;
         }
         result

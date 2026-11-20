@@ -351,7 +351,6 @@ async fn mysql_dropping_blocked_save_restores_session_usability() {
     )
     .await;
 
-    // timeout drops the polled Save future while the other session still holds its lock.
     assert!(
         tokio::time::timeout(Duration::from_secs(1), session.save(script))
             .await
@@ -359,7 +358,6 @@ async fn mysql_dropping_blocked_save_restores_session_usability() {
     );
     let reused =
         tokio::time::timeout(Duration::from_secs(5), query(&mut session, "SELECT 1")).await;
-    // Release the lock even when reuse timed out, so a regression cannot hang teardown.
     query(&mut other, "ROLLBACK").await;
     assert_eq!(
         reused
@@ -887,14 +885,12 @@ async fn mysql_text_key_save_does_not_wait_for_an_unrelated_row_lock() {
         }])
         .unwrap();
     let mut other = open(&database).await;
-    // Lock the first index entry: a scan for 'z' would block before reaching its row.
     query(
         &mut other,
         "START TRANSACTION; SELECT code FROM text_key WHERE code = 'a' FOR UPDATE",
     )
     .await;
     let saved = tokio::time::timeout(Duration::from_secs(3), session.save(script)).await;
-    // Release before asserting so a regression cannot leave a blocked worker in teardown.
     query(&mut other, "ROLLBACK").await;
     let report = saved
         .expect("Save scanned an unrelated locked row")

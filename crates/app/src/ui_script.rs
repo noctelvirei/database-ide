@@ -100,7 +100,6 @@ impl UiScript {
         std::fs::write(&state_file, "")
             .map_err(|e| format!("can't write {}: {e}", state_file.display()))?;
         for suffix in ["done", "shot", "shot.partial", "mark", "mark.partial"] {
-            // Leftovers from an earlier run would end a waiting runner early.
             let _ = std::fs::remove_file(with_suffix(&state_file, suffix));
         }
         Ok(Self {
@@ -121,8 +120,6 @@ impl UiScript {
                 match input {
                     Input::Key(chord) => {
                         for part in chord.split_whitespace() {
-                            // `parse` wants a `'static` key; the OS only resolves `secondary-`,
-                            // which scripts don't use.
                             let parsed = Keystroke::parse_with_os(part, OperatingSystem::Windows);
                             let Ok(keystroke) = parsed else {
                                 let line = serde_json::json!({

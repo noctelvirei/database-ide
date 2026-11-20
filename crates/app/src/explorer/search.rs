@@ -235,7 +235,6 @@ impl Explorer {
     /// The "Search" row under `connection`, open, with its hits, while it has a search.
     pub(super) fn search_branch(&self, connection: &str, server: &Server) -> Option<Branch> {
         let found = server.search.as_ref()?;
-        // Its ID ends like a placeholder's, so it never parses as a database or object row.
         let id = row_id(&[connection, "s", "n"]);
         let children = match &found.hits {
             Hits::Searching => vec![Branch::loading(&id)],

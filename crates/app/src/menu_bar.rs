@@ -261,8 +261,6 @@ impl MenuBar {
         let context = target(menu, &situation);
         let popup = PopupMenu::build(window, cx, move |mut popup, window, _| {
             for item in built {
-                // PopupMenu shows only a binding's first keystroke, so an item bound to a chord
-                // (Format, Ctrl+K Ctrl+F) draws its row itself, with every keystroke.
                 let chord = window
                     .highest_precedence_binding_for_action_in(&*item.action, &context)
                     .map(|binding| {
@@ -295,7 +293,6 @@ impl MenuBar {
             popup.min_w(px(220.)).action_context(context)
         });
         cx.subscribe_in(&popup, window, |this, popup, _: &DismissEvent, _, cx| {
-            // A menu replaced by Left or Right has gone already; only close the current one.
             if this.open.as_ref().is_some_and(|open| &open.popup == popup) {
                 this.open = None;
                 cx.notify();
@@ -445,7 +442,6 @@ impl MenuBar {
                 .child(format!("Version {}", env!("CARGO_PKG_VERSION")))
                 .child("Licensed under MIT OR Apache-2.0.")
                 .child(env!("CARGO_PKG_REPOSITORY"))
-                // The embedded plan icons' licence asks for its notice in every copy.
                 .child(
                     div()
                         .pt_2()
@@ -557,8 +553,6 @@ impl Render for MenuBar {
             .text_sm()
             .border_b_1()
             .border_color(theme.border)
-            // An open menu's Left and Right reach here when it has no submenu to move into;
-            // gpui-component keeps those actions private, so the keys are read instead.
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, w, cx| {
                 let keystroke = &event.keystroke;
                 if this.open.is_none() || keystroke.modifiers.modified() {

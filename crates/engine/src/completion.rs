@@ -276,7 +276,6 @@ fn lex(text: &str, dialect: &dyn Dialect) -> Vec<Lexeme> {
                 Whitespace::SingleLineComment { .. } | Whitespace::MultiLineComment(_)
             )
         );
-        // Raw spelling covers sqlparser's many dialect-specific string-literal variants.
         let literal = !matches!(token.token, Token::Word(_))
             && (raw.contains('\'') || raw.starts_with('"') || raw.starts_with('$'));
         if comment || !matches!(token.token, Token::Whitespace(_)) {
@@ -309,7 +308,6 @@ fn lex(text: &str, dialect: &dyn Dialect) -> Vec<Lexeme> {
             open: true,
         });
     }
-    // COPY payloads may precede their semicolon in the tokenizer's output.
     tokens.sort_by_key(|t| t.range.start);
     tokens
 }
@@ -342,7 +340,6 @@ fn object(tokens: &[&Lexeme], mut index: usize, engine: Engine) -> Option<Object
         index += 1;
     }
     let alias = tokens.get(index).and_then(|token| {
-        // Clause words remain syntax even on an engine where they are not reserved.
         if token.identifier(engine) && !matches!(&token.token, Token::Word(word)
             if word.quote_style.is_none() && (sqlparser::keywords::RESERVED_FOR_TABLE_ALIAS.contains(&word.keyword)
                 || matches!(word.keyword, Keyword::AS | Keyword::VALUES | Keyword::INTO))) {

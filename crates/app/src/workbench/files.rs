@@ -70,8 +70,6 @@ impl Workbench {
     ) {
         match event {
             QueryTabEvent::SignIn(id) => {
-                // The explorer's sign-in is modal, so a tab still waiting from before had its
-                // sign-in cancelled; it must not run when this one signs in.
                 for earlier in std::mem::take(&mut self.waking) {
                     if let Some(earlier) = earlier.upgrade().filter(|e| e != tab) {
                         earlier.update(cx, |earlier, _| earlier.stop_waiting());

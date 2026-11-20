@@ -183,7 +183,6 @@ pub async fn connect(
             password,
         );
         for address in addresses {
-            // connect_raw discards the host; hostaddr pins cancellation without changing the SPN.
             let mut attempt = config.clone();
             attempt.hostaddr(address.ip());
             match attempt
@@ -222,7 +221,6 @@ pub async fn connect(
         while let Some(message) = future::poll_fn(|cx| connection.poll_message(cx)).await {
             match message {
                 Ok(AsyncMessage::Notice(error)) => {
-                    // Stop reading at each notice until preceding query messages are consumed.
                     let (acknowledged, ack) = oneshot::channel();
                     if notices_tx
                         .send(Notice {
@@ -281,8 +279,6 @@ fn connect_error(
 ) -> ConnectError {
     let windows = details.sign_in == SignInMethod::Windows;
     let kind = match error.code().map(|code| code.code()) {
-        // 28P01 is a failed password. 28000 also covers pg_hba.conf refusing the client
-        // whatever its password, so for password sign-in it keeps the server's own text.
         Some("28P01" | "28000") if windows => ConnectErrorKind::WindowsSignInFailed,
         Some("28P01") => ConnectErrorKind::BadCredentials,
         Some("3D000" | "42501") => ConnectErrorKind::DatabaseUnavailable,
@@ -293,15 +289,12 @@ fn connect_error(
             {
                 return ConnectError::io(io, details, password);
             }
-            // These driver categories have no public structured accessor.
             if error.to_string() == "timeout waiting for server" {
                 ConnectErrorKind::Timeout
             } else if error.source().is_some_and(|source| {
                 source.is::<native_tls::Error>() && crate::session::certificate_failure(source)
             }) {
                 ConnectErrorKind::Tls
-            // tokio-postgres exposes neither its Config kind nor a typed missing-password
-            // cause: SCRAM, MD5 and cleartext all supply only this source text.
             } else if error
                 .source()
                 .is_some_and(|source| source.to_string() == "password missing")
@@ -311,7 +304,6 @@ fn connect_error(
                 } else {
                     ConnectErrorKind::BadCredentials
                 }
-            // tokio-postgres keeps its authentication category private, exposing only Display.
             } else if windows && error.to_string() == "authentication error" {
                 ConnectErrorKind::WindowsSignInFailed
             } else {
@@ -350,7 +342,6 @@ impl Postgres {
             let events = stream::unfold(receiver, |mut receiver| async move {
                 receiver.recv().await.map(|event| (event, receiver))
             });
-            // Checked after the channel closes: the worker sets it before dropping the sender.
             let stopped =
                 stream::once(async move { (!handled.load(Ordering::Acquire)).then(closed) })
                     .filter_map(future::ready);
@@ -394,7 +385,6 @@ impl Session for Postgres {
             crate::sql::identifier(database, Engine::PostgreSql)
                 .map_err(|error| failure(error.to_string()))?;
             let mut details = self.details.clone();
-            // dbname is a protocol value, not SQL: pass the original name without quoting.
             details.database = Some(database.into());
             let replacement = connect(&details, password)
                 .await
@@ -459,7 +449,6 @@ async fn worker(
             }
         }
     }
-    // Requests still queued are dropped unhandled here, so their runs end with `closed()`.
 }
 
 /// The error a run reports when the session's connection is gone.
@@ -471,7 +460,7 @@ fn closed() -> Event {
     }
 }
 
-// Internal housekeeping never blocks the connection's notice acknowledgement barrier.
+/// Internal housekeeping never blocks the connection's notice acknowledgement barrier.
 async fn idle_query(
     client: &Client,
     notices: &mut mpsc::Receiver<Notice>,

@@ -21,7 +21,6 @@ pub enum Error {
 
 impl From<keyring::Error> for Error {
     fn from(error: keyring::Error) -> Self {
-        // Discard raw errors: BadEncoding contains password bytes, including in its source chain.
         Self::Keyring(error.to_string())
     }
 }

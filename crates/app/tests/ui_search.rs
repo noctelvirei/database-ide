@@ -57,7 +57,6 @@ fn search_and_script(server: &Server, far: &str) -> Value {
                 "idle",
             ],
         },
-        // The "Search" row matches the name too, so Enter selects it and Down the hit.
         { "name": "choose the hit", "input": [{ "key": "enter" }, { "key": "down" }] },
         { "name": "item menu", "input": [{ "key": "menu" }] },
         {
@@ -113,10 +112,8 @@ fn says_skipped(state: &Value, database: &str) -> bool {
 fn ui_mssql_search_finds_a_table_in_an_unopened_database() {
     let source = Mssql::start().expect("SQL Server test database");
     let far = Mssql::start().expect("SQL Server far database");
-    // Its login has no user here, so the search cannot open it.
     let refused = Mssql::start().expect("SQL Server refused database");
     far.query(TABLE).unwrap();
-    // The source's login, which the app signs in with, needs a user in the far database.
     let login = source.user();
     far.query(&format!(
         "CREATE USER [{login}] FOR LOGIN [{login}]; ALTER ROLE db_owner ADD MEMBER [{login}];"
@@ -162,8 +159,6 @@ fn ui_pg_search_finds_a_table_in_an_unopened_database() {
     assert!(says_skipped(&searched, refused.database()), "{searched:#}");
 }
 
-// The MySQL test user may open every test database, so no database refuses the search here;
-// the engine's own tests cover a refused database.
 #[test]
 fn ui_mysql_search_finds_a_table_in_an_unopened_database() {
     let source = MySql::start().expect("MySQL test server");

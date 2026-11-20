@@ -305,7 +305,6 @@ fn insert_float_literals_use_scientific_notation() {
     );
 }
 
-// Windows' built-in ZIP reader checks the actual workbook cells without another crate.
 #[cfg(windows)]
 fn workbook_part(path: &std::path::Path, part: &str) -> String {
     let output = std::process::Command::new("powershell")

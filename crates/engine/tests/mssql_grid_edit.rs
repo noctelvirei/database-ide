@@ -323,7 +323,6 @@ async fn mssql_dropping_blocked_save_restores_session_usability() {
     )
     .await;
 
-    // timeout drops the polled Save future while the other session still holds its lock.
     assert!(
         tokio::time::timeout(Duration::from_secs(1), session.save(script))
             .await
@@ -331,7 +330,6 @@ async fn mssql_dropping_blocked_save_restores_session_usability() {
     );
     let reused =
         tokio::time::timeout(Duration::from_secs(5), query(&mut session, "SELECT 1")).await;
-    // Release the lock even when reuse timed out, so a regression cannot hang teardown.
     query(&mut other, "ROLLBACK TRANSACTION").await;
     assert_eq!(
         reused

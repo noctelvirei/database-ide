@@ -285,7 +285,6 @@ impl Workbench {
                 .explorer
                 .update(cx, |explorer, cx| explorer.open_query(window, cx))
         {
-            // The explorer signs in, then asks for the tab with `ExplorerEvent::OpenQuery`.
             return;
         }
         self.open_beside_active(window, cx);
@@ -374,7 +373,6 @@ impl Workbench {
         self.opening = true;
         cx.spawn_in(window, async move |this, cx| {
             let path = asked.await;
-            // The tab says what came of it before the workbench reads as idle again.
             let finish = |this: &mut Self| this.opening = false;
             let Some(path) = path else {
                 let _ = this.update(cx, |this, _| finish(this));
@@ -488,8 +486,6 @@ impl Workbench {
         let Some(before) = bar.panel_return(window, cx).cloned().or(window.focused(cx)) else {
             return situation;
         };
-        // In the results, the focused grid itself, so its own keys still work once the menu
-        // hands focus back; its actions reach the results by bubbling.
         if self
             .focus_handle_of(Pane::Results, cx)
             .contains(&before, window)
@@ -819,7 +815,6 @@ impl Render for Workbench {
                     .clone()
                     .update(cx, |tab, cx| tab.pick_database(w, cx));
             }))
-            // Insert is bound in the explorer only; File, New connection reaches it from anywhere.
             .on_action(cx.listener(|this, _: &NewConnection, w, cx| {
                 this.explorer
                     .update(cx, |explorer, cx| explorer.new_connection(w, cx));

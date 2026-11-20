@@ -148,7 +148,6 @@ fn drive_a_query_tab(lab: &Lab) -> Vec<Value> {
 
     let errored = state(&lines, "run with an error");
     let (error_ix, _) = newest_starting(errored, "Line 3: ");
-    // The bad statement stops the parser, so the run says the check was by keywords only.
     newest_starting(errored, "The danger check couldn't parse this batch");
     assert_eq!(active_tab(errored)["status"], "ready");
 
@@ -163,7 +162,6 @@ fn drive_a_query_tab(lab: &Lab) -> Vec<Value> {
     assert_eq!(jumped["focused_pane"], "Editor");
     assert_eq!(active_tab(jumped)["cursor_line"], 3);
 
-    // The selection starts on line 3, so its error is reported on line 3, not line 1.
     let selected = state(&lines, "run the selection");
     let (selected_ix, _) = newest_starting(selected, "Line ");
     let (line_3_ix, _) = newest_starting(selected, "Line 3: ");

@@ -51,7 +51,6 @@ fn close_defers_cleanup_only_until_the_active_file_reference_is_released() {
     let folder = tempfile::tempdir().unwrap();
     let mut store = Store::new(Vec::new(), Some(folder.path())).unwrap();
     let reader = store.reader();
-    // Retain exactly the resource rows() uses after releasing the index lock.
     let active_file = Arc::clone(store.shared.lock().unwrap().file.as_ref().unwrap());
     store.close().unwrap();
     assert!(matches!(reader.rows(0..1), Err(Error::Closed)));

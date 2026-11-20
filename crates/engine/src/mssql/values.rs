@@ -112,7 +112,6 @@ pub(super) fn value(value: ColumnValues, data_type: T) -> Value {
         ColumnValues::Uuid(uuid) => Value::Uuid(*uuid.as_bytes()),
         ColumnValues::Date(date) => date_value(date.get_days().into()),
         ColumnValues::Time(time) => {
-            // mssql-tds normalizes every wire scale to 100 ns ticks, despite the field name.
             let text = clock(time.time_nanoseconds * 100, time.scale);
             temporal::Time::parse(&text)
                 .map(Value::Time)
@@ -125,7 +124,6 @@ pub(super) fn value(value: ColumnValues, data_type: T) -> Value {
             None,
         ),
         ColumnValues::DateTimeOffset(date) => {
-            // TDS sends datetimeoffset in UTC; convert to the local clock before appending its offset.
             let nanos = i128::from(date.datetime2.time.time_nanoseconds) * 100
                 + i128::from(date.offset) * 60_000_000_000;
             let days = i64::from(date.datetime2.days) + nanos.div_euclid(86_400_000_000_000) as i64;
@@ -143,7 +141,6 @@ pub(super) fn value(value: ColumnValues, data_type: T) -> Value {
             None,
         ),
         ColumnValues::DateTime(date) => {
-            // Round the 1/300-second clock to SQL Server's displayed millisecond precision.
             let millis = (u64::from(date.time) * 1000 + 150) / 300;
             timestamp(i64::from(date.days) + 693595, millis * 1_000_000, 3, None)
         }
@@ -186,7 +183,7 @@ fn clock(nanos: u64, scale: u8) -> String {
     text
 }
 
-// The driver exposes day counts but no calendar conversion. Gregorian 400-year eras avoid loops.
+/// The driver exposes day counts but no calendar conversion. Gregorian 400-year eras avoid loops.
 fn date_text(days: i64) -> String {
     let z = days + 306;
     let era = z.div_euclid(146097);
@@ -249,7 +246,6 @@ mod tests {
     fn driver_time_ticks_preserve_every_scale() {
         use mssql_tds::datatypes::column_values::SqlTime;
 
-        // The driver normalizes each wire width/scale to 100 ns ticks.
         for (ticks, scale, expected) in [
             (452960000000, 0, "12:34:56"),
             (452961000000, 1, "12:34:56.1"),

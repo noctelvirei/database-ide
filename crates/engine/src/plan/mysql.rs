@@ -41,7 +41,6 @@ fn single_table(payload: &str, block: &Value) -> Result<Plan, Error> {
         .ok_or_else(|| Error::Invalid("no single-table estimate".into()))?;
     let rows = number(table, "rows_examined_per_scan")?
         .ok_or_else(|| Error::Invalid("table has no row estimate".into()))?;
-    // Version 1 encodes the percentage as a decimal string, unlike version 2 counters.
     let filtered = match table.get("filtered") {
         Some(value) => value
             .as_str()

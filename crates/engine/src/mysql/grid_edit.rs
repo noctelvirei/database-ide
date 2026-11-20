@@ -36,7 +36,6 @@ pub(super) async fn save(
     reply: &mut oneshot::Sender<Result<SaveReport, Error>>,
     timeout: u32,
 ) -> Result<SaveReport, Error> {
-    // Refresh the OK packet: server errors clear the driver's cached status flags.
     command(conn, "DO 0").await?;
     let status = conn
         .last_ok_packet()
@@ -174,7 +173,6 @@ async fn affected(
         _ = reply.closed() => Error::Cancelled,
         _ = deadline => Error::Server { text: "MySQL query timed out".into(), code: None, change: None },
     };
-    // KILL can race the send: keep polling and retry until the original read is drained.
     let cleanup = async {
         loop {
             super::kill(options, id).await?;

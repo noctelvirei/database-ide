@@ -73,7 +73,7 @@ enum Work {
 
 struct DatabaseChanges {
     statements: Vec<diagnostics::Statement>,
-    // Immutable slots let current_database return &str while the worker records USE.
+    /// Immutable slots let current_database return &str while the worker records USE.
     names: Vec<OnceLock<String>>,
     handled: AtomicBool,
 }
@@ -220,7 +220,6 @@ impl Session for MySql {
 
 impl MySql {
     fn request<'a>(&'a mut self, batch: &str, mode: Option<PlanMode>) -> Run<'a> {
-        // Retire completed or unsent batches; a worker still recovering keeps its Arc.
         let completed = self
             .database_changes
             .iter()
@@ -323,7 +322,6 @@ async fn worker(mut conn: Conn, options: Opts, mut requests: mpsc::Receiver<Work
             result = &mut operation => Some(result),
             _ = request.cancel.cancelled() => None,
             _ = deadline => {
-                // Report on stream exhaustion so a full channel cannot delay KILL QUERY.
                 request.timed_out.store(true, Ordering::Release);
                 None
             }
@@ -332,7 +330,6 @@ async fn worker(mut conn: Conn, options: Opts, mut requests: mpsc::Receiver<Work
             result
         } else {
             request.stopped.cancel();
-            // Keep polling the original future: dropping an in-flight protocol read is unsafe.
             let cleanup = async {
                 loop {
                     kill(&options, id).await?;

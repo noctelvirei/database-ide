@@ -28,8 +28,6 @@ pub(super) async fn inspect(
     base_table: &str,
     columns: &[Column],
 ) -> Result<Editability, Error> {
-    // Provenance already uses PostgreSQL-quoted qualified names. Resolve it as regclass,
-    // then retrieve separate identifier components so embedded dots stay in their names.
     let table = literal(&Value::Text(base_table.into()), Engine::PostgreSql)?;
     let sql = QUERY.replace("$TABLE", &table);
     let mut run = session.run(&sql);
@@ -109,8 +107,8 @@ pub(super) async fn inspect(
     }))
 }
 
-// A constraint's definition is display text, not a structured list of key columns. Use
-// pg_index instead; INCLUDE columns, expressions and partial/deferred indexes are not keys.
+/// A constraint's definition is display text, not a structured list of key columns. Use
+/// pg_index instead; INCLUDE columns, expressions and partial/deferred indexes are not keys.
 const QUERY: &str = r#"
 WITH RECURSIVE relation AS (
     SELECT c.oid, c.relname, n.nspname FROM pg_catalog.pg_class c

@@ -8,11 +8,11 @@ use mssql_tds::connection::tds_client::{ResultSet, StatementResult, TdsClient};
 use mssql_tds::connection_provider::tds_connection_provider::TdsConnectionProvider;
 use mssql_tds::core::EncryptionSetting;
 
-// The stress case creates 40 databases; allow five minutes for its full lifecycle under load.
+/// The stress case creates 40 databases; allow five minutes for its full lifecycle under load.
 const TEST_TIMEOUT: Duration = Duration::from_secs(300);
-// A ready child may first need the harness's full DDL budget to create its database.
+/// A ready child may first need the harness's full DDL budget to create its database.
 const CHILD_READY_TIMEOUT: Duration = Duration::from_secs(120);
-// Check file handshakes promptly without spinning while another process performs DDL.
+/// Check file handshakes promptly without spinning while another process performs DDL.
 const CHILD_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 fn assert_removed(database: &Mssql, name: &str) {
@@ -40,9 +40,7 @@ impl Deadline {
                     TEST_TIMEOUT.as_secs(),
                     runtime.block_on(dbide_test_servers::mssql::wait::diagnostics())
                 );
-                // Bypass libtest capture because exit cannot flush its per-test buffer.
                 let _ = writeln!(std::io::stderr(), "{message}");
-                // A panic would leave blocked test threads and child waits running.
                 std::process::exit(1);
             }
         });
@@ -198,7 +196,6 @@ fn mssql_new_run_sweeps_crashed_run_without_waiting_for_global_lock() {
             let mut release = String::new();
             std::io::stdin().read_line(&mut release).unwrap();
             assert_eq!(release, "go\n");
-            // Skip Drop, as when a test process dies with its sessions still open.
             std::process::exit(0);
         }
         let name = std::fs::read_to_string(file).unwrap();
@@ -229,8 +226,6 @@ fn mssql_new_run_sweeps_crashed_run_without_waiting_for_global_lock() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    // Acquire the external lock before the owner exits, so another concurrent sweep
-    // cannot delete the fixture between its creation and the regression check.
     while !file.exists() {
         assert!(
             crashed.try_wait().unwrap().is_none(),
@@ -253,7 +248,6 @@ fn mssql_new_run_sweeps_crashed_run_without_waiting_for_global_lock() {
         String::from_utf8_lossy(&crashed.stdout),
         String::from_utf8_lossy(&crashed.stderr)
     );
-    // A session left by the old harness must not serialize new test databases.
     survivor.query("USE master; DECLARE @rc int; EXEC @rc = sys.sp_getapplock @Resource = N'dbide_test_harness', @LockMode = 'Exclusive', @LockOwner = 'Session', @LockTimeout = 0; IF @rc < 0 THROW 51000, 'Could not set up old harness lock', 1;").unwrap();
     let blocked = Command::new(std::env::current_exe().unwrap())
         .args([

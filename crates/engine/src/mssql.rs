@@ -136,7 +136,6 @@ fn connect_error(
     use mssql_tds::error::Error as DriverError;
     let kind = match error {
         DriverError::SqlServerError { diagnostics } => {
-            // A missing default database can arrive alongside a login failure.
             if diagnostics.errors.iter().any(|error| {
                 matches!(error.number, 4060 | 4064 | 916)
                     || (error.number == 18456 && matches!(error.state, 38 | 46))
@@ -161,7 +160,6 @@ fn connect_error(
         }
         DriverError::Io(error) => return ConnectError::io(error, details, password),
         DriverError::ConnectionError(text) => {
-            // Parallel connects erase io::Error, retaining its standard numeric OS diagnostic.
             if let Some(code) = text
                 .rsplit_once("(os error ")
                 .and_then(|(_, suffix)| suffix.split_once(')'))
@@ -173,9 +171,6 @@ fn connect_error(
                     return mapped;
                 }
             }
-            // mssql-tds converts SSRP NoAnswer/TimedOut to strings; no typed source survives.
-            // Its Browser lookup has its own short limit, not the saved connect timeout, so
-            // this is an unreachable instance rather than a timeout.
             if text.contains("SQL Server Browser did not respond within ")
                 || text.contains("for the SQL Server Browser lookup did not complete within ")
             {

@@ -70,7 +70,6 @@ pub fn append(path: &Path, entry: &Entry) -> std::io::Result<()> {
     let mut line = serde_json::to_vec(entry).map_err(std::io::Error::other)?;
     line.push(b'\n');
     let _held = FILE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    // One write per line, so a concurrent reader sees whole lines or none of this one.
     std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -104,7 +103,6 @@ pub fn load(path: &Path, now_ms: u64) -> Vec<Entry> {
         }
         let _ = crate::replace_file::write(path, &rewritten);
     }
-    // Runs are appended as they finish, so a long run lands after a later short one.
     let mut newest_first = kept;
     newest_first.sort_by_key(|entry| std::cmp::Reverse(entry.started_ms));
     newest_first

@@ -81,7 +81,6 @@ impl ConnectError {
             }
             InvalidDetails | Other => diagnostic.into(),
         };
-        // Redact the final message too: a supplied name/address may contain the password.
         if let Some(password) = password.filter(|value| !value.is_empty()) {
             message = message.replace(password, "[redacted]");
         }
@@ -131,8 +130,8 @@ fn connect_address(details: &crate::connections::Connection) -> String {
     format!("{}:{}", details.host, details.port.unwrap_or(default))
 }
 
-// native-tls hides Schannel's status; mssql-tds also erases it on its direct TLS path.
-// Match only certificate diagnostics when no structured certificate error is exposed.
+/// native-tls hides Schannel's status; mssql-tds also erases it on its direct TLS path.
+/// Match only certificate diagnostics when no structured certificate error is exposed.
 pub(crate) fn certificate_failure(error: &(dyn std::error::Error + 'static)) -> bool {
     if let Some(io) = error.downcast_ref::<std::io::Error>()
         && io.raw_os_error().is_some_and(|code| {
@@ -166,7 +165,6 @@ pub(crate) fn certificate_failure(error: &(dyn std::error::Error + 'static)) -> 
         "80090328",
         "800b0109",
         "800b010f",
-        // native-tls exposes these statuses only in the formatted io::Error.
         "(os error -2146762495)",
         "(os error -2146762487)",
         "(os error -2146762486)",
@@ -437,7 +435,6 @@ impl CancelHandle {
     /// Requests server cancellation and wakes a pending stream. Does not wait for server
     /// acknowledgement. Further events are a cancellation Error followed by Done.
     pub fn cancel(&self) {
-        // Serialize delivery with completion so a paused caller cannot cancel after Done.
         let completed = self
             .completed
             .lock()

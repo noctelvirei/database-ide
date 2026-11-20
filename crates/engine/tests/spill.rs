@@ -255,9 +255,6 @@ fn metadata_and_drop_progress_alongside_a_range_read() {
     store.complete().unwrap();
     let reader = store.reader();
     let start = std::sync::Barrier::new(2);
-    // The public API has no notification during decoding. A barrier starts both operations
-    // together with a large payload, without sleeps or an assertion on scheduler timing.
-    // The private lock test separately proves metadata never acquires the index lock.
     std::thread::scope(|scope| {
         let reading = scope.spawn(|| {
             start.wait();
@@ -298,7 +295,6 @@ fn failed_append_reports_write_failure_and_preserves_published_rows() {
         .write(true)
         .open(path)
         .unwrap();
-    // Windows byte-range locks reject I/O through other handles, including spill writes.
     file.lock().unwrap();
     assert!(matches!(
         store.append(vec![vec![Value::Integer(99)]]),

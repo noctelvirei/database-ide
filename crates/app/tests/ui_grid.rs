@@ -78,7 +78,6 @@ fn drive_a_million_rows(server: &Server) {
         run_script(&script, Some(&appdata))
     };
 
-    // How far the run had got when memory was sampled; a fast run may already be done.
     let arriving = &state(&lines, "while rows arrive")["results"];
     eprintln!(
         "rows when sampled: {}, complete: {}",

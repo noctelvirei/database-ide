@@ -381,7 +381,6 @@ fn operator(node: &Node, statement_cost: f64) -> Result<Operator, Error> {
             elapsed_ms = Some(elapsed_ms.unwrap_or(0.0).max(elapsed));
         }
     }
-    // SQL Server defers Compute Scalar evaluation to its input, so it omits runtime counters.
     if name == "Compute Scalar" && actual_rows.is_none() {
         actual_rows = children.first().and_then(|child| child.actual_rows);
         elapsed_ms = children.first().and_then(|child| child.elapsed_ms);

@@ -90,7 +90,6 @@ impl MySql {
             .file_name()
             .expect("tempdir has a name")
             .to_string_lossy()
-            // MySQL on Windows stores database names in lower case (lower_case_table_names=1).
             .to_lowercase();
         server.sql(None, &format!("CREATE DATABASE `{database}`"))?;
         Ok(Self { server, database })
@@ -196,7 +195,6 @@ impl Server {
         let listener = TcpListener::bind((HOST, 0))?;
         let port = listener.local_addr()?.port();
         drop(listener);
-        // Captured pipes remain open for the daemon's lifetime; use its log instead.
         let child = Command::new(binary(&bin, "mysqld"))
             .arg("--no-defaults")
             .arg(format!("--datadir={}", data.display()))
@@ -238,7 +236,6 @@ impl Server {
             }
             std::thread::sleep(Duration::from_millis(100));
         }
-        // SQL is sent through stdin so the password never appears in process arguments.
         let setup = format!(
             "CREATE USER '{USER}'@'%' IDENTIFIED BY '{}'; GRANT ALL PRIVILEGES ON `dbide_test_%`.* TO '{USER}'@'%';",
             server.password.replace('\\', "\\\\").replace('\'', "''")
@@ -271,7 +268,6 @@ impl Server {
                 "--host=127.0.0.1",
                 "--connect-timeout=5",
                 "--ssl-mode=DISABLED",
-                // caching_sha2_password over a plain connection needs the server's RSA key.
                 "--get-server-public-key",
             ])
             .arg(format!("--port={}", self.port))

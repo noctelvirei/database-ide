@@ -59,7 +59,6 @@ pub(super) async fn run(client: &mut TdsClient, request: &Request, timeout: u32)
             break;
         }
     }
-    // SET OFF has its own uncancelled command even after errors or a dropped consumer.
     if healthy
         && let Some(setting) = setting
         && let Err(error) = idle(client, &format!("SET {setting} OFF")).await
@@ -110,7 +109,6 @@ async fn query(
                 let mut rows = Vec::with_capacity(256);
                 loop {
                     let next = client.next_row().await;
-                    // Notices read with a DONE follow all rows already read.
                     if !client.info_messages().is_empty() {
                         flush(request, &mut rows).await;
                         messages(client, request, offset).await;
@@ -170,7 +168,6 @@ async fn query(
             }
         }
         if request.cancel.is_cancelled() {
-            // Also drive attention if cancellation arrived while bounded delivery was blocked.
             if client.has_open_batch() && client.cancel_query(3).await.is_err() {
                 return Err(());
             }

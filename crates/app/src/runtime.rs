@@ -239,7 +239,6 @@ impl Runtime {
         let (sender, receiver) = oneshot::channel();
         self.0.spawn(async move {
             let outcome = session::connect(&details, password.as_deref()).await;
-            // The receiver is gone if the window closed meanwhile; the session drops here.
             let _ = sender.send(outcome);
         });
         async move {
@@ -302,7 +301,6 @@ impl Runtime {
                         }
                         Ok(())
                     };
-                    // Dropping the writer cancels the run if the UI stops receiving updates.
                     let written = match futures::future::try_join(write, forward).await {
                         Ok((report, ())) => report.map(|report| report.files),
                         Err(_) => return,
@@ -334,7 +332,6 @@ impl Runtime {
                         ),
                         other => RunUpdate::Event(other),
                     };
-                    // A UI that went away drops the run, which cancels it.
                     if updates.send(update).await.is_err() {
                         return;
                     }
@@ -383,12 +380,9 @@ impl Runtime {
         let estimating = self.with_session(session, move |session| {
             Box::pin(async move {
                 let mut send = |index, rows| {
-                    // A closed receiver means the dialog has gone; the stop follows.
                     let _ = found.unbounded_send((index, rows));
                 };
                 let planning = estimates::estimate_each(session, &batch, &check, engine, &mut send);
-                // Dropping the planning drops its run, which cancels it before the session's
-                // next batch (the engine's `Run` contract).
                 let _ = futures::future::select(Box::pin(planning), stop).await;
             })
         });
@@ -493,7 +487,6 @@ impl Results {
 
     fn complete_current(&mut self) {
         if let Some(store) = self.stores.last_mut() {
-            // A store that failed to write still shows the rows it kept.
             let _ = blocking(|| store.complete());
         }
     }

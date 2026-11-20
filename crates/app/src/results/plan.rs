@@ -187,7 +187,6 @@ impl PlanView {
             Step::First => 0,
             Step::Last => last,
             Step::Parent => self.layout.parent(at).unwrap_or(at),
-            // A first input follows its parent directly in tree order.
             Step::Child => match self.rows.get(at + 1) {
                 Some(next) if next.depth > self.rows[at].depth => at + 1,
                 _ => at,
@@ -200,7 +199,6 @@ impl PlanView {
     /// next time it is drawn: at once in the view shown, and in the other when F9 shows it.
     pub(super) fn reveal(&self) {
         self.scroll.scroll_to_item(self.selected);
-        // The graph scrolls itself as it is laid out (`graph.rs`).
         self.reveal_pending.set(true);
     }
 

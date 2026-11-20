@@ -70,7 +70,6 @@ fn main() -> ExitCode {
         },
         _ => None,
     };
-    // UI scripts keep their passwords apart from the user's, under the tests' service name.
     let service = if script.is_some() {
         "database-ide-test"
     } else {
@@ -97,9 +96,6 @@ fn main() -> ExitCode {
         .run(move |cx: &mut App| {
             gpui_component::init(cx);
             keymap::bind(cx);
-            // A scripted run keeps its window hidden and out of the foreground, so the user's
-            // own clicks and keys can't land in it mid-script (DAT-51). A run taking
-            // screenshots shows it, because the capture needs a visible window.
             let scripted = script.is_some();
             let bounds = Bounds::centered(None, size(px(1400.), px(900.)), cx);
             let options = WindowOptions {
@@ -120,7 +116,6 @@ fn main() -> ExitCode {
                         explorer,
                         runtime,
                         move |window, cx| {
-                            // Next-frame callbacks run once this frame has been drawn and presented.
                             window.on_next_frame(|_, _| write_first_frame_time());
                             if let Some(script) = script {
                                 cx.spawn_in(window, async move |this, cx| {
